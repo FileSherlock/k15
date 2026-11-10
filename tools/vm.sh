@@ -18,7 +18,7 @@ ACCEL=(-cpu max)
 
 boot() {
   QEMU_LOG=$(mktemp)
-  qemu-system-x86_64 -nodefaults -display none -no-reboot -machine q35 "${ACCEL[@]}" -m 160 \
+  qemu-system-x86_64 -nodefaults -display none -no-reboot -machine q35 "${ACCEL[@]}" -m 256 \
     -drive "file=${IMG%os.bin}disk.img,format=raw,if=none,id=d0,snapshot=on" \
     -netdev "user,id=n0,net=${GUEST%.*}.0/24,hostfwd=tcp:127.0.0.1:${PORT}-${GUEST}:443" \
     -device pcie-root-port,id=rp1,chassis=1 -device virtio-net-pci,bus=rp1,netdev=n0,disable-legacy=on,romfile= \

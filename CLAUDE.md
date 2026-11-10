@@ -6,7 +6,7 @@ taken off its machine contract and put on a Hetzner cloud server. Decided with t
 - the load is k6-style: ramp to N users in 60 s, hold, under 1% errors
 - plain HTTP on port 80 (for the connection count) and HTTPS on 443 (as fast as it will go)
 - size comes later ("we can optimize more later"): correctness and capacity first. The image
-  is still one assembly file and still small (3,951 bytes); don't golf it, don't bloat it.
+  is still one assembly file and still small (4,755 bytes); don't golf it, don't bloat it.
 - security as in k2 (below) still holds for everything behind TLS
 
 ## Where it stands
@@ -25,28 +25,14 @@ ARP, TLS 1.3 with a verified certificate, keep-alive requests. First fetch over 
 Steps 1 (virtio-net) and 2 (boot on the server) are done. Next:
 
 **3. A TCP that survives a real network, a real connection table, port 80.**
-- Lost packets. Our seq is "their ack" and nothing is ever sent twice. Seen over tap: 7 of
-  8,000 fetches hung after one dropped packet.
-  - A lost response: the client retransmits its request, which today is only re-acked.
-    The response is static, so rebuild it: same key, same TLS sequence number, same bytes.
-    But only if the client really has not seen it: remember per connection our sequence
-    number at the last reply and compare with the retransmission's ack, else a spurious
-    retransmit gets the response twice as new data.
-  - A lost handshake flight: the client retransmits its ClientHello. If nothing of the
-    flight arrived, a fresh handshake is fine. A flight of several segments (a real chain)
-    of which only the tail was lost needs the same flight again, and nobody asks for it:
-    the client has nothing outstanding. That needs the flight kept (or regenerated) and a
-    timer (rdtsc; there is no clock yet). With the private CA the flight is one segment
-    and the retransmitted ClientHello is trigger enough.
-- The connection table: now 16 tables of 65,536 slots x 128 bytes picked by the low nibble
+- Lost packets: done (see "How TCP works here"). 8,000 connections over tap with 1% of the
+  packets dropped in each direction, and 2,000 with 5%, all served.
+- The connection table: now 16 tables of 65,536 slots x 160 bytes picked by the low nibble
   of the client's IP, indexed by port (two clients whose IPs share a nibble and a port
   collide). Wanted: open addressing over (client IP, port), a keyed hash (a client must not
   be able to choose collisions), slots freed on FIN/RST, something sane when a SYN flood
-  fills it. A slot has 108 live bytes; the 20 after them are overwritten by `keys` (see
-  Shortcuts). 32-bit code reaches the 2 GiB of RAM below 4 GiB: ~1 GiB of slots is 8M.
-- ClientHello reassembly is keyed by slirp's ISN pattern (`CHB` buckets). Real clients have
-  random ISNs: a ClientHello in two segments (Chrome's is ~1.8 KB) can collide with another
-  in flight. It belongs with the connection.
+  fills it. A SYN on an open connection still wipes it. 32-bit code reaches the 2 GiB of RAM
+  below 4 GiB: 8M slots are 1.28 GiB.
 - Our SYN-ACK has no options (so no MSS: peers assume 536) and our window is whatever the
   client's last window field said. Send an MSS option and a fixed window.
 - Port 80: the same static page without TLS. Everything not 443 is dropped today.
@@ -95,8 +81,9 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   interface in a throwaway user + network namespace (no root, none of the host's ports),
   `tools/tapc.c` (k1's epoll + OpenSSL client, verifying chain and name) from W source IPs
   (10.0.2.32-47) x PER connections, all open at once, all fetched over at the end. A real
-  Ethernet segment: ARP, a Linux TCP as the peer, random ISNs, and packets do get dropped.
-  `TIMEOUT=10` in front makes a hung connection fail fast instead of after 60 s.
+  Ethernet segment: ARP, a Linux TCP as the peer, random ISNs. `LOSS=1` (before `unshare`)
+  drops 1% of the packets in each direction, `MTU=n` sets the tap's MTU, and `TIMEOUT=10`
+  makes a hung connection fail fast instead of after 60 s.
 - `tools/load.py` (through slirp, `PORT=`): `hold N`, `burst K`, `seq N` (handshake rate),
   `ka N` (keep-alive rate). Start a VM first: `source tools/vm.sh; boot` with `B`, `PORT`
   and `IMG=$B/os.bin` set.
@@ -108,7 +95,7 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
 
 ## The test machine and the server
 `tools/vm.sh` and `tap.sh` boot the server's shape: `-machine q35`, a modern-only
-virtio-net (`disable-legacy=on`) behind a PCIe root port, the disk on virtio SCSI, 160 MiB.
+virtio-net (`disable-legacy=on`) behind a PCIe root port, the disk on virtio SCSI, 256 MiB.
 
 The server (seen over ssh): "Hetzner vServer/Standard PC (Q35 + ICH9)", SeaBIOS (no UEFI),
 2 vCPUs (we use one), 4 GB, Xeon Skylake with rdrand, adx, bmi2, avx512f/bw/vl, no sha_ni,
@@ -157,12 +144,13 @@ Two things differ locally:
 
 ## Layout
 - `src/os.asm`: everything after the loader, 32-bit protected mode, no paging, interrupts
-  off, one polling loop. Start-up: own GDT, stack down from 2 MiB, zero 2-160 MiB, SHA-256
+  off, one polling loop. Start-up: own GDT, stack down from 2 MiB, zero 2-192 MiB, SHA-256
   constants, curve constants and moduli, IDT, virtio-net.
-  Memory: frame being handled at address 0 (`FR`: received, then rewritten in place as the
-  reply); buffers from 2 MiB (`BSS`); ClientHello buckets at 4 MiB; connection slots from
-  8 MiB to 136 MiB; virtio rings at 144 MiB (`VQ`), receive and transmit buffers after
-  (`RXB`, `TXB`: 2 KiB each, descriptor i is buffer i, a 12-byte virtio header in front).
+  Memory: frame being handled at address 0 (`FR`: received, then its headers rewritten in
+  place for what we send back); buffers from 2 MiB (`BSS`; `OB` is our answer to one
+  packet); virtio rings at 4 MiB (`VQ`), receive and transmit buffers at 5 and 7 MiB (`RXB`,
+  `TXB`: 2 KiB each, descriptor i is buffer i, a 12-byte virtio header in front); handshake
+  buffers at 16 MiB (`HSP`); connection slots from 32 MiB to 192 MiB (`CONNS`).
 - `src/boot.asm`: BIOS boot sector: reads 64 sectors, protected mode, copies the image to
   1 MiB, jumps to the entry in its multiboot header.
 - virtio-net: `pcird` reads PCI configuration; the driver finds 1af4:1041 or :1000 on any
@@ -170,7 +158,9 @@ Two things differ locally:
   VERSION_1, and polls the used ring. It kicks only when the device hasn't set NO_NOTIFY.
   `nic_send` copies FR into the next transmit buffer and waits if the device holds all N.
 - `tcp`: ARP requests for OURIP get a reply; then only IPv4 without options, unfragmented,
-  TCP, to OURIP, port 443 gets further. `ethfix` turns the frame's Ethernet header around.
+  TCP, to OURIP, with both checksums right and a length that fits the frame, port 443 gets
+  further. `ethfix` turns the frame's Ethernet header around; `tcp_send` cuts an answer
+  into segments, `tcp_seg` sends one.
 - `tools/ec.py`: the curve code's other half. The asm has one Montgomery multiplication
   (R = 2^288, 9 limbs), plain 9-limb add/subtract, and a 16-register machine that runs
   2-byte operations; the X25519 ladder, the P-256 x-only ladder and the ECDSA formula are
@@ -180,6 +170,33 @@ Two things differ locally:
   -> `build/*.inc`. `tools/ip.py`, `tools/mkdisk.py`: the baked-in address, the disk image.
 - `tools/vm.sh`: QEMU command line and curl options, sourced by the test scripts
 - `tools/ffcheck.py`, `tools/nssdb.py`, `tools/certerr.py`: the browser checks' helpers
+
+## How TCP works here
+No timer and no copy of what was sent, except the handshake flight. Our side of a connection
+is a function of its keys: the flight, then one record of `RL` bytes per request answered. A
+connection knows the next byte it expects (`C_NXT`), our next byte (`C_SND`), where our
+records start (`C_APP`) and the client's last ack (`C_ACK`).
+- In-order data is taken (a segment that overlaps what we have is trimmed), data from the
+  future gets an ack of what we expect, a keep-alive probe gets an ack.
+- Loss shows in two ways, and both lead to `.resend`, which builds our bytes again from the
+  client's ack on (flight bytes from the handshake buffer, records by sealing the response
+  again under the same sequence number): old data arriving again with an ack below `C_SND`
+  (the client's request is unacknowledged because our answer carried the ack), or the same
+  ack below `C_SND` twice without data (the client got something behind a hole).
+- For an answer of several segments only the last one acknowledges the client's data, so a
+  lost tail leaves the request outstanding and the client asks again. What is not covered
+  without a timer: a hole whose repair is lost again while the client has nothing
+  outstanding (two losses in one answer of 3+ segments).
+- A retransmitted ClientHello must get the same flight, not a new handshake: the client may
+  have the first one already (its retransmission was only early), and would then hold keys
+  we no longer have.
+- Handshake buffers (`HSP`: 1024 x 16 KiB): a connection takes the next one in a circle
+  with its first ClientHello byte; it holds the ClientHello while that arrives (any number
+  of segments) and then the flight. The buffer says whose it is; a connection whose buffer
+  went to another can't finish its ClientHello or resend its flight (seen only if 1024
+  other handshakes start within one client's retransmission time).
+- A record header split over segments is carried in the slot (`C_HDR`); a record split over
+  segments is still skipped, not read (see Shortcuts).
 
 ## Calls through interrupt gates
 Routines called from several places, and not from inner loops, are reached with `int n`
@@ -214,9 +231,11 @@ are step 3's job.
 - The server random is the client's, nudged. Freshness comes from our key share.
 - No check for an all-zero X25519 result (a client can only weaken its own connection).
 - No alerts, no close_notify, no KeyUpdate, no session tickets.
-- TCP: our seq = their ack, in-order segments only, nothing retransmitted, requests
-  pipelined over several segments get overlapping answers, bare-LF HTTP response.
-- `keys` writes 20 junk bytes after an IV: the client key block goes last in the slot.
+- TCP: no options (so no MSS: peers assume 536), our window is the client's, a FIN is
+  answered with a FIN and the slot stays closed until the next SYN for it, RST is ignored,
+  no timers (a client that disappears keeps its slot). Bare-LF HTTP response.
+- `keys` writes 20 junk bytes after an IV: the handshake makes both key blocks in `KA` and
+  copies them into the slot.
 - The handshake's scratch (transcript, key schedule, curve registers) is global: one
   handshake at a time, start to finish, inside one call of `tcp`.
 
