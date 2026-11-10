@@ -105,23 +105,24 @@ def main():
     c.sock.sendall(bytes([21, 3, 3, 0, 2, 2, 40]))                     # plaintext alert
     good &= check("request after forged records", c.fetch())
     rec = c.last_record()
-    c.sock.sendall(rec)
-    c.sock.sendall(rec)                                                # replay of that request
+    # The replay goes out with the next real request behind it, in one segment (the server
+    # can't take requests pipelined over several: our seq = their ack). No waiting for an
+    # answer that must not come: the server answers in order and closes after our FIN, so
+    # all it sends must be exactly two responses that decrypt in sequence.
     buf = b""
     try:
-        while buf.count(EXPECT) < 1:
+        c.sock.sendall(rec + rec + c.last_record())
+        while buf.count(EXPECT) < 2:
             buf += c.pump(lambda: c.tls.read(4096))
-        c.sock.settimeout(1.5)
-        try:
-            while True:
-                buf += c.pump(lambda: c.tls.read(4096))
-        except (TimeoutError, socket.timeout):
-            pass
+        c.sock.shutdown(socket.SHUT_WR)
+        while True:
+            buf += c.pump(lambda: c.tls.read(4096))
+    except ConnectionError:
+        pass
     except (OSError, ssl.SSLError) as e:
         buf = b"error %r" % e
-    good &= check("a replayed record gets no second answer", buf.count(EXPECT) == 1)
-    c.sock.settimeout(5)
-    good &= check("request after the replay", c.fetch())
+    good &= check("a replayed record gets no answer, the request after it does",
+                  buf.count(EXPECT) == 2)
     c.close()
 
     # 2. no x25519 share
@@ -134,8 +135,10 @@ def main():
         s = socket.create_connection((HOST, PORT), timeout=5)
         try:
             s.sendall(data)
-            s.settimeout(1)
-            s.recv(4096)
+            s.shutdown(socket.SHUT_WR)      # the server answers a FIN with a FIN: once that
+            s.settimeout(1)                 # is here, it has been through all of the junk
+            while s.recv(4096):
+                pass
         except OSError:
             pass
         s.close()

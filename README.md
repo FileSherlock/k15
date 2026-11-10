@@ -1,6 +1,6 @@
 # k2
 
-k2 is a 3,336-byte bootable x86 "operating system" that serves a static web page over HTTPS
+k2 is a 3,231-byte bootable x86 "operating system" that serves a static web page over HTTPS
 (TLS 1.3), securely. It boots in QEMU, drives an NE2000 network card, speaks just enough TCP,
 and does the whole TLS 1.3 handshake itself: X25519, ECDSA P-256, ChaCha20-Poly1305,
 SHA-256 / HKDF, all hand-written in assembly. curl, Chrome and Firefox load the page with no
@@ -19,7 +19,7 @@ client runs out of ports, keeps them all open, and checks that every one serves 
 The k2 run stopped because the client was out of ports, not because the server was full:
 all 28,232 connections served the page, each one verifying the certificate. The run over
 every client port (the k1 number's conditions, about 45 minutes) has not been done yet, and
-the image has shrunk to 3,336 bytes since.
+the image is 3,231 bytes now.
 
 ## What is secure, and what is not there
 
@@ -50,7 +50,7 @@ make                 # -> build/os.bin, and on the first run cert/ (a private CA
 Or by hand:
 
 ```bash
-qemu-system-x86_64 -nodefaults -display none -cpu max -m 16 -kernel build/os.bin \
+qemu-system-x86_64 -nodefaults -display none -cpu max -m 160 -kernel build/os.bin \
   -netdev user,id=n0,hostfwd=tcp:127.0.0.1:8443-:443 -device ne2k_isa,netdev=n0
 curl --cacert build/ca.pem https://127.0.0.1:8443/
 ```

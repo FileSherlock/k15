@@ -23,7 +23,7 @@ SB      equ BSS + 0x40000   ; seal scratch: Poly1305 input
 HB      equ BSS + 0x0C900   ; HMAC buffer (key pad | message)
 INFO    equ HB + 64         ; HKDF info is built right where HMAC wants its message
 AW      equ BSS + 0x0CB00   ; SHA-256 a..h sliding down 64 dwords, with W[] stored above it
-SH      equ BSS + 0x0CD20   ; SHA-256 chaining value
+SH      equ AW + 0x124      ; SHA-256 chaining value (just above the window: short offsets)
 ST      equ BSS + 0x0CD40   ; ChaCha20 state
 KS      equ BSS + 0x0CD80   ; ChaCha20 key stream block (64-byte aligned)
 PK      equ BSS + 0x0CDC0   ; Poly1305 key block
@@ -36,15 +36,18 @@ CVB     equ BSS + 0x0D680   ; CertificateVerify content to be signed (+ room for
 KT      equ BSS + 0x0D800   ; SHA-256 round constants (computed at boot), 64 dwords; 512-aligned
 HT      equ KT + 0x104      ; SHA-256 initial hash (computed at boot), 8 dwords (+ 56 junk)
 MT      equ BSS + 0x0E000   ; Montgomery product, 19 dwords
-E       equ BSS + 0x0E100   ; our X25519 secret (32 bytes), then
-K       equ E + 32          ; the ECDSA nonce (32 bytes, and 4 zero bytes: it is read as 9 limbs)
+E       equ K - 32          ; our X25519 secret (32 bytes), then
+K       equ REGS - 36       ; the ECDSA nonce (32 bytes, and 4 zero bytes: it is read as 9 limbs),
+                            ; right in front of the registers: r is a short offset away
 MN      equ BSS + 0x0E201   ; moduli (made at boot): 8 dwords | 0 | -1/m mod 2^32, and a zero
 MP256   equ MN + 44         ; byte in front. n and p of P-256,
 M25519  equ MP256 + 44      ; and 2^255 - 19
+IDT     equ M25519 + 40 - 1*8 ; interrupt gates, from vector 1 (built at boot)
 REGS    equ BSS + 0x0E400   ; the curve machine's 16 registers of 9 limbs (not in the image's
                             ; page: TCG takes a slow path for every write to a page with code)
 CHB     equ 0x400000        ; ClientHello reassembly: 1024 x 4 KiB, by slirp's initial seq
-CONNS   equ 0x800000        ; 65536 connections x 128 bytes: one slot per client port
+CONNS   equ 0x800000        ; 16 tables of 65536 connections x 128 bytes: one slot per client
+                            ; port, one table (8 MiB) per low nibble of the client's IP: up to 136 MiB
 
 S_Z     equ -128            ; slot offsets from ebp = SLOTS + 128
 S_EH    equ -96
@@ -59,6 +62,50 @@ C_ST    equ 0               ; connection: 0 = waiting for the ClientHello, else 
 C_NXT   equ 4               ; next sequence number we expect from the client
 C_LEN   equ 8               ; ClientHello bytes so far; then bytes left of the current record
 C_KIV   equ 12              ; application key | 0 counter | iv (+20 bytes of junk: `keys`)
+
+; Routines that are called from several places and not from inner loops are reached through
+; interrupt gates: `int n` is 2 bytes (int1 and int3: 1) where a call is 5, and a gate costs 2 bytes
+; of table (boot builds the IDT). Such a routine returns with iret, so it can't return flags;
+; flags do go in. The host test build calls them the ordinary way.
+%ifdef HOST
+%macro icall 1
+        call %1
+%endmacro
+%define fret ret
+%else
+%macro icall 1
+%if V_%1 = 3
+        int3
+%elif V_%1 = 1
+        int1
+%else
+        int V_%1
+%endif
+%endmacro
+%define fret iretd
+%endif
+GATED equ 0
+%macro gates 1-*
+%assign v 1
+%rep %0
+V_%1    equ v
+%assign v v+1
+%rotate 1
+%endrep
+NGATES  equ %0
+%endmacro
+%macro gatetable 1-*
+%rep %0
+        dw %1 - mb
+%rotate 1
+%endrep
+%endmacro
+%if CHAIN_LEN > 1100            ; (tcp_out is only called, rather than fallen into, for a long chain)
+%define GATELIST sha256, hmac, expand, thash, seal, keys, rev32, stage, x25519, inv, chacha, csum, handshake, sigr, tcp, nic_send, tcp_out
+%else
+%define GATELIST sha256, hmac, expand, thash, seal, keys, rev32, stage, x25519, inv, chacha, csum, handshake, sigr, tcp, nic_send
+%endif
+        gates GATELIST
 
 %ifdef HOST
         section .text
@@ -128,11 +175,15 @@ shaconst:
         out dx, al
         loop .ni
 %endif
-        mov edi, REGS           ; the constant registers follow nicinit: x(G) R, 4b R, d R, 1
-        mov cl, REGC_LEN
-        rep movsb               ; (edi = ONE + 1)
-        mov dword [edi+R_A24+4-R_ONE-1], 4623270 ; 121665 R mod 2^255 - 19 (R = 2^288 = 38 * 2^32)
-        mov byte [edi+R_NINE-R_ONE-1], 9 ; the X25519 base point
+        mov edi, R_GX           ; the constant registers follow nicinit: x(G) R, 4b R, d R, 1
+.cr:    mov cl, 32              ; three of them, 8 limbs each: the 9th stays 0
+        rep movsb
+        scasd
+        bt edi, 8               ; that bit is first set at ONE (checked where REGS is laid out)
+        jnc .cr
+        inc byte [edi]          ; ONE
+        mov dword [edi+R_A24+4-R_ONE], 4623270 ; 121665 R mod 2^255 - 19 (R = 2^288 = 38 * 2^32)
+        mov byte [edi+R_NINE-R_ONE], 9 ; the X25519 base point
         mov edi, MN             ; the moduli. n: its low half is data, then FFFFFFFF FFFFFFFF
         movsd                   ; 0 FFFFFFFF
         movsd
@@ -171,6 +222,15 @@ shaconst:
         popad
         ret
 %else
+        scasd                   ; the IDT (vectors 1 up) follows the moduli: offset | cs = 8,
+        mov eax, 0x00080000     ; then 0x8E00 (interrupt gate) | 0x0010 (offset bits 16..31)
+        mov cl, NGATES
+.gt:    lodsw                   ; (esi = GATES, after NLOW)
+        stosd
+        mov dword [edi], 0x00108E00
+        scasd
+        loop .gt
+        lidt [esi]
 
         xor ebx, ebx            ; FR: unsolicited ARP reply "10.0.2.15 is at <whatever MAC>"
         mov word [ebx+12], 0x0608 ; (the MAC is IVT junk: fine, the NIC is promiscuous)
@@ -178,7 +238,7 @@ shaconst:
         mov dword [ebx+28], 0x0f02000a
         push 42
         pop ecx
-        call nic_send
+        icall nic_send
 
         mov bl, 0x46            ; next page to read (PSTART); dh = 3 from here on
 .poll:  mov dl, 0
@@ -207,7 +267,7 @@ shaconst:
         mov dl, 3
         out dx, al              ; BNRY: free what we read
         pushad
-        call tcp
+        icall tcp
         popad
         jmp .poll
 
@@ -235,7 +295,7 @@ nic_send:
         mov al, 4
         out dx, al              ; transmit
         popad
-nsret:  ret
+nsret:  fret
 
 ; ----------------------------------------------------------------------------
 ; tcp: handle the TCP segment in FR. Our seq = their ack (nothing we send gets lost), but
@@ -253,7 +313,11 @@ tcp:
         sub ecx, eax            ; payload length
         lea esi, [ebx+eax+34]
         mov ebp, [ebx+33]       ; 15 (our IP's last byte) | client port | 1 (443 >> 8)
-        shr ebp, 1              ; connection slot: CONNS + 7 + port (bytes swapped) * 128
+        mov al, [ebx+29]        ; the low nibble of the client's IP picks one of 16 tables
+        and al, 15              ; (bounded: a client can't aim this anywhere else)
+        shl eax, 24
+        add ebp, eax
+        shr ebp, 1              ; connection slot: CONNS + 7 + (nibble * 65536 + port (bytes swapped)) * 128
         mov dl, [ebx+47]        ; flags
         mov eax, [ebx+42]
         xchg eax, [ebx+38]      ; our seq = their ack; eax = their seq
@@ -282,7 +346,38 @@ tcp:
         mov edi, OB             ; edi = end of our output
         push edi
         cmp [ebp+C_ST], ebx
-        je .ch
+        jne .walk               ; (the record walk sits after the ret below: all jumps short)
+.ch:    mov edx, [ebp+C_LEN]    ; still waiting for the ClientHello: collect it in a bucket
+        mov eax, [ebp+C_NXT]
+        sub eax, edx            ; bytes so far, this segment included
+        cmp eax, 0xF00          ; a ClientHello must fit its bucket (and the transcript)
+        ja .send
+        shl edx, 13             ; slirp's ISN + 1 = 2 + 64000 n, n += 1 per connection:
+        shr edx, 10             ; 16 + 4 KiB * (125 n mod 1024), so 1024 in a row differ
+        bts edx, 22             ; + CHB
+        push edi
+        lea edi, [edx+eax]
+        sub edi, ecx
+        rep movsb
+        pop edi
+        movzx ecx, word [edx+3]
+        xchg cl, ch             ; record body length
+        sub eax, 5
+        cmp eax, ecx
+        jl .send                ; not all there yet (signed: a slot that never saw a SYN)
+        inc dword [ebp+C_ST]
+        lea esi, [edx+5]
+        icall handshake
+        xor ecx, ecx            ; C_LEN = 0: the next record starts with the client's next byte
+.wend:  neg ecx
+        mov [ebp+C_LEN], ecx
+.send:  pop esi                 ; OB
+        pop ecx                 ; payload length
+        pop eax                 ; flags
+        and eax, 3
+        or ecx, eax
+        jnz .tx
+        fret                    ; pure ACK: stay quiet
 .walk:  mov eax, [ebp+C_LEN]    ; bytes of the current record still to come
 .w:     sub ecx, eax            ; skip whole records; we only read their headers
         jbe .wend
@@ -304,7 +399,7 @@ tcp:
         lea ebx, [ebp+C_KIV+48]
         mov edi, VB
         stc
-        call seal               ; the record as it should be, tag included
+        icall seal               ; the record as it should be, tag included
         sub edi, 16
         add esi, ecx
         push 16
@@ -319,41 +414,10 @@ tcp:
         push RESP_LEN           ; (imm8 form while the response is < 128 bytes)
         pop ecx
         lea ebx, [ebp+C_KIV]
-        call seal               ; (keeps eax; CF = 0 since the tags compared equal)
+        icall seal               ; (keeps eax; CF = 0 since the tags compared equal)
         pop ecx
         pop esi
         jmp .w
-.ch:    mov edx, [ebp+C_LEN]    ; still waiting for the ClientHello: collect it in a bucket
-        mov eax, [ebp+C_NXT]
-        sub eax, edx            ; bytes so far, this segment included
-        cmp eax, 0xF00          ; a ClientHello must fit its bucket (and the transcript)
-        ja .send
-        shl edx, 13             ; slirp's ISN + 1 = 2 + 64000 n, n += 1 per connection:
-        shr edx, 10             ; 16 + 4 KiB * (125 n mod 1024), so 1024 in a row differ
-        bts edx, 22             ; + CHB
-        push edi
-        lea edi, [edx+eax]
-        sub edi, ecx
-        rep movsb
-        pop edi
-        movzx ecx, word [edx+3]
-        xchg cl, ch             ; record body length
-        sub eax, 5
-        cmp eax, ecx
-        jl .send                ; not all there yet (signed: a slot that never saw a SYN)
-        inc dword [ebp+C_ST]
-        lea esi, [edx+5]
-        call handshake
-        xor ecx, ecx            ; C_LEN = 0: the next record starts with the client's next byte
-.wend:  neg ecx
-        mov [ebp+C_LEN], ecx
-.send:  pop esi                 ; OB
-        pop ecx                 ; payload length
-        pop eax                 ; flags
-        and eax, 3
-        or ecx, eax
-        jnz .tx
-        ret                     ; pure ACK: stay quiet
 .tx:    or al, 0x18             ; ACK|PSH (+SYN or FIN)
 %if CHAIN_LEN > 1100            ; a real certificate chain: our flight needs several segments
         mov edx, edi            ; (this code is only there if the baked-in chain needs it)
@@ -366,7 +430,7 @@ tcp:
         mov ecx, 1400
 .one:   push ecx
         push esi
-        call tcp_out
+        icall tcp_out
         pop esi
         pop ecx
         add esi, ecx
@@ -379,7 +443,7 @@ tcp:
         pop eax
         cmp esi, edx
         jb .seg
-        ret
+        fret
 %else
         mov ecx, edi
         sub ecx, esi            ; all in one segment: the largest reply, our flight, is ~500 bytes
@@ -403,7 +467,7 @@ tcp_out:
         and dword [ebx+50], 0
         lea esi, [ebx+22]
         add ecx, 12
-        call csum
+        icall csum
         mov [ebx+50], ax
         lea ecx, [ebp+40]
         xchg cl, ch
@@ -412,7 +476,7 @@ tcp_out:
         lea esi, [ebx+14]
         push 20
         pop ecx
-        call csum
+        icall csum
         mov [ebx+24], ax
         lea ecx, [ebp+54]
         jmp nic_send
@@ -429,7 +493,7 @@ csum:
         adc dx, 0
         not edx
         xchg eax, edx
-        ret
+        fret
 
 ; ----------------------------------------------------------------------------
 ; handshake: ClientHello message at esi (ecx bytes), connection at ebp.
@@ -462,13 +526,13 @@ handshake:
         mov cl, 19
         rep movsb               ; ... + suite, extensions, key share header ...
         mov esi, R_NINE
-        call x25519
+        icall x25519
         mov esi, R_X2
         mov cl, 8
         rep movsd               ; ... + our key share
         pop esi
         lodsd
-        call x25519             ; X2 = the shared secret
+        icall x25519             ; X2 = the shared secret
         lea eax, [edx+86]
         shl eax, 24
         mov al, 2
@@ -478,17 +542,17 @@ handshake:
         push ebx
         mov esi, CVB            ; (ecx = 0 after the copy above)
         lea edi, [ebp+S_EH]
-        call sha256             ; SHA256("")
+        icall sha256             ; SHA256("")
         lea ebx, [ebp+S_Z]
         mov esi, ebx
         mov cl, 32
         lea edi, [ebp+S_ES]
-        call hmac               ; early secret
+        icall hmac               ; early secret
         mov ebx, edi
         mov esi, R_X2
         lea edi, [ebp+S_HS]
-        call stage              ; handshake secret
-        call sigr               ; r and 1/k for the CertificateVerify (in X2 and T1)
+        icall stage              ; handshake secret
+        icall sigr               ; r and 1/k for the CertificateVerify (in X2 and T1)
         pop ebx
 
         mov edi, CVB            ; CertificateVerify content: 64 spaces | context | hash
@@ -503,14 +567,14 @@ handshake:
         ; stay: only the one signature that is sent ever leaves this machine.)
 .retry: inc byte [ebx+6]
         lea eax, [ebx+edx+90]   ; P1 = end of ServerHello
-        call thash
+        icall thash
         push ebx
         push edx
         lea ebx, [ebp+S_HS]
         mov esi, L_SHTS
         lea edx, [ebp+S_TH]
         lea edi, [ebp+S_TS]
-        call expand             ; server handshake traffic secret
+        icall expand             ; server handshake traffic secret
         pop edx
         pop ebx
         xchg eax, edi           ; EncryptedExtensions + Certificate (after thash: it pads in place)
@@ -518,7 +582,7 @@ handshake:
         mov ecx, EECERT_LEN
         rep movsb
         xchg eax, edi           ; eax = P2
-        call thash
+        icall thash
         lea esi, [ebp+S_TH]
         mov edi, CVB+98
         mov cl, 32
@@ -526,27 +590,27 @@ handshake:
         mov esi, CVB
         mov cl, 130
         lea edi, [eax+46]
-        call sha256             ; the hash to sign (parked where s will go)
+        icall sha256             ; the hash to sign (parked where s will go)
         pushad
         mov esi, edi
         mov edi, R_U
-        call rev32              ; as a number
+        icall rev32              ; as a number
         mov ebp, MN
         mov esi, SIGN
         call vm                 ; Z2 = s = (hash + r d) / k
-        popad
-        cmp byte [R_Z2+31], 0
+        cmp byte [edi+R_Z2+31-R_U-32], 0 ; (edi = U + 32 after rev32)
+        popad                   ; (keeps the flags)
         jle .retry
         xchg eax, edi
         mov esi, CVT            ; 0f 00 00 4a | 04 03 | 00 46 | 30 44 02 20
         mov cl, 12
         rep movsb
         mov esi, R_X2
-        call rev32              ; r
+        icall rev32              ; r
         mov ax, 0x2002
         stosw
         add esi, 36
-        call rev32              ; s
+        icall rev32              ; s
         xchg eax, edi           ; eax = P3 = end of CertificateVerify
 
         mov edi, OB             ; ServerHello record (the random is final now)
@@ -560,20 +624,20 @@ handshake:
         push edi                ; output position
         lea ebx, [ebp+S_TS]
         mov edi, KH
-        call keys               ; handshake key and iv
+        icall keys               ; handshake key and iv
 
         mov esi, L_FIN
         xor edx, edx
         lea edi, [ebp+S_D]
-        call expand
+        icall expand
         mov ebx, edi            ; finished key
-        call thash
+        icall thash
         xchg eax, edi
         mov eax, 0x20000014
         stosd
         lea esi, [ebp+S_TH]
         mov cl, 32              ; (ecx = 0 after the copy above)
-        call hmac
+        icall hmac
         add edi, ecx
         mov byte [edi], 0x16    ; inner content type: handshake
         xchg eax, edi
@@ -584,33 +648,33 @@ handshake:
         sub ecx, esi
         mov ebx, KH
         xor edx, edx
-        call seal               ; edi = end of output
+        icall seal               ; edi = end of output
 
-        call thash              ; application traffic secret
+        icall thash              ; application traffic secret
         lea ebx, [ebp+S_HS]
         lea esi, [ebp+S_Z]
         push edi
         lea edi, [ebp+S_ES]
-        call stage              ; master secret
+        icall stage              ; master secret
         mov ebx, edi
         mov esi, L_CATS
         lea edx, [ebp+S_TH]
         lea edi, [ebp+S_D]
-        call expand             ; client application traffic secret
+        icall expand             ; client application traffic secret
         mov ecx, edi
         mov esi, L_SATS
         lea edi, [ebp+S_TS]
-        call expand             ; server application traffic secret
+        icall expand             ; server application traffic secret
         mov ebx, edi
         pop eax                 ; end of output
         pop ebp
         lea edi, [ebp+C_KIV]
-        call keys
+        icall keys
         mov ebx, ecx
         add edi, 48
-        call keys
+        icall keys
         xchg eax, edi
-        ret
+        fret
 
 ; thash: TH slot = SHA256(transcript up to eax)
 thash:
@@ -619,9 +683,9 @@ thash:
         mov ecx, eax
         sub ecx, esi
         lea edi, [ebp+S_TH]
-        call sha256
+        icall sha256
         popad
-        ret
+        fret
 
 ; stage: edi = HKDF-Extract(Derive-Secret(ebx, "derived", ""), 32 bytes at esi)
 stage:
@@ -631,15 +695,15 @@ stage:
         mov esi, L_DER
         lea edx, [ebp+S_EH]
         lea edi, [ebp+S_D]
-        call expand
+        icall expand
         mov ebx, edi
         pop edi
         pop esi
         push 32
         pop ecx
-        call hmac
+        icall hmac
         popad
-        ret
+        fret
 %endif
 
 ; keys: edi = key(32) | 0(4) | iv(12) from traffic secret ebx (+20 junk bytes: expand writes 32)
@@ -647,13 +711,13 @@ keys:
         pushad
         xor edx, edx
         mov esi, L_KEY
-        call expand
+        icall expand
         add edi, 36
         mov [edi-4], edx        ; block counter 0 (slots near 16 MiB hold SeaBIOS tables)
         add esi, L_IV - L_KEY
-        call expand
+        icall expand
         popad
-        ret
+        fret
 
 ; ----------------------------------------------------------------------------
 ; sha256: edi = SHA-256 of ecx bytes at esi. Pads in place: esi[ecx .. ecx+72) is clobbered.
@@ -682,16 +746,17 @@ sha256:
         rep movsd
         pop esi
 .blk:   push esi
-        mov esi, SH
-        mov edi, AW+256
+        lea esi, [edi-32]       ; SH: edi = SH + 32 here, from the copy above or the sum below
+        sub edi, SH+32-(AW+256)
         mov cl, 8
         rep movsd
         pop esi
         sub edi, 32             ; a..h at [edi]; W[i-k] sits at [edi+32+4k] (window slides down)
-        xor ebp, ebp            ; round
+        push -64
+        pop ebp                 ; round - 64
 .rnd:   call wnext
         mov [edi+32], eax       ; W[i], over the h that the previous round dropped
-        add eax, [KT+ebp*4]
+        add eax, [KT+256+ebp*4]
         add eax, [edi+28]
         xchg eax, ebx           ; h + k + w
         mov eax, [edi+16]
@@ -709,22 +774,19 @@ sha256:
         call sigma
         add ebx, edx
         mov edx, [edi+4]
-        mov ecx, edx
-        or edx, [edi+8]
-        and edx, eax
-        and ecx, [edi+8]
-        or edx, ecx             ; maj(a, b, c)
-        add ebx, edx
+        xor eax, edx
+        xor edx, [edi+8]
+        and eax, edx
+        xor eax, [edi+4]        ; maj(a, b, c) = ((a ^ b) & (b ^ c)) ^ b
+        add ebx, eax            ; (ecx is still 0 from sigma: no other temporary)
         sub edi, 4
         mov [edi], ebx          ; new a = t1 + t2
         inc ebp
-        cmp ebp, 64
-        jne .rnd
+        jnz .rnd
         push esi                ; chaining value += a..h
         mov esi, edi
         mov edi, SH
-        push 8
-        pop ecx
+        mov cl, 8
 .add:   lodsd
         add [edi], eax
         scasd
@@ -733,15 +795,15 @@ sha256:
         cmp esi, [esp]
         jb .blk
         pop eax
+        lea esi, [edi-32]       ; SH
         pop edi
-        mov esi, SH
         mov cl, 8
 .out:   lodsd
         bswap eax
         stosd
         loop .out
         popad
-        ret
+        fret
 
 ; sigma: edx = xor of eax rotated by each count byte in ecx (count | 0x20 = shift instead)
 sigma:
@@ -758,9 +820,9 @@ sigma:
         jnz .s
         ret
 
-; wnext: eax = message schedule word W[ebp] (window at edi, message at esi)
-wnext:  cmp ebp, 16
-        jae .sch
+; wnext: eax = message schedule word W[ebp + 64] (window at edi, message at esi)
+wnext:  cmp ebp, 16-64
+        jge .sch
         lodsd
         bswap eax
         ret
@@ -798,15 +860,15 @@ hmac:
         add ecx, 64
         mov esi, HB
         lea edi, [esi+64]
-        call sha256             ; inner hash
+        icall sha256             ; inner hash
         mov cl, 64
 .o:     xor byte [HB+ecx-1], 0x36 ^ 0x5c
         loop .o
         mov cl, 96
         pop edi
-        call sha256             ; outer hash
+        icall sha256             ; outer hash
         popad
-        ret
+        fret
 
 ; expand: edi = HKDF-Expand-Label(secret ebx, label esi = {L, len, text}, context edx or 0), 32 bytes
 expand:
@@ -841,24 +903,27 @@ expand:
         lea ecx, [edi-INFO]
         mov esi, INFO
         pop edi
-        call hmac
+        icall hmac
         popad
-        ret
+        fret
 
 ; ----------------------------------------------------------------------------
 ; Elliptic curves: 256-bit arithmetic mod m, lazily reduced, in a 16-register machine.
 ; tools/ec.py has the programs, the bounds that make this safe, and a model of all of it.
 ; A modulus is: m (8 dwords) | 0 | -1/m mod 2^32, with a zero byte in front; ebp points at it.
 ; (All three are built at boot.)
-                                ; 0-3: x(G) R, 4b R, d R, 1 (copied from the image at boot)
-R_ONE   equ REGS + 3*36
-R_A24   equ REGS + 4*36         ; 4, 5: set at boot
-R_NINE  equ REGS + 5*36
-R_X2    equ REGS + 7*36         ; r after sigr
-R_Z2    equ REGS + 8*36         ; s after SIGN
-R_T0    equ REGS + 11*36
-R_T1    equ REGS + 12*36
-R_U     equ REGS + 15*36
+R_U     equ REGS + 0*36
+R_X2    equ REGS + 1*36         ; r after sigr
+R_Z2    equ REGS + 2*36         ; s after SIGN
+R_GX    equ REGS + 5*36         ; 5-8: x(G) R, 4b R, d R, 1 (copied from the image at boot)
+R_ONE   equ REGS + 8*36
+R_A24   equ REGS + 9*36         ; 9, 10: set at boot
+R_NINE  equ REGS + 10*36
+R_T0    equ REGS + 12*36
+R_T1    equ REGS + 13*36
+%if ((R_GX + 36) | (R_GX + 72)) & 0x100 || (R_ONE & 0x100) = 0
+%error "REGS: bit 8 must first be set at R_ONE (boot copies the constants up to there)"
+%endif
 
 ; x25519: X2 = X25519(E, 32 bytes at esi). E is used as it is, unclamped: the other side
 ; only needs it to be the same number in our key share and in the secret.
@@ -868,11 +933,11 @@ x25519: pushad
         pop ecx
         rep movsd
         mov ebp, M25519
-        mov ebx, E
+        lea ebx, [edi+E-R_U-32]
         mov esi, INIT25519
         call smult
         popad
-        ret
+        fret
 
 ; sigr: the half of an ECDSA signature that needs no message. X2 = r = x(K G), where K is
 ; stepped until r is a plain 32-byte DER INTEGER (0 < r[0] < 0x80); T1 = R^2 / K mod n.
@@ -882,13 +947,13 @@ sigr:   pushad
 .again: inc dword [ebx]
         mov esi, INIT256
         call smult
-        cmp byte [R_X2+31], 0
+        cmp byte [ebx+R_X2+31-K], 0
         jle .again
         sub ebp, MP256 - MN
         mov esi, ebx
-        call inv
+        icall inv
         popad
-        ret
+        fret
 
 ; smult: X2 = x of (256-bit number at ebx) * the base point, mod the modulus at ebp, canonical.
 ; esi = init program, followed by the ladder step program.
@@ -905,7 +970,7 @@ smult:  call vm
         dec ecx
         jns .l
         mov esi, R_Z2
-        call inv
+        icall inv
         mov esi, FIN            ; X2 = X2 / Z2
         ; fall through
 ; vm: run the program at esi (2 bytes per operation: a << 4 | b, op << 4 | dst; a zero
@@ -958,7 +1023,7 @@ vadd:   pushad
         dec edx
         jnz .l
         popad
-        ret
+vmret:  ret
 
 ; montmul: 9 limbs at edi = (those at esi) * (those at ebx) / 2^288 mod m, not fully reduced
 montmul:
@@ -1022,7 +1087,7 @@ cswap:  pushad
         cmpsd
         loop .s
         popad
-vmret:  ret
+        ret
 
 ; inv: T1 = (9 limbs at esi) ^ (m - 2), which is R^2 / it for a stored value. Clobbers T0, T2.
 inv:    pushad
@@ -1053,7 +1118,7 @@ inv:    pushad
 .s:     inc cl
         jnz .l
         popad
-        ret
+        fret
 
 %ifdef HOST
 signs:  pushad                  ; (test only: what the handshake does inline)
@@ -1070,7 +1135,7 @@ rev32:  push 32
 .l:     mov al, [esi+ecx-1]
         stosb
         loop .l
-        ret
+        fret
 
 ; ----------------------------------------------------------------------------
 ; chacha: edi = ChaCha20 block of the 16-dword state at esi
@@ -1122,7 +1187,7 @@ chacha:
         scasd
         loop .ad
         popad
-        ret
+        fret
 
 ; seal: TLS 1.3 record at edi for ecx plaintext bytes at esi (last byte = inner content type),
 ; key|0|iv at ebx, sequence number edx. Returns edi = end of record.
@@ -1148,7 +1213,7 @@ seal:
         xor [edi-4], edx
         lea esi, [edi-64]       ; ST
         add edi, 64             ; PK = ST + 128
-        call chacha             ; block 0: Poly1305 key
+        icall chacha             ; block 0: Poly1305 key
         mov edi, SB             ; SB = header, 0 pad | ciphertext, 0 pad | lengths
         mov al, 0x17
         stosb
@@ -1175,7 +1240,7 @@ seal:
         inc dword [esi+48]      ; next counter
         lea edi, [esi+64]       ; KS = ST + 64 (64-byte aligned)
         mov edx, edi
-        call chacha
+        icall chacha
         pop edi
         pop esi
 .x:     lodsb
@@ -1293,7 +1358,7 @@ seal:
         loop .t
         mov [esp], edi
         popad
-        ret
+        fret
 
 
 ; ----------------------------------------------------------------------------
@@ -1314,6 +1379,9 @@ SIGMA:  db "expand 32-byte k"
 CVCTX:  db "TLS 1.3, server CertificateVerify", 0
 nicinit: db 1, 0x46, 2, 0xC0, 4, 0x40, 12, 0x10, 0, 0x40, 7, 0x46, 0, 0
 %include "regs.inc"       ; (must follow nicinit: boot copies them with the same esi)
+GATES:  gatetable GATELIST ; (must follow regs.inc, and IDTR must follow this)
+IDTR:   dw 8 * (1 + NGATES) - 1
+        dd IDT
 %include "gen.inc"
 SHTAIL: db 0x13, 0x03, 0x00, 0x00, 0x2e, 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04
         db 0x00, 0x33, 0x00, 0x24, 0x00, 0x1d, 0x00, 0x20

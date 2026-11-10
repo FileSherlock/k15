@@ -10,7 +10,8 @@
                         PORTS=1024-32767,61000-65535,auto binds each connection to the next free
                         source port of those ranges, then lets the kernel pick ("auto", the
                         default); bind explicitly only outside the kernel's ephemeral range, or
-                        every other program on the host runs out of ports.
+                        every other program on the host runs out of ports. "LO-HI/STEP" takes
+                        every STEP-th port of a range (a sample of the server's slots).
   load.py burst K[,K..] K clients connect at the same moment, each fetches the page, all stay
                         open, then each fetches it again over the same connection
   load.py seq N         N fresh connections, one after another (handshake rate)
@@ -113,8 +114,9 @@ async def hold(limit):
             if part == "auto":
                 while True:
                     yield 0
+            part, _, step = part.partition("/")
             lo, hi = map(int, part.split("-"))
-            yield from range(lo, hi + 1)
+            yield from range(lo, hi + 1, int(step or 1))
     srcs = sources()
 
     async def opener():

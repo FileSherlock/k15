@@ -20,7 +20,7 @@ static u32 sl(u8 *o, const u8 *m, u32 n, const u8 *kiv, u32 seq)
 }
 
 extern u8 E[], K[], REGS[];
-enum { R_NINE = 5 * 36, R_X2 = 7 * 36, R_Z2 = 8 * 36, R_U = 15 * 36 }; /* as in tools/ec.py */
+enum { R_NINE = 10 * 36, R_X2 = 1 * 36, R_Z2 = 2 * 36, R_U = 0 * 36 }; /* as in tools/ec.py */
 static void xdh(u8 *out, const u8 *u) { ASMCALL(x25519, "+S"(u)); memcpy(out, REGS + R_X2, 32); }
 
 static void hex(const char *tag, const u8 *p, u32 n)

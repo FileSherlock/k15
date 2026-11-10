@@ -35,6 +35,15 @@ The image contains the private key: `build/` and `cert/` are secrets and are not
 - `./score.sh [image] [max]` boots the image and runs `tools/load.py hold` (same test as k1:
   every unprivileged client port, 4 handshakes in flight, fetches over every connection at
   64, 128, 256, ...). `PORTS=auto` keeps to the ephemeral range (28,232 connections).
+  `QUICK=1 ./score.sh` is the development check (~35 s): ~800 connections on ports sampled
+  over the whole range. The full run only says more after TCP, slot or memory changes.
+- `unshare -Urn ./tap.sh ./taprunc.sh [PER] [BASE_PORT] [W]` runs the hold test over a tap
+  interface with `tools/tapc.c` (k1's epoll + OpenSSL client, here verifying chain and name):
+  W source IPs (10.0.2.32-47, one slot table each) x PER connections, all open at once. No
+  root needed: the tap lives in a throwaway user + network namespace (so it takes none of the
+  host's ports and other tests can run next to it). It is how to get past one IP's 64.5K
+  ports; the rate is still the guest's, ~28 handshakes a second (1,200 from 4 IPs: 42 s).
+  The image is the same one: tap.sh makes the host cope (see its header). KVM=1 doesn't help.
   `tools/load.py` also has `burst K`, `seq N` (handshake rate) and `ka N` (keep-alive).
 - `make test` checks the asm crypto (`src/os.asm` built with `-DHOST`, driven by
   `test/test_asm.c` in a 32-bit process) against pyca/cryptography, X25519 and ECDSA
@@ -42,12 +51,20 @@ The image contains the private key: `build/` and `cert/` are secrets and are not
 - `tools/tbcheck.py build/os.lst` (run by measure.sh): TCG jump-cache collisions, as in k1.
 
 ## Machine contract (what measure.sh boots; `tools/vm.sh`)
-`qemu-system-x86_64 -nodefaults -cpu max -m 16 -kernel build/os.bin -netdev user,hostfwd=tcp::8443-:443 -device ne2k_isa,netdev=n0`
+`qemu-system-x86_64 -nodefaults -cpu max -m 160 -kernel build/os.bin -netdev user,hostfwd=tcp::8443-:443 -device ne2k_isa,netdev=n0`
+`-m 160` since 2026-11-10 (was 16): the low nibble of the client's IP picks one of 16 slot
+tables of 8 MiB, from 8 MiB up (slirp's 10.0.2.2 uses the one at 24 MiB), as in k1.
 `-cpu max` because of `rdrand` (qemu64 has none). `KVM=1` before any test script switches to
 `-accel kvm -cpu host` (/dev/kvm works on this machine since 2026-11-10), but it is not the
 contract and barely helps: port I/O to the NE2000 costs a VM exit per byte (handshakes 26 ->
-34 per second, keep-alive requests 8,500 -> 800 per second). Otherwise as k1: ISA NE2000 at 0x300,
+39 per second, keep-alive requests 7,500 -> 800 per second). Otherwise as k1: ISA NE2000 at 0x300,
 polled, guest IP 10.0.2.15, MAC 0, promiscuous.
+
+Where test time goes (profiled 2026-11-10): the guest. One handshake costs it ~40 ms under
+TCG (~8 ms of that natively, so KVM is bounded by its exits), the Python client uses 4% of a
+core, and a full-port run is 64.5K handshakes one after another. Above ~15,000 open
+connections slirp adds to it: QEMU's main loop walks every socket (a full core at 25,000)
+and the rate drops from 28 to 20 per second and falling.
 
 ## The certificate (`tools/gen.py`, `cert/`)
 - `cert/server.key` (ECDSA P-256) and `cert/server.pem` (leaf, then intermediates) are the
@@ -65,7 +82,9 @@ polled, guest IP 10.0.2.15, MAC 0, promiscuous.
 
 ## Layout
 - `src/os.asm`: everything. Buffers at fixed addresses from 2 MiB; 128-byte connection slots
-  at 8 MiB, one per client port (server key|iv, client key|iv); ClientHello buckets at 4 MiB.
+  from 8 MiB, one per client port and IP nibble (server key|iv, client key|iv); ClientHello
+  buckets at 4 MiB (keyed by slirp's ISN pattern: over tap, ISNs are random, so a ClientHello
+  that spans segments can collide with another in flight; tapc's fits one segment).
 - `tools/ec.py`: the curve code's other half. The asm has one Montgomery multiplication
   (R = 2^288, 9 limbs), plain 9-limb add/subtract, and a 16-register machine that runs
   2-byte operations; the X25519 ladder, the P-256 x-only ladder and the ECDSA formula are
@@ -76,6 +95,16 @@ polled, guest IP 10.0.2.15, MAC 0, promiscuous.
 - `tools/vm.sh`: QEMU command line and curl options, sourced by the three test scripts
 - `tools/ffcheck.py` (Firefox via Marionette), `tools/nssdb.py` (an NSS database trusting
   our CA, for both browsers, without certutil), `tools/certerr.py` (Chrome net-log flags)
+
+## Calls through interrupt gates
+Routines called from several places, and not from inner loops, are reached with `int n`
+(2 bytes; `int1` and `int3` are 1) instead of `call` (5): `icall name` in the source, `fret`
+(iret) to return, the list is `GATELIST`. Boot builds the IDT after the moduli (2 bytes of
+table per gate; cs = 8 is what QEMU's multiboot loader leaves, and its GDT stays in place).
+A gated routine can take flags in but not return them. An `int` costs ~1 us under TCG:
+`cswap` (2,300 calls per handshake) was tried and cost 6% of the handshake rate for 4 bytes;
+`sigma`, `mulrow`, `montmul`, `vm` and `wnext` are hotter still. The host test build
+(`-DHOST`) turns `icall`/`fret` back into `call`/`ret`.
 
 ## How the curve code stays small
 - No reduction, no comparison, anywhere: mul gives a b / R mod m below 2m for inputs below
