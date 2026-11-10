@@ -1,9 +1,10 @@
-; os.asm - bare-metal HTTPS server, flat multiboot image (nasm -f bin)
+; os.asm - bare-metal HTTPS server, flat image loaded at 1 MiB (nasm -f bin)
 ;
-; Boot: multiboot v1 "a.out kludge", loaded at 1 MiB by `qemu -kernel`.
-; NIC:  ISA NE2000 at port 0x300, polled.  Network: slirp (10.0.2.15).
+; Boot: by src/boot.asm from a disk, or as a multiboot v1 "a.out kludge" kernel (GRUB,
+;       `qemu -kernel`). Sets up its own segments, stack and zeroed memory.
+; NIC:  virtio-net (modern PCI interface), polled. Our IP is baked in (OURIP).
 ; TLS:  1.3, TLS_CHACHA20_POLY1305_SHA256, X25519, ecdsa_secp256r1_sha256.
-; Unlike k1 this one is meant to be secure: a fresh X25519 key and a fresh ECDSA nonce per
+; Like k2, and unlike k1, this one is meant to be secure: a fresh X25519 key and a fresh ECDSA nonce per
 ; handshake (rdrand), a real certificate chain, and client records are authenticated before
 ; they get an answer. See CLAUDE.md for the shortcuts that remain.
 ;
@@ -45,6 +46,20 @@ M25519  equ MP256 + 44      ; and 2^255 - 19
 IDT     equ M25519 + 40 - 1*8 ; interrupt gates, from vector 1 (built at boot)
 REGS    equ BSS + 0x0E400   ; the curve machine's 16 registers of 9 limbs (not in the image's
                             ; page: TCG takes a slow path for every write to a page with code)
+VST     equ BSS + 0x0F000   ; virtio-net driver state:
+VCAP    equ VST + 96        ;   where the device's structures are, by type (1 common, 2 notify, 4 device)
+VMUL    equ VST + 128       ;   (the dword read after each: for notify, its offset multiplier)
+MAC     equ VST + 4         ;   our MAC address (6 bytes, from the device)
+Q0      equ VST + 16        ;   receive queue: desc, avail, used (addresses), size - 1, used entries seen, notify address
+Q1      equ VST + 48        ;   transmit queue, the same
+KST     equ VST + 160       ;   reset knock: 1 after the first port (development builds)
+VQ      equ 0x9000000       ; the two rings, 64 KiB apart (enough for queues of 1024)
+RXB     equ 0x9100000       ; receive buffers, 2 KiB each (12-byte virtio header + frame)
+TXB     equ 0x9400000       ; transmit buffers, the same
+MEMEND  equ 0xA000000       ; all of the above is below 160 MiB: that much is zeroed at boot
+%ifndef OURIP
+%define OURIP 0x0F02000A    ; 10.0.2.15, as it is on the wire (make IP=a.b.c.d)
+%endif
 CHB     equ 0x400000        ; ClientHello reassembly: 1024 x 4 KiB, by slirp's initial seq
 CONNS   equ 0x800000        ; 16 tables of 65536 connections x 128 bytes: one slot per client
                             ; port, one table (8 MiB) per low nibble of the client's IP: up to 136 MiB
@@ -117,7 +132,22 @@ mb:     dd 0x1BADB002, 0x00010000, -(0x1BADB002 + 0x00010000)
         dd mb, mb, 0, 0, start
 
 ; ----------------------------------------------------------------------------
-start:                          ; QEMU's multiboot loader leaves esp = 0x6f10: good enough
+start:                          ; Entered in 32-bit protected mode by whoever loaded us at 1 MiB
+        cli                     ; (boot.asm, GRUB's or QEMU's multiboot). Nothing else is
+        cld                     ; assumed: our own segments (the interrupt gates name code
+        lgdt [GDTR]             ; selector 8), our own stack, and memory we zero ourselves
+        jmp 8:.cs               ; (a loader, or the system that ran before a reboot, used it).
+.cs:    push 16
+        pop eax
+        mov ds, eax
+        mov es, eax
+        mov ss, eax
+        mov esp, BSS            ; the stack grows down from 2 MiB (the image ends far below)
+        xor eax, eax
+        mov edi, BSS
+        mov ecx, (MEMEND - BSS) / 4
+        rep stosd
+        fninit
 %endif
 ; shaconst: SHA-256 constants from their definition: KT[i] = frac(cbrt(prime i)) * 2^32
 ; (Newton's method, so only exactly rounded x87 ops), HT[i] = frac(sqrt(prime i)) * 2^32.
@@ -161,21 +191,9 @@ shaconst:
         bt edi, 8               ; KT is 512-aligned: bit 8 first sets at KT+256
         jnc .np
         pop eax
-%ifdef HOST
         mov esi, REGC
         xor ecx, ecx
-%else
-        mov esi, nicinit        ; NE2000 setup: (register, value) pairs
-        mov dh, 3
-        push 7
-        pop ecx
-.ni:    lodsw
-        mov dl, al
-        mov al, ah
-        out dx, al
-        loop .ni
-%endif
-        mov edi, R_GX           ; the constant registers follow nicinit: x(G) R, 4b R, d R, 1
+        mov edi, R_GX           ; the constant registers: x(G) R, 4b R, d R, 1
 .cr:    mov cl, 32              ; three of them, 8 limbs each: the 9th stays 0
         rep movsb
         scasd
@@ -232,69 +250,219 @@ shaconst:
         loop .gt
         lidt [esi]
 
-        xor ebx, ebx            ; FR: unsolicited ARP reply "10.0.2.15 is at <whatever MAC>"
-        mov word [ebx+12], 0x0608 ; (the MAC is IVT junk: fine, the NIC is promiscuous)
-        mov word [ebx+20], 0x0200
-        mov dword [ebx+28], 0x0f02000a
-        push 42
-        pop ecx
-        icall nic_send
-
-        mov bl, 0x46            ; next page to read (PSTART); dh = 3 from here on
-.poll:  mov dl, 0
-        mov al, 0x40
-        out dx, al              ; register page 1
-        mov dl, 7
-        in al, dx               ; CURR: page the NIC will write next
-        cmp al, bl
-        je .poll
-        mov dl, 0
-        xor eax, eax
-        out dx, al              ; register page 0
-        mov dl, 8
-        out dx, al              ; remote DMA address = next page << 8
-        inc edx
-        mov al, bl
-        out dx, al
-        mov dl, 0x10
-        in eax, dx              ; packet header: status, next page, length (QEMU allows 32-bit)
-        mov bl, ah
+        ; virtio-net, modern interface (virtio 1.0; what a cloud's 1AF4:1041 speaks, and a
+        ; transitional 1AF4:1000 too): the registers are memory, found through the device's
+        ; PCI capabilities. Two queues (0 receive, 1 transmit); descriptor i always points
+        ; at buffer i.
+        mov ebx, 0x80000000     ; PCI configuration address: bus 0, device 0, function 0
+.pci:   xor eax, eax
+        call pcird
+        cmp ax, 0x1AF4
+        jne .next
         shr eax, 16
-        xchg eax, ecx           ; (reads 4 bytes past the frame: harmless)
+        cmp ax, 0x1041
+        je .dev
+        cmp ax, 0x1000
+        je .dev
+.next:  add ebx, 0x100          ; next function, device, bus (the card sits behind a bridge)
+        jmp .pci
+.dev:   push 4
+        pop eax
+        call pcird
+        or al, 7                ; command: I/O, memory, bus master
+        out dx, ax
+        push 0x34
+        pop eax
+        call pcird
+        xchg eax, esi           ; capability list
+.cap:   and esi, 0xFC
+        jz .caps
+        mov eax, esi
+        call pcird              ; id | next | length | type (1 common, 2 notify, 4 device)
+        mov ecx, eax
+        cmp al, 9               ; vendor-specific: a virtio structure
+        jne .nxt
+        shr eax, 24
+        cmp al, 4
+        ja .nxt
+        lea ebp, [VCAP+eax*4]
+        cmp dword [ebp], 0      ; the first of each kind counts
+        jne .nxt
+        lea eax, [esi+4]
+        call pcird
+        movzx eax, al           ; which BAR
+        lea eax, [eax*4+0x10]
+        call pcird
+        and eax, -16
+        xchg eax, edi
+        lea eax, [esi+8]
+        call pcird              ; offset inside it
+        add eax, edi
+        mov [ebp], eax
+        lea eax, [esi+16]
+        call pcird              ; (notify: the multiplier for queue_notify_off)
+        mov [ebp+VMUL-VCAP], eax
+.nxt:   movzx esi, ch
+        jmp .cap
+.caps:  mov ebp, [VCAP+4]       ; common configuration
+        mov byte [ebp+20], 0    ; status 0: reset
+        mov byte [ebp+20], 3    ; ACKNOWLEDGE | DRIVER
+        xor eax, eax
+        inc eax
+        mov [ebp+8], eax        ; features, word 1: VERSION_1 (bit 32), nothing else:
+        mov [ebp+12], eax       ; plain frames behind a 12-byte header
+        dec eax
+        mov [ebp+8], eax
+        mov [ebp+12], eax
+        mov byte [ebp+20], 11   ; FEATURES_OK
+        mov esi, [VCAP+16]      ; device configuration: the MAC comes first
+        mov edi, MAC
+        movsd
+        movsw
+        xor ebx, ebx            ; queue
+.q:     mov [ebp+22], bx        ; select it
+        movzx ecx, word [ebp+24] ; its size N (a power of two)
+        cmp ecx, 1024
+        jbe .n
+        mov ecx, 1024           ; (what our ring area holds)
+        mov [ebp+24], cx
+.n:     mov esi, ebx
+        shl esi, 5
+        add esi, Q0             ; our notes on this queue
+        mov edi, ebx
+        shl edi, 16
+        add edi, VQ
+        mov [esi], edi          ; descriptors: 16 N bytes
+        mov [ebp+32], edi
+        lea eax, [ecx-1]
+        mov [esi+12], eax
+        mov eax, ecx
+        shl eax, 4
+        add eax, edi
+        mov [esi+4], eax        ; available ring: flags, idx, N entries
+        mov [ebp+40], eax
+        lea eax, [eax+ecx*2+6+4095]
+        and eax, -4096
+        mov [esi+8], eax        ; used ring: flags, idx, N x (id, length)
+        mov [ebp+48], eax
+        push ecx
+        imul eax, ebx, TXB - RXB
+        add eax, RXB
+        mov edx, ebx
+        xor dl, 1
+        shl edx, 1              ; receive buffers are for the device to write (flag 2)
+.desc:  mov [edi], eax
+        mov dword [edi+8], 2048
+        mov [edi+12], edx
+        add eax, 2048
+        add edi, 16
+        loop .desc
+        pop ecx
+        test ebx, ebx
+        jnz .en
+        mov edi, [esi+4]        ; receive: hand all N buffers to the device
+        mov [edi+2], cx
+        xor eax, eax
+.av:    mov [edi+4+eax*2], ax
+        inc eax
+        cmp eax, ecx
+        jb .av
+.en:    movzx eax, word [ebp+30] ; where to notify the device about this queue
+        imul eax, [VMUL+8]
+        add eax, [VCAP+8]
+        mov [esi+20], eax
+        mov word [ebp+28], 1    ; enable
+        inc ebx
+        cmp bl, 2
+        jb .q
+        mov byte [ebp+20], 15   ; DRIVER_OK
+        mov edx, [Q0+20]
+        mov word [edx], 0       ; notify queue 0: there are buffers
+
+.poll:  pause
+        mov esi, [Q0+8]         ; used ring: anything new?
+        mov eax, [Q0+16]
+        cmp ax, [esi+2]
+        je .poll
+        inc dword [Q0+16]
+        and eax, [Q0+12]
+        mov edx, [esi+4+eax*8]  ; buffer id
+        mov ecx, [esi+8+eax*8]  ; bytes written, header included
+        mov esi, edx
+        and esi, [Q0+12]        ; (id and length are the device's: keep both inside our buffers)
+        shl esi, 11
+        add esi, RXB + 12
+        sub ecx, 12
+        and ecx, 2047
         xor edi, edi            ; FR
-        rep insb
-        mov al, bl
-        mov dl, 3
-        out dx, al              ; BNRY: free what we read
-        pushad
+        rep movsb
+        mov esi, [Q0+4]         ; give the buffer back
+        movzx eax, word [esi+2]
+        and eax, [Q0+12]
+        mov [esi+4+eax*2], dx
+        inc word [esi+2]
+        mov esi, [Q0+8]
+        test byte [esi], 1      ; the device says when it doesn't need to be told
+        jnz .nk
+        mov edx, [Q0+20]
+        mov word [edx], 0
+.nk:    pushad
         icall tcp
         popad
         jmp .poll
 
-; nic_send: transmit ecx bytes from FR
+; pcird: eax = PCI configuration dword at register eax of the device at ebx (dx = 0xCFC after)
+pcird:  and al, 0xFC
+        add eax, ebx
+        mov dx, 0xCF8
+        out dx, eax
+        mov dl, 0xFC
+        in eax, dx
+        ret
+
+; ethfix: Ethernet header of the frame in FR for sending it back: to its sender, from us
+ethfix: pushad
+        xor edi, edi
+        lea esi, [edi+6]
+        movsd
+        movsw
+        mov esi, MAC
+        movsd
+        movsw
+        popad
+        ret
+
+; nic_send: transmit ecx bytes from FR. Each frame gets its own buffer, the next of N in a
+; circle; if the device still has all N, wait for it.
 nic_send:
         pushad
-        mov dx, 0x308
-        xor eax, eax
-        out dx, al              ; remote DMA address 0x4000 (TX page)
-        inc edx
-        mov al, 0x40
-        out dx, al
-        mov dl, 0x0b
-        out dx, al              ; remote byte count high = 0x40: enough for a full frame
-        mov dl, 0x10
+        mov ebx, [Q1+4]         ; available ring
+        mov esi, [Q1+8]         ; used ring
+        movzx eax, word [ebx+2]
+.full:  mov edx, eax
+        sub dx, [esi+2]
+        cmp dx, [Q1+12]
+        ja .full
+        and eax, [Q1+12]        ; buffer = descriptor = ring position
+        mov [ebx+4+eax*2], ax
+        mov edi, eax
+        shl edi, 4
+        add edi, [Q1]
+        lea edx, [ecx+12]
+        mov [edi+8], edx        ; length with the header (12 zero bytes: nobody writes there)
+        mov edi, eax
+        shl edi, 11
+        add edi, TXB + 12
+        push esi
         xor esi, esi            ; FR
-        rep outsb
-        xchg eax, esi           ; = length, since FR = 0
-        mov dl, 5
-        out dx, al              ; transmit byte count
-        inc edx
-        mov al, ah
-        out dx, al
-        mov dl, 0
-        mov al, 4
-        out dx, al              ; transmit
-        popad
+        rep movsb
+        pop esi
+        inc word [ebx+2]
+        test byte [esi], 1
+        jnz .nk
+        mov edx, [Q1+20]
+        mov word [edx], 1       ; notify queue 1
+.nk:    popad
 nsret:  fret
 
 ; ----------------------------------------------------------------------------
@@ -303,7 +471,53 @@ nsret:  fret
 ; NIC dropped while we were busy) are only re-acked.
 tcp:
         xor ebx, ebx            ; FR
-        cmp byte [ebx+13], 0    ; IPv4 only (slirp also sends ARP and IPv6)
+        cmp word [ebx+12], 0x0608
+        jne .ip
+        cmp word [ebx+20], 0x0100 ; ARP request for our address: answer it
+        jne nsret
+        cmp dword [ebx+38], OURIP
+        jne nsret
+        mov byte [ebx+21], 2    ; reply: the sender becomes the target, we are the sender
+        lea esi, [ebx+22]
+        lea edi, [ebx+32]
+        push 10
+        pop ecx
+        rep movsb
+        mov esi, MAC
+        lea edi, [ebx+22]
+        movsd
+        movsw
+        mov dword [edi], OURIP
+        call ethfix
+        mov cl, 42
+        jmp nic_send
+.ip:    cmp word [ebx+12], 0x0008 ; IPv4, no options, not a fragment, TCP, to us, port 443:
+        jne nsret               ; nothing else gets any further
+        cmp byte [ebx+14], 0x45
+        jne nsret
+        test word [ebx+20], 0xFF3F
+        jnz nsret
+        cmp byte [ebx+23], 6
+        jne nsret
+        cmp dword [ebx+30], OURIP
+        jne nsret
+%ifdef KNOCK_A                  ; development builds only (make KNOCK=a,b): a packet to port a,
+        movzx eax, word [ebx+36] ; then one to port b, resets the machine, so a test server
+        xchg al, ah             ; comes back up in whatever its disk boots by default
+        cmp eax, KNOCK_A
+        jne .kb
+        mov byte [KST], 1
+.kb:    cmp eax, KNOCK_B
+        jne .nok
+        cmp byte [KST], 1
+        jne .nok
+        mov al, 0xFE
+        out 0x64, al            ; keyboard controller: pulse the reset line
+        lidt [KST+4]            ; (and if that does nothing: no IDT, then a fault)
+        int3
+.nok:
+%endif
+        cmp word [ebx+36], 0xBB01
         jne nsret
         movzx eax, byte [ebx+46]
         shr eax, 2              ; TCP header length
@@ -317,7 +531,8 @@ tcp:
         and al, 15              ; (bounded: a client can't aim this anywhere else)
         shl eax, 24
         add ebp, eax
-        shr ebp, 1              ; connection slot: CONNS + 7 + (nibble * 65536 + port (bytes swapped)) * 128
+        shr ebp, 1              ; connection slot: CONNS + (nibble * 65536 + port (bytes swapped)) * 128
+        and ebp, -128           ; (without what the last byte of our IP left in the low bits)
         mov dl, [ebx+47]        ; flags
         mov eax, [ebx+42]
         xchg eax, [ebx+38]      ; our seq = their ack; eax = their seq
@@ -343,6 +558,7 @@ tcp:
         xchg eax, [ebx+30]
         mov [ebx+26], eax       ; swap IP addresses
         rol dword [ebx+34], 16  ; swap ports
+        call ethfix
         mov edi, OB             ; edi = end of our output
         push edi
         cmp [ebp+C_ST], ebx
@@ -1377,11 +1593,15 @@ SIGMA:  db "expand 32-byte k"
 
 %ifndef HOST
 CVCTX:  db "TLS 1.3, server CertificateVerify", 0
-nicinit: db 1, 0x46, 2, 0xC0, 4, 0x40, 12, 0x10, 0, 0x40, 7, 0x46, 0, 0
-%include "regs.inc"       ; (must follow nicinit: boot copies them with the same esi)
+%include "regs.inc"
 GATES:  gatetable GATELIST ; (must follow regs.inc, and IDTR must follow this)
 IDTR:   dw 8 * (1 + NGATES) - 1
         dd IDT
+GDT:    dq 0
+        dq 0x00CF9A000000FFFF   ; 8: code, flat
+        dq 0x00CF92000000FFFF   ; 16: data, flat
+GDTR:   dw 23
+        dd GDT
 %include "gen.inc"
 SHTAIL: db 0x13, 0x03, 0x00, 0x00, 0x2e, 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04
         db 0x00, 0x33, 0x00, 0x24, 0x00, 0x1d, 0x00, 0x20

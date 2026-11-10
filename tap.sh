@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
-# Boot the image on a tap interface instead of slirp and run a command against it (needs root
-# and /dev/net/tun; from k1). Not the machine contract: a faster way to hold many connections,
-# since slirp walks every open socket on each turn of QEMU's main loop (at 20,000 connections
-# that already takes most of a core and slows the guest).
-# Usage: sudo [B=build] [KVM=1] ./tap.sh COMMAND [ARGS...]     e.g. sudo ./tap.sh ./taprunc.sh
-# The host is 10.0.2.2 plus 10.0.2.32-47; the guest is 10.0.2.15. The image is the unmodified
-# one, so the host does what a tap needs: the guest answers no ARP and sends frames back with
-# the Ethernet header it received, so its permanent neighbour entry is the tap's own MAC; and
-# it takes every IPv4 frame for TCP, so everything else is dropped before it gets there.
+# Boot the image on a tap interface instead of slirp and run a command against it: a real
+# Ethernet segment (ARP, the host's own traffic, random initial sequence numbers), and no
+# slirp walking every open socket. No root needed inside a throwaway namespace:
+# Usage: [B=build] [KVM=1] unshare -Urn ./tap.sh COMMAND [ARGS...]   e.g. ... ./taprunc.sh 2000 1024 4
+# The host is 10.0.2.2 plus 10.0.2.32-47; the guest is 10.0.2.15.
 set -euo pipefail
 cd "$(dirname "$0")"
 export B=${B:-build}
@@ -22,17 +18,11 @@ ip link set "$TAP" multicast off
 ip addr add 10.0.2.2/24 dev "$TAP"
 for i in $(seq 32 47); do ip addr add "10.0.2.$i/24" dev "$TAP"; done
 ip link set "$TAP" up
-MAC=$(ip -o link show "$TAP" | sed -n 's/.*link\/ether \([0-9a-f:]*\).*/\1/p')
-ip neigh replace 10.0.2.15 lladdr "$MAC" dev "$TAP" nud permanent
-tc qdisc add dev "$TAP" clsact
-tc filter add dev "$TAP" egress protocol ip prio 1 flower ip_proto tcp action pass
-tc filter add dev "$TAP" egress protocol ip prio 2 matchall action drop
-
 ACCEL=(-cpu max)
-[[ ${KVM:-} == 1 ]] && ACCEL=(-accel kvm -cpu host)
+[[ ${KVM:-1} == 1 && -w /dev/kvm ]] && ACCEL=(-accel kvm -cpu host)
 LOG=$(mktemp)
-qemu-system-x86_64 -nodefaults -display none -no-reboot "${ACCEL[@]}" -m "${MEM:-160}" -kernel "$IMG" \
-  -netdev "tap,id=n0,ifname=$TAP,script=no,downscript=no" -device ne2k_isa,netdev=n0 >"$LOG" 2>&1 &
+qemu-system-x86_64 -nodefaults -display none -no-reboot -machine q35 "${ACCEL[@]}" -m "${MEM:-160}" -drive "file=${IMG%os.bin}disk.img,format=raw,if=none,id=d0,snapshot=on" \
+  -netdev "tap,id=n0,ifname=$TAP,script=no,downscript=no" -device pcie-root-port,id=rp1,chassis=1 -device virtio-net-pci,bus=rp1,netdev=n0,disable-legacy=on,romfile= -device pcie-root-port,id=rp2,chassis=2 -device virtio-scsi-pci,bus=rp2 -device scsi-hd,drive=d0 >"$LOG" 2>&1 &
 QEMU_PID=$!
 trap 'kill $QEMU_PID 2>/dev/null || true; wait $QEMU_PID 2>/dev/null || true; ip link del '"$TAP"' 2>/dev/null || true; rm -f "$LOG"' EXIT
 
