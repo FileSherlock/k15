@@ -11,6 +11,16 @@ It is the secure sibling of k1 (2,332 bytes), which got that small by having no 
 all. The goal is the same, connections per KiB: `./score.sh` opens TLS connections until the
 client runs out of ports, keeps them all open, and checks that every one serves the page.
 
+| | image | connections at once | score (connections / KiB) |
+|---|---|---|---|
+| k1 (insecure), every client port | 2,332 bytes | 64,491 | 28,319 |
+| k2, ephemeral client ports only (`PORTS=auto ./score.sh`) | 3,364 bytes | 28,232 | 8,594 |
+
+The k2 run stopped because the client was out of ports, not because the server was full:
+all 28,232 connections served the page, each one verifying the certificate. The run over
+every client port (the k1 number's conditions, about 45 minutes) has not been done yet, and
+the image has shrunk to 3,336 bytes since.
+
 ## What is secure, and what is not there
 
 - Every handshake uses a fresh X25519 secret and a fresh ECDSA nonce from `rdrand`, and a
