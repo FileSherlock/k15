@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Score = connections / KiB of image. Builds, boots in QEMU (same machine as measure.sh),
+# every connection verifying the certificate,
 # then `tools/load.py hold` opens TLS connections and keeps them all open, fetching the page
 # over every one at 64, 128, 256, ... open; "connections" is the most that worked at once.
 # Usage: ./score.sh [image] [max connections]   (default: build/os.bin, until out of ports)
@@ -18,18 +19,8 @@ if [[ -z "$IMG" ]]; then
   make -s all >/dev/null
   IMG=build/os.bin
 fi
-LOG=$(mktemp)
-
-qemu-system-x86_64 -nodefaults -display none -no-reboot -m 16 \
-  -kernel "$IMG" \
-  -netdev user,id=n0,hostfwd=tcp:127.0.0.1:${PORT}-:443 \
-  -device ne2k_isa,netdev=n0 >"$LOG" 2>&1 &
-QEMU_PID=$!
-trap 'kill $QEMU_PID 2>/dev/null || true; rm -f "$LOG"' EXIT
-for _ in $(seq 1 40); do
-  curl -ks --max-time 5 -o /dev/null "https://127.0.0.1:${PORT}/" && break
-  sleep 0.25
-done
+source tools/vm.sh
+boot
 
 OUT=$(PORT=$PORT python3 tools/load.py hold ${2:-} | tee /dev/stderr)
 CONN=$(sed -n 's/^connections: \([0-9]*\).*/\1/p' <<<"$OUT")

@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Browser compatibility check (slower than measure.sh; run after protocol/cert changes).
-#  1. Chrome, no flags: cert errors (from its net-log) must all be bypassable ("Proceed" link)
-#  2. Chrome, warning bypassed: must render the page
-#  3. Firefox (via Marionette) with a cert exception in a throwaway profile: must render the page
+# Browser check (slower than measure.sh; run after protocol/cert changes). No certificate
+# error is bypassed anywhere: the browsers must accept the chain and the name.
+#  1. Firefox (via Marionette), our CA imported into a throwaway profile: must render the page
+#  2. Chrome, trusting our CA (HOME points at a throwaway NSS database with it):
+#     must render the page, and its net-log must show no certificate error flags
+#  3. Chrome without our CA: must refuse (so step 2 proves something)
+# With a real certificate in cert/ nothing is imported and step 3 is skipped.
 set -euo pipefail
 cd "$(dirname "$0")"
 PORT=${PORT:-8444}
@@ -10,21 +13,22 @@ IMG=${1:-build/os.bin}
 [[ $# -gt 0 ]] || make -s all >/dev/null
 EXPECT=$(head -c 20 www/index.html)
 TMP=$(mktemp -d)
+source tools/vm.sh
+boot
 
-qemu-system-x86_64 -nodefaults -display none -no-reboot -m 16 -kernel "$IMG" \
-  -netdev user,id=n0,hostfwd=tcp:127.0.0.1:${PORT}-:443 -device ne2k_isa,netdev=n0 >/dev/null 2>&1 &
-QEMU_PID=$!
-trap 'kill $QEMU_PID 2>/dev/null || true; rm -rf "$TMP"' EXIT
-for _ in $(seq 1 40); do curl -ks --max-time 2 -o /dev/null "https://127.0.0.1:${PORT}/" && break; sleep 0.25; done
+mkdir -p "$TMP/home" "$TMP/nohome"
+python3 -I tools/ffcheck.py "$URL" build/ca.pem "$EXPECT"
+[[ -s build/ca.pem ]] && python3 -I tools/nssdb.py "$TMP/home/.pki/nssdb" build/ca.pem
 
-chrome() { timeout 30 google-chrome --headless=new --no-sandbox --user-data-dir="$TMP/c$1" "${@:2}" \
-  --dump-dom "https://127.0.0.1:${PORT}/" 2>/dev/null; }
+chrome() { HOME="$TMP/$1" timeout 60 google-chrome --headless=new --no-sandbox --user-data-dir="$TMP/c$1" \
+  --host-resolver-rules="MAP ${NAME} 127.0.0.1" "${@:2}" --dump-dom "$URL" 2>/dev/null; }
 
-chrome 1 --log-net-log="$TMP/netlog.json" >/dev/null || true
-if FLAGS=$(python3 -I tools/certerr.py "$TMP/netlog.json"); then echo "chrome cert errors: $FLAGS (bypassable) OK"
-else echo "chrome cert errors: $FLAGS -> FAIL (not bypassable)"; exit 1; fi
+if chrome home --log-net-log="$TMP/netlog.json" | grep -qF "$EXPECT"; then echo "chrome page: OK"
+else echo "chrome page: FAIL"; python3 -I tools/certerr.py "$TMP/netlog.json" "$NAME" || true; exit 1; fi
+if FLAGS=$(python3 -I tools/certerr.py "$TMP/netlog.json" "$NAME"); then echo "chrome cert errors: $FLAGS OK"
+else echo "chrome cert errors: $FLAGS -> FAIL"; exit 1; fi
 
-if chrome 2 --ignore-certificate-errors | grep -qF "$EXPECT"; then echo "chrome page: OK"
-else echo "chrome page: FAIL"; exit 1; fi
-
-python3 -I tools/ffcheck.py "https://127.0.0.1:${PORT}/" build/cert.der "$EXPECT"
+if [[ -s build/ca.pem ]]; then
+  if chrome nohome | grep -qF "$EXPECT"; then echo "chrome without our CA: loaded the page -> FAIL"; exit 1
+  else echo "chrome without our CA: refused OK"; fi
+fi

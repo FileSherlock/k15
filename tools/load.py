@@ -28,9 +28,14 @@ PORTS = os.environ.get("PORTS", "")
 EXPECT = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www", "index.html"), "rb").read()
 REQ = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"
 
-CTX = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-CTX.check_hostname = False
-CTX.verify_mode = ssl.CERT_NONE
+# Every connection verifies the server: the chain (against our private CA, or the system's
+# roots if build/ca.pem is empty: a real certificate) and the name in the certificate.
+BUILD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build")
+NAME = open(os.path.join(BUILD, "name")).read()
+CTX = ssl.create_default_context(cafile=os.path.join(BUILD, "ca.pem") if os.path.getsize(os.path.join(BUILD, "ca.pem")) else None)
+# (Python >= 3.13 also turns on OpenSSL's RFC 5280 strictness, which wants an authority key
+# identifier in the leaf: 14+ bytes that curl, Chrome and Firefox don't ask for.)
+CTX.verify_flags &= ~ssl.VERIFY_X509_STRICT
 if os.environ.get("SSLKEYLOGFILE"):
     CTX.keylog_filename = os.environ["SSLKEYLOGFILE"]
 # asyncio's SSL transport allocates a read buffer this big per connection (256 KiB by default):
@@ -48,7 +53,7 @@ def log(*a):
 
 async def connect(src=0):
     return await asyncio.wait_for(
-        asyncio.open_connection(HOST, PORT, ssl=CTX, ssl_handshake_timeout=TIMEOUT,
+        asyncio.open_connection(HOST, PORT, ssl=CTX, server_hostname=NAME, ssl_handshake_timeout=TIMEOUT,
                                 local_addr=(HOST, src) if src else None), TIMEOUT)
 
 

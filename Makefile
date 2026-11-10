@@ -4,8 +4,13 @@ B := build
 all: $(B)/os.bin
 
 # cert/ is made on the first build (a private CA and a leaf) or holds a real certificate
-GEN := $(B)/gen.inc $(B)/ec.inc
-$(GEN) &: tools/gen.py tools/ec.py www/index.html $(wildcard cert/server.*)
+GEN := $(B)/gen.inc $(B)/ec.inc $(B)/regs.inc
+CERT := cert/server.key cert/server.pem
+$(CERT) &:
+	@mkdir -p $(B)
+	python3 tools/gen.py www/index.html $(B)
+
+$(GEN) &: tools/gen.py tools/ec.py www/index.html $(CERT)
 	@mkdir -p $(B)
 	python3 tools/gen.py www/index.html $(B)
 

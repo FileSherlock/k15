@@ -39,6 +39,8 @@ EXP     equ BSS + 0x0E080   ; exponent for inv: modulus - 2
 E       equ BSS + 0x0E100   ; our X25519 secret (32 bytes), then
 K       equ E + 32          ; the ECDSA nonce (32 bytes, and 4 zero bytes: it is read as 9 limbs)
 DHS     equ BSS + 0x0E180   ; X25519 shared secret
+REGS    equ BSS + 0x0E400   ; the curve machine's 16 registers of 9 limbs (not in the image's
+                            ; page: TCG takes a slow path for every write to a page with code)
 CHB     equ 0x400000        ; ClientHello reassembly: 1024 x 4 KiB, by slirp's initial seq
 CONNS   equ 0x800000        ; 65536 connections x 128 bytes: one slot per client port
 
@@ -62,7 +64,7 @@ C_KIV   equ 12              ; application key | 0 counter | iv (+20 bytes of jun
 %else
         org 0x100000
 mb:     dd 0x1BADB002, 0x00010000, -(0x1BADB002 + 0x00010000)
-        dd mb, mb, 0, REGS+16*36, start ; bss_end: the loader zero-fills the registers after ONE
+        dd mb, mb, 0, 0, start
 
 ; ----------------------------------------------------------------------------
 start:                          ; QEMU's multiboot loader leaves esp = 0x6f10: good enough
@@ -112,6 +114,11 @@ shaconst:
         mov dword [R_A24+4], 4623270 ; 121665 R mod 2^255 - 19 (R = 2^288 = 38 * 2^32)
         mov byte [R_NINE], 9    ; the X25519 base point
 %ifdef HOST
+        mov esi, REGC
+        mov edi, REGS
+        push REGC_LEN
+        pop ecx
+        rep movsb
         popad
         ret
 %else
@@ -124,6 +131,9 @@ shaconst:
         mov al, ah
         out dx, al
         loop .ni
+        mov edi, REGS           ; the constant registers follow nicinit: x(G) R, 4b R, d R, 1
+        mov cl, REGC_LEN
+        rep movsb
 
         xor ebx, ebx            ; FR: unsolicited ARP reply "10.0.2.15 is at <whatever MAC>"
         mov word [ebx+12], 0x0608 ; (the MAC is IVT junk: fine, the NIC is promiscuous)
@@ -776,10 +786,7 @@ expand:
 ; Elliptic curves: 256-bit arithmetic mod m, lazily reduced, in a 16-register machine.
 ; tools/ec.py has the programs, the bounds that make this safe, and a model of all of it.
 ; A modulus is: m (8 dwords) | 0 | -1/m mod 2^32, with a zero byte in front; ebp points at it.
-R_GX    equ REGS                ; constants from the image (build/ec.inc) ...
-R_D     equ REGS + 2*36
-R_ONE   equ REGS + 3*36
-R_ZERO  equ REGS + 4*36         ; ... and bss
+                                ; 0-3: x(G) R, 4b R, d R, 1 (copied from the image at boot)
 R_X2    equ REGS + 5*36         ; r after sigr
 R_Z2    equ REGS + 6*36         ; s after SIGN
 R_T0    equ REGS + 9*36
@@ -1249,15 +1256,11 @@ SIGMA:  db "expand 32-byte k"
 %ifndef HOST
 CVCTX:  db "TLS 1.3, server CertificateVerify", 0
 nicinit: db 1, 0x46, 2, 0xC0, 4, 0x40, 12, 0x10, 0, 0x40, 7, 0x46, 0, 0
+%include "build/regs.inc"       ; (must follow nicinit: boot copies them with the same esi)
 %include "build/gen.inc"
 SHTAIL: db 0x13, 0x03, 0x00, 0x00, 0x2e, 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04
         db 0x00, 0x33, 0x00, 0x24, 0x00, 0x1d, 0x00, 0x20
+%else
+%include "build/regs.inc"
 %endif
-%ifdef HOST
-        section .data           ; (the registers are written to)
-%endif
-%include "build/ec.inc"         ; curve programs, moduli, and (last) the constant registers:
-                                ; REGS: x(G) R | 4b R | d R | ONE = 1, the rest is bss
-%ifdef HOST
-        times 13*36 db 0
-%endif
+%include "build/ec.inc"         ; curve programs and moduli
