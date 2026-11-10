@@ -1,0 +1,4 @@
+# everything in build/ is generated; cert/ holds private keys (made on the first build)
+build/
+cert/
+__pycache__/
