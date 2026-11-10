@@ -43,7 +43,10 @@ The image contains the private key: `build/` and `cert/` are secrets and are not
 
 ## Machine contract (what measure.sh boots; `tools/vm.sh`)
 `qemu-system-x86_64 -nodefaults -cpu max -m 16 -kernel build/os.bin -netdev user,hostfwd=tcp::8443-:443 -device ne2k_isa,netdev=n0`
-`-cpu max` because of `rdrand` (qemu64 has none). Otherwise as k1: ISA NE2000 at 0x300,
+`-cpu max` because of `rdrand` (qemu64 has none). `KVM=1` before any test script switches to
+`-accel kvm -cpu host` (/dev/kvm works on this machine since 2026-11-10), but it is not the
+contract and barely helps: port I/O to the NE2000 costs a VM exit per byte (handshakes 26 ->
+34 per second, keep-alive requests 8,500 -> 800 per second). Otherwise as k1: ISA NE2000 at 0x300,
 polled, guest IP 10.0.2.15, MAC 0, promiscuous.
 
 ## The certificate (`tools/gen.py`, `cert/`)

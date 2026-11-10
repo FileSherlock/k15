@@ -11,9 +11,16 @@ CURL=(curl -s --max-time 10)
 NOCA=("${CURL[@]}")                                    # the same, trusting only the system's roots
 [[ -s $B/ca.pem ]] && CURL+=(--cacert "$B/ca.pem")
 
+# KVM=1 uses hardware virtualisation instead of emulation. It is not the default: the curve
+# math gets much faster, but every byte to or from the NE2000 is a port access, which costs a
+# VM exit each, so handshakes only go from ~26 to ~34 per second and keep-alive requests
+# drop from ~8,500 to ~800 per second (Ryzen 7 3800X).
+ACCEL=(-cpu max)
+[[ ${KVM:-} == 1 ]] && ACCEL=(-accel kvm -cpu host)
+
 boot() {
   QEMU_LOG=$(mktemp)
-  qemu-system-x86_64 -nodefaults -display none -no-reboot -cpu max -m 16 \
+  qemu-system-x86_64 -nodefaults -display none -no-reboot "${ACCEL[@]}" -m 16 \
     -kernel "$IMG" \
     -netdev user,id=n0,hostfwd=tcp:127.0.0.1:${PORT}-:443 \
     -device ne2k_isa,netdev=n0 >"$QEMU_LOG" 2>&1 &
