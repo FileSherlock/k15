@@ -68,6 +68,8 @@ static void want(conn *c, int ev) {
 }
 
 static void fail(conn *c) {
+    static const char *const what[] = {"unused", "connecting", "handshake", "idle", "request", "response", "failed"};
+    fprintf(stderr, "FAILED: %s port %d while in %s\n", inet_ntoa(src.sin_addr), ntohs(src.sin_port) + (int)(c - C), what[c->st]);
     if (c->st == CONNECTING || c->st == HANDSHAKE) hs_err++, inflight--;
     else if (c->st == REQUEST || c->st == RESPONSE) get_err++, inflight--, opened--;
     else if (c->st == IDLE) closed_err++, opened--;

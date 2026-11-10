@@ -6,7 +6,7 @@ taken off its machine contract and put on a Hetzner cloud server. Decided with t
 - the load is k6-style: ramp to N users in 60 s, hold, under 1% errors
 - plain HTTP on port 80 (for the connection count) and HTTPS on 443 (as fast as it will go)
 - size comes later ("we can optimize more later"): correctness and capacity first. The image
-  is still one assembly file and still small (4,755 bytes); don't golf it, don't bloat it.
+  is still one assembly file and still small (4,938 bytes); don't golf it, don't bloat it.
 - security as in k2 (below) still holds for everything behind TLS
 
 ## Where it stands
@@ -33,8 +33,11 @@ Steps 1 (virtio-net) and 2 (boot on the server) are done. Next:
   be able to choose collisions), slots freed on FIN/RST, something sane when a SYN flood
   fills it. A SYN on an open connection still wipes it. 32-bit code reaches the 2 GiB of RAM
   below 4 GiB: 8M slots are 1.28 GiB.
-- Our SYN-ACK has no options (so no MSS: peers assume 536) and our window is whatever the
-  client's last window field said. Send an MSS option and a fixed window.
+- MSS and window: done. The SYN-ACK carries an MSS option (1460) and every segment a
+  window of 65535; our segments are cut to the client's MSS, rounded down to one of 216,
+  536, 1220, 1440 (`MSSTAB`; four sizes so that two bits can carry it). Over tap with an
+  MTU of 300 (tapc's ClientHello is 1460 bytes: six segments; our flight: three) and 3% loss
+  each way: 2,000 of 2,000 served.
 - Port 80: the same static page without TLS. Everything not 443 is dropped today.
 - Not yet checked against a real browser over the internet (only curl and tapc).
 
@@ -183,10 +186,12 @@ records start (`C_APP`) and the client's last ack (`C_ACK`).
   again under the same sequence number): old data arriving again with an ack below `C_SND`
   (the client's request is unacknowledged because our answer carried the ack), or the same
   ack below `C_SND` twice without data (the client got something behind a hole).
-- For an answer of several segments only the last one acknowledges the client's data, so a
-  lost tail leaves the request outstanding and the client asks again. What is not covered
-  without a timer: a hole whose repair is lost again while the client has nothing
-  outstanding (two losses in one answer of 3+ segments).
+- An answer of several segments does not acknowledge the client's data at all (`tcp_send`,
+  `C_DEFER`); that is done when the client's ack shows it has the whole answer. Until then
+  the client keeps retransmitting its data, whichever of our segments were lost, so a
+  flight of several segments needs no timer either. (Acknowledging with the last segment
+  was not enough: a hole in the middle plus the loss of the client's one duplicate ack
+  left it with nothing outstanding. Seen at 4 in 2,000 with 3% loss.)
 - A retransmitted ClientHello must get the same flight, not a new handshake: the client may
   have the first one already (its retransmission was only early), and would then hold keys
   we no longer have.
@@ -231,7 +236,7 @@ are step 3's job.
 - The server random is the client's, nudged. Freshness comes from our key share.
 - No check for an all-zero X25519 result (a client can only weaken its own connection).
 - No alerts, no close_notify, no KeyUpdate, no session tickets.
-- TCP: no options (so no MSS: peers assume 536), our window is the client's, a FIN is
+- TCP: no SACK, timestamps or window scaling, a FIN is
   answered with a FIN and the slot stays closed until the next SYN for it, RST is ignored,
   no timers (a client that disappears keeps its slot). Bare-LF HTTP response.
 - `keys` writes 20 junk bytes after an IV: the handshake makes both key blocks in `KA` and
@@ -251,6 +256,12 @@ are step 3's job.
 - nasm: a non-local label ends the scope of `.local` labels (a helper dropped between
   `start` and its `.poll` broke the build with hundreds of errors). Read the first error.
 - QEMU keeps the image open: rebuilding under a running VM doesn't change it.
+- netem drops a whole GSO packet (several segments) as one loss, and a Linux client whose
+  first flight is lost waits by its cached RTT for the destination: 3 s, then 6 s. At 5%
+  loss a handshake can run past a 20 s test timeout without the server doing anything
+  wrong. `tools/pcap.py FILE IP PORT` prints one connection from a `tcpdump -w` capture
+  (in the namespace: `tcpdump -Z root -i k2t -w FILE`; lines `<-` are captured before the
+  loss filter, lines `->` after netem). tapc prints the port of each failed connection.
 - Killing a load client leaves tens of thousands of sockets in TIME-WAIT for a minute, and
   QEMU can't take its forwarded port back until they are gone.
 - In Claude's shell: `pkill -f pattern` also matches (and kills) the shell running it;

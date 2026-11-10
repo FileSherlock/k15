@@ -80,7 +80,6 @@ CHMAX   equ 0xF00
 CONNS   equ 0x2000000       ; 16 tables of 65536 connections: one slot per client port, one
 SLOT    equ 160             ; table per low nibble of the client's IP
 MEMEND  equ CONNS + 16 * 65536 * SLOT ; (192 MiB) all of the above is zeroed at boot
-MSS     equ 1400            ; the most we put in one segment
 OBMAX   equ 0x40000         ; room for one answer at OB
 %ifndef HOST
 RL      equ RESP_LEN + 21   ; a response as a record: header, response and content type, tag
@@ -98,6 +97,7 @@ S_TH    equ 64
 C_FLG   equ 0               ; connection: F_OPEN after a SYN, F_CLOSED after a FIN
 F_OPEN  equ 1
 F_CLOSED equ 2
+C_DEFER equ 1               ; 1: the client's data is not acknowledged before it has our answer
 C_ST    equ 8               ; 0 = waiting for the ClientHello, else 1 + the number of requests
                             ; answered (the next record's sequence number, both directions)
 C_NXT   equ 12              ; next sequence number we expect from the client
@@ -106,6 +106,7 @@ C_SND   equ 20              ; our next sequence number
 C_APP   equ 24              ; our sequence number where the records start (after the flight)
 C_ACK   equ 28              ; the client's last ack
 C_HS    equ 32              ; its handshake buffer + 1 (if that still says so itself)
+C_MSS   equ 36              ; the most the client takes in one segment (a word)
 C_HDR   equ 40              ; a record header that came in pieces (5 bytes)
 C_KIV   equ 64              ; our application key | 0 counter | iv, then the client's
 
@@ -509,8 +510,8 @@ nsret:  fret
 ;   - the client sends old data again, with an ack below C_SND: its request is not
 ;     acknowledged because the answer, which carries our ack, did not arrive;
 ;   - the client repeats an ack below C_SND without data: it got something after a hole.
-; So that the first always works for an answer of several segments, only the last segment
-; acknowledges the client's data (`tcp_send`): a lost tail leaves the request outstanding.
+; So that the first always works, an answer of several segments does not acknowledge the
+; client's data (`tcp_send`): that happens when the client's ack says it has all of it.
 tcp:
         xor ebx, ebx            ; FR
         cmp word [ebx+12], 0x0608
@@ -625,6 +626,40 @@ tcp:
         jz .est
         test dl, 16             ; SYN: a new connection
         jnz nsret
+        movzx ecx, byte [ebx+46] ; its options: how much the client takes in one segment
+        shr ecx, 4
+        lea ecx, [ecx*4-20]
+        lea esi, [ebx+54]
+        mov edx, 536            ; (what one that doesn't say must take)
+.opt:   cmp ecx, 2
+        jl .optd
+        lodsb
+        dec ecx
+        cmp al, 1               ; padding
+        je .opt
+        jb .optd                ; end of options
+        movzx edi, byte [esi]   ; length of this one, with the two bytes that say so
+        dec edi
+        jle .optd
+        cmp edi, ecx
+        ja .optd
+        cmp al, 2
+        jne .onx
+        cmp edi, 3
+        jne .onx
+        movzx edx, word [esi+1]
+        xchg dl, dh
+.onx:   add esi, edi
+        sub ecx, edi
+        jmp .opt
+.optd:  xor esi, esi            ; kept as one of four sizes: the largest that is not more
+        cmp edx, 536
+        sbb esi, -1
+        cmp edx, 1220
+        sbb esi, -1
+        cmp edx, 1440
+        sbb esi, -1
+        push esi
 .isn:   rdrand eax              ; our initial sequence number
         jnc .isn
         push eax
@@ -634,6 +669,9 @@ tcp:
         xor eax, eax
         rep stosd
         pop edx
+        pop esi
+        mov ax, [MSSTAB+esi*2]
+        mov [ebp+C_MSS], ax
         mov eax, [P_SEQ]
         inc eax                 ; (the SYN takes a sequence number, and so does ours)
         mov [ebp+C_NXT], eax
@@ -642,8 +680,10 @@ tcp:
         mov [ebp+C_APP], eax
         mov [ebp+C_ACK], eax
         mov byte [ebp+C_FLG], F_OPEN
-        mov al, 0x12            ; SYN|ACK
+        mov al, 0x12            ; SYN|ACK, with what we take in one segment as its only option
         mov edi, [ebp+C_NXT]
+        mov esi, SYNOPT
+        mov cl, 4
         call tcp_seg
         fret
 
@@ -660,8 +700,13 @@ tcp:
         sub edi, [ebp+C_ACK]    ; how much there is to acknowledge
         cmp eax, edi
         ja .ak
-        je .ak1
-        inc edx
+        jb .ak0
+        cmp byte [ebp+C_DEFER], bl ; it has all we sent. If that was an answer of several
+        je .ak1                 ; segments, its data is acknowledged only now
+        mov [ebp+C_DEFER], bl
+        inc byte [P_FL+1]
+        jmp .ak1
+.ak0:   inc edx
         test eax, eax
         jnz .ak1
         inc edx
@@ -692,6 +737,8 @@ tcp:
         jnz .new
         cmp dl, 2               ; no data: an ack. The same ack twice with something
         je .resend              ; outstanding: a segment of ours is missing
+        cmp byte [P_FL+1], 0
+        jne .ack
         fret
 
 .new:   add [ebp+C_NXT], ecx    ; ecx new bytes at esi, in order (P_SEQ = C_NXT before them)
@@ -931,28 +978,34 @@ hsnew:  mov ebx, [HSNEXT]
         ret
 
 ; tcp_send: ecx bytes at esi to the client of connection ebp, in segments, from our sequence
-; number edx; flags al on the last. Only the last one acknowledges what this packet brought
-; (the others: what came before it), so a client whose data we answered keeps sending that
-; data until the whole answer has arrived.
+; number edx; flags al on the last. If it takes several segments, none of them acknowledges
+; what this packet brought (but what came before it): the client then keeps sending its data
+; until it has all of the answer, whichever part gets lost, and it is acknowledged when its
+; ack says so (C_DEFER, in `tcp`). Not when we close: then there is no later.
 tcp_send:
         pushad
-.seg:   mov ebx, MSS
+        movzx ebx, word [ebp+C_MSS]
+        mov edi, [ebp+C_NXT]
+        mov byte [ebp+C_DEFER], 0
         cmp ecx, ebx
         jbe .last
-        push eax
+        test al, 1
+        jnz .seg
+        mov edi, [P_SEQ]
+        inc byte [ebp+C_DEFER]
+.seg:   push eax
         push ecx
         mov ecx, ebx
         mov al, 0x10
-        mov edi, [P_SEQ]
         call tcp_seg
         pop ecx
         pop eax
         add esi, ebx
         add edx, ebx
         sub ecx, ebx
-        jmp .seg
-.last:  mov edi, [ebp+C_NXT]
-        call tcp_seg
+        cmp ecx, ebx
+        ja .seg
+.last:  call tcp_seg
         popad
         ret
 
@@ -966,8 +1019,12 @@ tcp_seg:
         mov [ebx+38], edx
         bswap edi
         mov [ebx+42], edi
-        mov byte [ebx+46], 0x50 ; no options (the window stays whatever the client offered us)
-        mov [ebx+47], al
+        mov byte [ebx+46], 0x50
+        test al, 2
+        jz .nopt
+        mov byte [ebx+46], 0x60 ; a SYN's "payload" is 4 bytes of options
+.nopt:  mov [ebx+47], al
+        mov word [ebx+48], 0xFFFF ; window: we take whatever comes, at once
         lea edi, [ebx+54]
         rep movsb
         mov [edi], cl           ; zero pad byte for an odd length checksum
@@ -1908,6 +1965,8 @@ GDT:    dq 0
 GDTR:   dw 23
         dd GDT
 %include "gen.inc"
+SYNOPT: db 2, 4, 1460 >> 8, 1460 & 255 ; maximum segment size: what fits an Ethernet frame
+MSSTAB: dw 216, 536, 1220, 1440 ; the sizes we cut our segments to (the client's, rounded down)
 SHTAIL: db 0x13, 0x03, 0x00, 0x00, 0x2e, 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04
         db 0x00, 0x33, 0x00, 0x24, 0x00, 0x1d, 0x00, 0x20
 %else
