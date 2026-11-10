@@ -31,9 +31,9 @@ B256 = 0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B
 GX256 = 0x6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296
 GY256 = 0x4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5
 
-# registers: the first four are constants at the end of the image, the rest is bss
-# (A24 and NINE are set at boot)
-REGS = "GX B4 D ONE ZERO X2 Z2 X3 Z3 T0 T1 T2 T3 U A24 NINE".split()
+# registers: the first four are constants copied from the image at boot, the next two are
+# set by boot code (near ONE: short addresses), the rest starts as zero
+REGS = "GX B4 D ONE A24 NINE ZERO X2 Z2 X3 Z3 T0 T1 T2 T3 U".split()
 REG = {n: i for i, n in enumerate(REGS)}
 ADD, SUB, MUL = 1, 2, 3
 

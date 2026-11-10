@@ -113,8 +113,6 @@ shaconst:
         bt edi, 8               ; KT is 512-aligned: bit 8 first sets at KT+256
         jnc .np
         pop eax
-        mov dword [R_A24+4], 4623270 ; 121665 R mod 2^255 - 19 (R = 2^288 = 38 * 2^32)
-        mov byte [R_NINE], 9    ; the X25519 base point
 %ifdef HOST
         mov esi, REGC
         xor ecx, ecx
@@ -131,7 +129,9 @@ shaconst:
 %endif
         mov edi, REGS           ; the constant registers follow nicinit: x(G) R, 4b R, d R, 1
         mov cl, REGC_LEN
-        rep movsb
+        rep movsb               ; (edi = ONE + 1)
+        mov dword [edi+R_A24+4-R_ONE-1], 4623270 ; 121665 R mod 2^255 - 19 (R = 2^288 = 38 * 2^32)
+        mov byte [edi+R_NINE-R_ONE-1], 9 ; the X25519 base point
         mov edi, MN             ; the moduli. n: its low half is data, then FFFFFFFF FFFFFFFF
         movsd                   ; 0 FFFFFFFF
         movsd
@@ -850,13 +850,14 @@ expand:
 ; A modulus is: m (8 dwords) | 0 | -1/m mod 2^32, with a zero byte in front; ebp points at it.
 ; (All three are built at boot.)
                                 ; 0-3: x(G) R, 4b R, d R, 1 (copied from the image at boot)
-R_X2    equ REGS + 5*36         ; r after sigr
-R_Z2    equ REGS + 6*36         ; s after SIGN
-R_T0    equ REGS + 9*36
-R_T1    equ REGS + 10*36
-R_U     equ REGS + 13*36
-R_A24   equ REGS + 14*36
-R_NINE  equ REGS + 15*36
+R_ONE   equ REGS + 3*36
+R_A24   equ REGS + 4*36         ; 4, 5: set at boot
+R_NINE  equ REGS + 5*36
+R_X2    equ REGS + 7*36         ; r after sigr
+R_Z2    equ REGS + 8*36         ; s after SIGN
+R_T0    equ REGS + 11*36
+R_T1    equ REGS + 12*36
+R_U     equ REGS + 15*36
 
 ; x25519: X2 = X25519(E, 32 bytes at esi). E is used as it is, unclamped: the other side
 ; only needs it to be the same number in our key share and in the secret.
@@ -1036,7 +1037,7 @@ inv:    pushad
         rep movsd
         lea edx, [edi-32]
         sub byte [edx], 2       ; (no borrow: our moduli end in a byte >= 2)
-        mov edi, R_T0
+        lea edi, [edx-72]       ; T0
         mov esi, edi
         mov ebx, edi
         inc ecx                 ; bit 1

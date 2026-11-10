@@ -20,7 +20,8 @@ static u32 sl(u8 *o, const u8 *m, u32 n, const u8 *kiv, u32 seq)
 }
 
 extern u8 E[], K[], REGS[];
-static void xdh(u8 *out, const u8 *u) { ASMCALL(x25519, "+S"(u)); memcpy(out, REGS + 5 * 36, 32); }
+enum { R_NINE = 5 * 36, R_X2 = 7 * 36, R_Z2 = 8 * 36, R_U = 15 * 36 }; /* as in tools/ec.py */
+static void xdh(u8 *out, const u8 *u) { ASMCALL(x25519, "+S"(u)); memcpy(out, REGS + R_X2, 32); }
 
 static void hex(const char *tag, const u8 *p, u32 n)
 {
@@ -66,7 +67,7 @@ int main(void)
         static const u8 peer[32] = {0x2f,0xe5,0x7d,0xa3,0x47,0xcd,0x62,0x43,0x15,0x28,0xda,0xac,0x5f,0xbb,0x29,0x07,
                                     0x30,0xff,0xf6,0x84,0xaf,0xc4,0xcf,0xc2,0xed,0x90,0x99,0x5f,0x58,0xcb,0x3b,0x74};
         for (i = 0; i < 32; i++) E[i] = m[500 + i];
-        xdh(h, REGS + 15 * 36);
+        xdh(h, REGS + R_NINE);
         hex("xpub", h, 32);
         xdh(h, peer);
         hex("xshared", h, 32);
@@ -75,12 +76,12 @@ int main(void)
     for (i = 0; i < 3; i++) {
         u32 j;
         char t[32];
-        for (j = 0; j < 32; j++) K[j] = m[600 + 40 * i + j], REGS[13 * 36 + j] = m[900 + 40 * i + j];
-        if (i == 2) memset(K, 0xff, 32), memset(REGS + 13 * 36, 0xff, 32);
+        for (j = 0; j < 32; j++) K[j] = m[600 + 40 * i + j], REGS[R_U + j] = m[900 + 40 * i + j];
+        if (i == 2) memset(K, 0xff, 32), memset(REGS + R_U, 0xff, 32);
         __asm__ volatile("call sigr" ::: "memory", "cc");
         __asm__ volatile("call signs" ::: "memory", "cc");
         sprintf(t, "sig%u", i);
-        memcpy(tmp, REGS + 13 * 36, 32), memcpy(tmp + 32, REGS + 5 * 36, 32), memcpy(tmp + 64, REGS + 6 * 36, 32);
+        memcpy(tmp, REGS + R_U, 32), memcpy(tmp + 32, REGS + R_X2, 32), memcpy(tmp + 64, REGS + R_Z2, 32);
         hex(t, tmp, 96); /* hash | r | s, little-endian */
     }
     return 0;
