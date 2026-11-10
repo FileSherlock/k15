@@ -39,8 +39,8 @@ ADD, SUB, MUL = 1, 2, 3
 
 
 def asm(text):
-    """'DST = A op B' lines -> bytes: low byte (a << 4 | b), high byte (op << 4 | dst); a
-    zero word ends the program."""
+    """'DST = A op B' lines -> bytes: a << 4 | b, then op << 4 | dst; a zero byte ends the
+    program (no operation has register 0 as both operands)."""
     out = bytearray()
     for line in text.strip().splitlines():
         line = line.split("#")[0].strip()
@@ -48,7 +48,8 @@ def asm(text):
             continue
         dst, _, a, op, b = line.split()
         out += bytes([REG[a] << 4 | REG[b], {"+": ADD, "-": SUB, "*": MUL}[op] << 4 | REG[dst]])
-    return bytes(out) + b"\0\0"
+    assert all(out[::2])
+    return bytes(out) + b"\0"
 
 
 # Both ladders keep two points (X2 : Z2) and (X3 : Z3) whose difference is the base point, and
@@ -172,7 +173,7 @@ class Machine:
 
     def run(self, prog):
         r = self.r
-        for i in range(0, len(prog) - 2, 2):
+        for i in range(0, len(prog) - 1, 2):
             b, a, dst, op = prog[i] & 15, prog[i] >> 4, prog[i + 1] & 15, prog[i + 1] >> 4
             if op == ADD:
                 v = r[a] + r[b]

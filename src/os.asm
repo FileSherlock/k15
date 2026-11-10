@@ -35,7 +35,6 @@ CVB     equ BSS + 0x0D680   ; CertificateVerify content to be signed (+ room for
 KT      equ BSS + 0x0D800   ; SHA-256 round constants (computed at boot), 64 dwords; 512-aligned
 HT      equ KT + 0x104      ; SHA-256 initial hash (computed at boot), 8 dwords (+ 56 junk)
 MT      equ BSS + 0x0E000   ; Montgomery product, 19 dwords
-EXP     equ BSS + 0x0E080   ; exponent for inv: modulus - 2
 E       equ BSS + 0x0E100   ; our X25519 secret (32 bytes), then
 K       equ E + 32          ; the ECDSA nonce (32 bytes, and 4 zero bytes: it is read as 9 limbs)
 DHS     equ BSS + 0x0E180   ; X25519 shared secret
@@ -414,10 +413,9 @@ handshake:
         rep movsb
         pop esi
         mov ebx, edi            ; the ServerHello goes here
-        mov eax, TR
-.ks:    inc eax                 ; find the client's x25519 key share (group, length)
-        cmp eax, ebx
-        jae hsfail
+        mov eax, TR             ; find the client's x25519 key share (group, length). If it
+        mov [edi], dword 0x20001d00 ; sent none, this stops the search: we then answer
+.ks:    inc eax                 ; with a "share" of junk, and the client gives up
         cmp dword [eax], 0x20001d00
         jne .ks
         push eax
@@ -581,9 +579,6 @@ handshake:
         add edi, 48
         call keys
         xchg eax, edi
-        ret
-hsfail: pop ebp                 ; no x25519 key share: say nothing
-        mov edi, OB
         ret
 
 ; thash: TH slot = SHA256(transcript up to eax)
@@ -856,14 +851,14 @@ x25519: pushad
 ; sigr: the half of an ECDSA signature that needs no message. X2 = r = x(K G), where K is
 ; stepped until r is a plain 32-byte DER INTEGER (0 < r[0] < 0x80); T1 = R^2 / K mod n.
 sigr:   pushad
-.again: inc dword [K]
-        mov ebp, MP256
         mov ebx, K
+        mov ebp, MP256
+.again: inc dword [ebx]
         mov esi, INIT256
         call smult
         cmp byte [R_X2+31], 0
         jle .again
-        mov ebp, MN
+        sub ebp, MP256 - MN
         mov esi, ebx
         call inv
         popad
@@ -888,12 +883,14 @@ smult:  call vm
         mov esi, FIN            ; X2 = X2 / Z2
         ; fall through
 ; vm: run the program at esi (2 bytes per operation: a << 4 | b, op << 4 | dst; a zero
-; high byte ends it). Returns esi = after the program; keeps everything else.
-vm:     lodsw
-        test ah, ah
+; byte ends it). Returns esi = after the program; keeps everything else but eax.
+vm:     lodsb
+        test al, al
         jz vmret
+        inc esi
         pushad
-        movzx edx, ax
+        movzx edx, word [esi-2]
+        push vmnext             ; where the operation returns to
         push 3
         pop ecx
 .r:     mov eax, edx
@@ -907,65 +904,15 @@ vm:     lodsw
         pop esi                 ; a
         pop ebx                 ; b
         dec edx
-        jz .add
+        jz vadc
         dec edx
-        jnz .mul
+        jnz montmul
         call vsbb               ; sub: a - b + 256 m (the modulus, read one byte early)
         mov esi, edi
         lea ebx, [ebp-1]
-.add:   call vadc
-        jmp .n
-.mul:   call montmul
-.n:     popad
+        jmp vadc
+vmnext: popad
         jmp vm
-
-; cswap: swap (X2, Z2) with (X3, Z3) if edx = -1, not if edx = 0
-cswap:  pushad
-        mov esi, R_X2
-        lea edi, [esi+72]
-        push 18
-        pop ecx
-.s:     mov eax, [esi]
-        xor eax, [edi]
-        and eax, edx
-        xor [esi], eax
-        xor [edi], eax
-        cmpsd
-        loop .s
-        popad
-vmret:  ret
-
-; inv: T1 = (9 limbs at esi) ^ (m - 2), which is R^2 / it for a stored value. Clobbers T0.
-inv:    pushad
-        mov edi, R_T0
-        push 9
-        pop ecx
-        rep movsd               ; T0 = x
-        lea esi, [edi-36]
-        mov cl, 9
-        rep movsd               ; T1 = x (bit 0 of m - 2 is set)
-        mov esi, ebp
-        mov edi, EXP
-        mov cl, 8
-        rep movsd
-        lea edx, [edi-32]
-        sub byte [edx], 2       ; (no borrow: our moduli end in a byte >= 2)
-        mov edi, R_T0
-        mov esi, edi
-        mov ebx, edi
-        inc ecx                 ; bit 1
-.l:     call montmul            ; T0 = T0^2
-        bt [edx], ecx
-        jnc .s
-        pushad
-        add edi, 36
-        mov esi, edi
-        call montmul            ; T1 = T1 * T0
-        popad
-.s:     inc cl
-        jnz .l
-        popad
-        ret
 
 ; vadc / vsbb: 9 limbs at edi = those at esi + / - those at ebx
 vadc:   pushad
@@ -1034,6 +981,53 @@ mulrow: pushad
         loop .l
         add [edi], ebx
         adc dword [edi+4], 0
+        popad
+        ret
+
+; cswap: swap (X2, Z2) with (X3, Z3) if edx = -1, not if edx = 0
+cswap:  pushad
+        mov esi, R_X2
+        lea edi, [esi+72]
+        push 18
+        pop ecx
+.s:     mov eax, [esi]
+        xor eax, [edi]
+        and eax, edx
+        xor [esi], eax
+        xor [edi], eax
+        cmpsd
+        loop .s
+        popad
+vmret:  ret
+
+; inv: T1 = (9 limbs at esi) ^ (m - 2), which is R^2 / it for a stored value. Clobbers T0, T2.
+inv:    pushad
+        mov edi, R_T0
+        push 9
+        pop ecx
+        rep movsd               ; T0 = x
+        lea esi, [edi-36]
+        mov cl, 9
+        rep movsd               ; T1 = x (bit 0 of m - 2 is set)
+        mov esi, ebp            ; T2 = the exponent
+        mov cl, 8
+        rep movsd
+        lea edx, [edi-32]
+        sub byte [edx], 2       ; (no borrow: our moduli end in a byte >= 2)
+        mov edi, R_T0
+        mov esi, edi
+        mov ebx, edi
+        inc ecx                 ; bit 1
+.l:     call montmul            ; T0 = T0^2
+        bt [edx], ecx
+        jnc .s
+        pushad
+        add edi, 36
+        mov esi, edi
+        call montmul            ; T1 = T1 * T0
+        popad
+.s:     inc cl
+        jnz .l
         popad
         ret
 
