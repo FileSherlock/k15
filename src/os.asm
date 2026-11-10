@@ -38,7 +38,6 @@ HT      equ KT + 0x104      ; SHA-256 initial hash (computed at boot), 8 dwords 
 MT      equ BSS + 0x0E000   ; Montgomery product, 19 dwords
 E       equ BSS + 0x0E100   ; our X25519 secret (32 bytes), then
 K       equ E + 32          ; the ECDSA nonce (32 bytes, and 4 zero bytes: it is read as 9 limbs)
-DHS     equ BSS + 0x0E180   ; X25519 shared secret
 MN      equ BSS + 0x0E201   ; moduli (made at boot): 8 dwords | 0 | -1/m mod 2^32, and a zero
 MP256   equ MN + 44         ; byte in front. n and p of P-256,
 M25519  equ MP256 + 44      ; and 2^255 - 19
@@ -305,7 +304,7 @@ tcp:
         mov edi, VB
         stc
         call seal               ; the record as it should be, tag included
-        lea edi, [VB+5+ecx]
+        sub edi, 16
         add esi, ecx
         push 16
         pop ecx
@@ -442,9 +441,10 @@ handshake:
         pop esi
         mov ebx, edi            ; the ServerHello goes here
         mov eax, TR             ; find the client's x25519 key share (group, length). If it
-        mov [edi], dword 0x20001d00 ; sent none, this stops the search: we then answer
-.ks:    inc eax                 ; with a "share" of junk, and the client gives up
-        cmp dword [eax], 0x20001d00
+        mov edx, 0x20001d00     ; sent none, this stops the search: we then answer
+        mov [edi], edx          ; with a "share" of junk, and the client gives up
+.ks:    inc eax
+        cmp [eax], edx
         jne .ks
         push eax
         mov edi, E              ; fresh secrets: X25519 scalar and ECDSA nonce
@@ -461,12 +461,13 @@ handshake:
         mov cl, 19
         rep movsb               ; ... + suite, extensions, key share header ...
         mov esi, R_NINE
-        call x25519             ; ... + our key share
+        call x25519
+        mov esi, R_X2
+        mov cl, 8
+        rep movsd               ; ... + our key share
         pop esi
         lodsd
-        mov edi, DHS
-        call x25519             ; the shared secret
-        call sigr               ; r and 1/k for the CertificateVerify
+        call x25519             ; X2 = the shared secret
         lea eax, [edx+86]
         shl eax, 24
         mov al, 2
@@ -483,9 +484,10 @@ handshake:
         lea edi, [ebp+S_ES]
         call hmac               ; early secret
         mov ebx, edi
-        mov esi, DHS
+        mov esi, R_X2
         lea edi, [ebp+S_HS]
         call stage              ; handshake secret
+        call sigr               ; r and 1/k for the CertificateVerify (in X2 and T1)
         pop ebx
 
         mov edi, CVB            ; CertificateVerify content: 64 spaces | context | hash
@@ -856,10 +858,9 @@ R_U     equ REGS + 13*36
 R_A24   equ REGS + 14*36
 R_NINE  equ REGS + 15*36
 
-; x25519: 32 bytes at edi = X25519(E, 32 bytes at esi). E is used as it is, unclamped: the
-; other side only needs it to be the same number in our key share and in the secret.
+; x25519: X2 = X25519(E, 32 bytes at esi). E is used as it is, unclamped: the other side
+; only needs it to be the same number in our key share and in the secret.
 x25519: pushad
-        push edi
         mov edi, R_U
         push 8
         pop ecx
@@ -868,11 +869,6 @@ x25519: pushad
         mov ebx, E
         mov esi, INIT25519
         call smult
-        pop edi
-        mov esi, R_X2
-        push 8                  ; (smult leaves ecx = -1)
-        pop ecx
-        rep movsd
         popad
         ret
 
@@ -932,35 +928,33 @@ vm:     lodsb
         pop esi                 ; a
         pop ebx                 ; b
         dec edx
-        jz vadc
+        jz vadd                 ; (ecx = 0)
         dec edx
         jnz montmul
-        call vsbb               ; sub: a - b + 256 m (the modulus, read one byte early)
+        inc ecx
+        call vadd               ; sub: a - b + 256 m (the modulus, read one byte early)
+        dec ecx
         mov esi, edi
         lea ebx, [ebp-1]
-        jmp vadc
+        jmp vadd
 vmnext: popad
         jmp vm
 
-; vadc / vsbb: 9 limbs at edi = those at esi + / - those at ebx
-vadc:   pushad
-        xor ecx, ecx            ; (clears CF)
-        mov cl, 9
+; vadd: 9 limbs at edi = those at esi + those at ebx if ecx = 0; minus them if ecx = 1
+; (a - b = a + ~b + 1; not, jecxz, dec and lea leave the carry alone)
+vadd:   pushad
+        push 9
+        pop edx
+        neg ecx                 ; CF = 1 to subtract
 .l:     lodsd
-        adc eax, [ebx]
+        mov ebp, [ebx]
+        jecxz .a
+        not ebp
+.a:     adc eax, ebp
         stosd
         lea ebx, [ebx+4]
-        loop .l
-        popad
-        ret
-vsbb:   pushad
-        xor ecx, ecx
-        mov cl, 9
-.l:     lodsd
-        sbb eax, [ebx]
-        stosd
-        lea ebx, [ebx+4]
-        loop .l
+        dec edx
+        jnz .l
         popad
         ret
 

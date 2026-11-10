@@ -20,7 +20,7 @@ static u32 sl(u8 *o, const u8 *m, u32 n, const u8 *kiv, u32 seq)
 }
 
 extern u8 E[], K[], REGS[];
-static void xdh(u8 *out, const u8 *u) { ASMCALL(x25519, "+D"(out), "+S"(u)); }
+static void xdh(u8 *out, const u8 *u) { ASMCALL(x25519, "+S"(u)); memcpy(out, REGS + 5 * 36, 32); }
 
 static void hex(const char *tag, const u8 *p, u32 n)
 {
