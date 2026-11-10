@@ -54,7 +54,8 @@ S_HS    equ 0
 S_TS    equ 32
 S_TH    equ 64
 
-C_ST    equ 0               ; connection: record counter (0 = waiting for the ClientHello)
+C_ST    equ 0               ; connection: 0 = waiting for the ClientHello, else 1 + the number
+                            ; of requests answered (the sequence number, both directions)
 C_NXT   equ 4               ; next sequence number we expect from the client
 C_LEN   equ 8               ; ClientHello bytes so far; then bytes left of the current record
 C_KIV   equ 12              ; application key | 0 counter | iv (+20 bytes of junk: `keys`)
