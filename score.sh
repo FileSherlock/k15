@@ -15,9 +15,10 @@ export PORTS=${PORTS:-1024-32767,61000-65535,auto}
 
 PORT=${PORT:-8445}
 IMG=${1:-}
+export B=${B:-build}
 if [[ -z "$IMG" ]]; then
-  make -s all >/dev/null
-  IMG=build/os.bin
+  make -s all B="$B" CERT="${CERT:-cert}" >/dev/null
+  IMG=$B/os.bin
 fi
 source tools/vm.sh
 boot

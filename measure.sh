@@ -7,9 +7,10 @@ cd "$(dirname "$0")"
 
 PORT=${PORT:-8443}
 IMG=${1:-}
+export B=${B:-build}
 if [[ -z "$IMG" ]]; then
-  make -s all >/dev/null
-  IMG=build/os.bin
+  make -s all B="$B" CERT="${CERT:-cert}" >/dev/null
+  IMG=$B/os.bin
 fi
 EXPECT=$(cat www/index.html)
 source tools/vm.sh
@@ -26,7 +27,7 @@ for _ in 1 2; do
   [[ "$B2" == "$EXPECT"$'\n'"$EXPECT" ]] || { echo "FAIL: keep-alive got '$B2'"; exit 1; }
 done
 # and nobody who doesn't trust our CA gets in (the chain is checked, not waved through)
-if [[ -s build/ca.pem ]] && curl -s --max-time 10 -o /dev/null "$URL"; then
+if [[ -s $B/ca.pem ]] && "${NOCA[@]}" -o /dev/null "$URL"; then
   echo "FAIL: curl accepted the certificate without our CA"; exit 1
 fi
 

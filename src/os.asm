@@ -11,6 +11,7 @@
 ; says otherwise. All buffers live at fixed addresses in zeroed RAM at 2 MiB.
 
 BITS 32
+%include "conf.inc"             ; CHAIN_LEN
 
 BSS     equ 0x200000
 FR      equ 0               ; Ethernet frame: received, then rewritten in place as reply.
@@ -354,8 +355,35 @@ tcp:
         jnz .tx
         ret                     ; pure ACK: stay quiet
 .tx:    or al, 0x18             ; ACK|PSH (+SYN or FIN)
+%if CHAIN_LEN > 1100            ; a real certificate chain: our flight needs several segments
+        mov edx, edi            ; (this code is only there if the baked-in chain needs it)
+.seg:   push eax
+        push edx
+        mov ecx, edx
+        sub ecx, esi
+        cmp ecx, 1400
+        jbe .one
+        mov ecx, 1400
+.one:   push ecx
+        push esi
+        call tcp_out
+        pop esi
+        pop ecx
+        add esi, ecx
+        mov eax, [FR+38]        ; our sequence number += what went out
+        bswap eax
+        add eax, ecx
+        bswap eax
+        mov [FR+38], eax
+        pop edx
+        pop eax
+        cmp esi, edx
+        jb .seg
+        ret
+%else
         mov ecx, edi
-        sub ecx, esi            ; all in one segment: the largest reply, our flight, is ~400 bytes
+        sub ecx, esi            ; all in one segment: the largest reply, our flight, is ~500 bytes
+%endif
 
 ; tcp_out (falls through from tcp): send ecx bytes at esi with flags al, reusing the swapped
 ; headers in FR
@@ -1289,11 +1317,11 @@ SIGMA:  db "expand 32-byte k"
 %ifndef HOST
 CVCTX:  db "TLS 1.3, server CertificateVerify", 0
 nicinit: db 1, 0x46, 2, 0xC0, 4, 0x40, 12, 0x10, 0, 0x40, 7, 0x46, 0, 0
-%include "build/regs.inc"       ; (must follow nicinit: boot copies them with the same esi)
-%include "build/gen.inc"
+%include "regs.inc"       ; (must follow nicinit: boot copies them with the same esi)
+%include "gen.inc"
 SHTAIL: db 0x13, 0x03, 0x00, 0x00, 0x2e, 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04
         db 0x00, 0x33, 0x00, 0x24, 0x00, 0x1d, 0x00, 0x20
 %else
-%include "build/regs.inc"
+%include "regs.inc"
 %endif
-%include "build/ec.inc"         ; curve programs
+%include "ec.inc"         ; curve programs

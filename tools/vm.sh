@@ -1,12 +1,15 @@
 # Sourced by measure.sh, browsers.sh and score.sh: the machine contract, and how a client
 # reaches the server (its certificate's name, and the CA to trust if it is our private one).
-# Needs PORT and IMG; sets NAME, URL, CURL (an array), and boot starts QEMU (QEMU_PID).
+# Needs PORT and IMG; B (default build) is where the image was built. Sets NAME, URL, CURL
+# and NOCA (arrays), and boot starts QEMU (QEMU_PID).
 
-NAME=$(cat build/name)
+B=${B:-build}
+NAME=$(cat "$B/name")
 URL="https://${NAME}:${PORT}/"
 CURL=(curl -s --max-time 10)
 [[ $NAME =~ ^[0-9.]+$ ]] || CURL+=(--resolve "${NAME}:${PORT}:127.0.0.1")
-[[ -s build/ca.pem ]] && CURL+=(--cacert build/ca.pem)   # else: the system's roots
+NOCA=("${CURL[@]}")                                    # the same, trusting only the system's roots
+[[ -s $B/ca.pem ]] && CURL+=(--cacert "$B/ca.pem")
 
 boot() {
   QEMU_LOG=$(mktemp)

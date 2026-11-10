@@ -1,4 +1,4 @@
-# everything in build/ is generated; cert/ holds private keys (made on the first build)
-build/
-cert/
+# everything in build*/ is generated; cert*/ hold private keys (cert/ is made on the first build)
+build*/
+cert*/
 __pycache__/

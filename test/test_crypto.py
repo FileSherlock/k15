@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check the asm crypto (run via build/test_asm) against pyca/cryptography."""
 import hashlib
+import os
 import hmac
 import subprocess
 import sys
@@ -44,7 +45,7 @@ bad += not ok
 print(("ok  " if ok else "FAIL"), "x25519")
 
 # ECDSA: (r, s) must verify under the certificate's key, and be plain 32-byte DER INTEGERs
-pub = x509.load_pem_x509_certificates(open("cert/server.pem", "rb").read())[0].public_key()
+pub = x509.load_pem_x509_certificates(open(os.path.join(os.environ.get("CERT", "cert"), "server.pem"), "rb").read())[0].public_key()
 for i in range(3):
     z, r, s = (int.from_bytes(got[f"sig{i}"][j:j + 32], "little") for j in (0, 32, 64))
     try:
