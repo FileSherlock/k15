@@ -1,6 +1,6 @@
 # k2
 
-k2 is a 3,364-byte bootable x86 "operating system" that serves a static web page over HTTPS
+k2 is a 3,336-byte bootable x86 "operating system" that serves a static web page over HTTPS
 (TLS 1.3), securely. It boots in QEMU, drives an NE2000 network card, speaks just enough TCP,
 and does the whole TLS 1.3 handshake itself: X25519, ECDSA P-256, ChaCha20-Poly1305,
 SHA-256 / HKDF, all hand-written in assembly. curl, Chrome and Firefox load the page with no
@@ -60,7 +60,7 @@ intermediates) into `cert/`, or into another directory:
 
 ```bash
 python3 tools/mkchain.py cert-real          # a realistic test chain; or use your own files
-make B=build-real CERT=cert-real            # 4,833 bytes with that 1.6 KB chain
+make B=build-real CERT=cert-real            # 4,805 bytes with that 1.6 KB chain
 B=build-real CERT=cert-real ./measure.sh
 ```
 
@@ -83,4 +83,6 @@ B=build-real CERT=cert-real ./measure.sh
 - `make test` checks the asm crypto against pyca/cryptography (needs 32-bit gcc support) and
   runs the Python model of the curve code.
 - `./browsers.sh` loads the page in headless Firefox and Chrome.
+- `tools/abuse.py` (run by `./measure.sh`) plays a hostile client: forged, replayed and
+  truncated records, and broken ClientHellos.
 - `tools/load.py` has `burst K` (K clients connecting at the same moment), `seq N` and `ka N`.

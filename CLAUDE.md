@@ -26,7 +26,8 @@ The image contains the private key: `build/` and `cert/` are secrets and are not
   another identity; the scripts take the same `B` and `CERT` from the environment.
 - `./measure.sh` builds, boots it in QEMU (TCG, no KVM here), fetches it with curl (chain and
   name verified, fresh connections + keep-alive, and a check that curl refuses without our
-  CA), prints PASS + size + largest routines
+  CA), runs `tools/abuse.py` (forged, replayed, truncated records and bad ClientHellos must
+  be ignored and leave real connections working), prints PASS + size + largest routines
 - `./browsers.sh` checks Firefox and Chrome with our CA as a trusted root in throwaway
   profiles (no exceptions, no `--ignore-certificate-errors`; Chrome's net-log must show no
   certificate error flags) and that Chrome refuses without the CA. Run after any

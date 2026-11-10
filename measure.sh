@@ -30,6 +30,8 @@ done
 if [[ -s $B/ca.pem ]] && "${NOCA[@]}" -o /dev/null "$URL"; then
   echo "FAIL: curl accepted the certificate without our CA"; exit 1
 fi
+# forged, replayed and malformed input is ignored and harms nobody
+OUT=$(PORT=$PORT python3 tools/abuse.py) || { echo "FAIL: hostile-client checks"; echo "$OUT"; exit 1; }
 
 SIZE=$(stat -c %s "$IMG")
 echo "PASS  image=$IMG  size=${SIZE} bytes"
