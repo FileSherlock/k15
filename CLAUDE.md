@@ -7,41 +7,42 @@ taken off its machine contract and put on a Hetzner cloud server. Decided with t
 - plain HTTP on port 80 (for the connection count) and HTTPS on 443 (as fast as it will go).
   Port 80 has none of the security below: it serves the same public page to anyone.
 - size comes later ("we can optimize more later"): correctness and capacity first. The image
-  is still one assembly file and still small (5,627 bytes); don't golf it, don't bloat it.
+  is still one assembly file and still small (5,825 bytes); don't golf it, don't bloat it.
 - security as in k2 (below) still holds for everything behind TLS
 
 ## Where it stands
 Works, locally and on the server: boot from GRUB or a BIOS boot sector, modern virtio-net,
-ARP, TLS 1.3 with a verified certificate, keep-alive requests. First fetch over the internet
-2026-11-10; 400 verified connections held from the user's machine at ~55 handshakes/s.
+ARP, a TCP that copes with loss, reordering, small segments and made-up clients, a hashed
+connection table sized from the machine's memory, TLS 1.3 with a verified certificate on
+443, the same page over plain HTTP on 80, keep-alive requests on both.
+
+On the server (2026-11-11, from the user's machine, RTT 11 ms): HTTPS and HTTP fetched
+with curl, Chrome and Firefox (Chrome with no certificate error flags, and refusing
+without our CA); 400 TLS connections held and fetched (~50 handshakes/s with 4 in flight)
+and 2,000 plain ones; 60 of 60 single HTTPS fetches in ~50 ms each.
 
 | measured | |
 |---|---|
 | handshakes/s, local QEMU with KVM | ~120 through slirp, ~140 over tap |
 | keep-alive requests/s, same | ~11,500 |
 | handshake cost natively (`make bench`, Ryzen 7 3800X) | X25519 1.35 ms (x2), r and 1/k 3.6 ms, so 6-7 ms |
-| emulated (KVM=0) | 27 handshakes/s, ~15 s to boot |
+| handshake on the server | ~13 ms of a ~47 ms fetch |
+| plain connections held over tap (2 GiB VM) | 640,000 from 32 addresses, all fetched |
+| with loss over tap | 8,000 TLS at 1%, 2,000 at 5%, 16,000 plain at 3%: all served |
+| emulated (KVM=0) | 27 handshakes/s |
 
 ## Plan
-Steps 1 (virtio-net) and 2 (boot on the server) are done. Next:
-
-**3. A TCP that survives a real network, a real connection table, port 80.**
-- Lost packets: done (see "How TCP works here"). 8,000 connections over tap with 1% of the
-  packets dropped in each direction, and 2,000 with 5%, all served.
-- The connection table: done (see "The connection table"). 32 source addresses with the
-  same 250 ports each: 8,000 held. 4,000 connections coming and going through a table of
-  1,024 slots leave 64 held ones alone (`tools/churn.py`), and so do 150,000 packets from
-  made-up clients (`FLOOD=50000`).
-- MSS and window: done. The SYN-ACK carries an MSS option (1460) and every segment a
-  window of 65535; our segments are cut to the client's MSS, rounded down to one of 216,
-  536, 1220, 1440 (`MSSTAB`; four sizes so that two bits can carry it). Over tap with an
-  MTU of 300 (tapc's ClientHello is 1460 bytes: six segments; our flight: three) and 3% loss
-  each way: 2,000 of 2,000 served.
-- Port 80: done. The same response without TLS; a request ends with an empty line.
-  Over tap: 640,000 connections from 32 addresses held and all fetched in a 2 GiB VM
-  (`MEM=2048 PLAIN=1 INFLIGHT=64 ... ./taprunc.sh 20000 1024 32`), 8,000 with 3% loss, and
-  with an MTU of 300 as well.
-- Not yet checked against a real browser over the internet (only curl and tapc).
+Steps 1 (virtio-net), 2 (boot on the server) and 3 (a TCP for a real network, the
+connection table, port 80) are done. What step 3 built is in "How TCP works here" and "The
+connection table"; what it left:
+- No timers at all: a client that vanishes keeps its slot until the table needs it, and
+  we never close first.
+- One early segment is kept per connection, there is no SACK: a client that loses several
+  segments of one flight recovers by its own timeouts.
+- `prf` is a ChaCha20 block per packet (and two more per SYN), and the handshake buffers
+  are 1,024: both fine at 140 handshakes/s, both to revisit in step 4.
+- Not load-tested on the server beyond a few hundred connections (the user's home line;
+  a separate load generator is being set up).
 
 **4. Handshake rate.** Long mode, then 64-bit curve code (the CPU has mulx/adx; no sha_ni,
 no avx512ifma). Then the things a size-coded server skipped: one ladder for r instead of
@@ -93,6 +94,14 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   makes a hung connection fail fast instead of after 60 s. W can be up to 32 (10.0.2.32-63:
   the second 16 share their low nibble with the first). `PLAIN=1 INFLIGHT=64` in front runs
   the same over plain HTTP to port 80.
+- `REORDER=25` in front of tap.sh lets a quarter of the packets to the guest overtake the
+  rest (held 5 ms). Timing single fetches with curl under it shows whether early segments
+  are used: 9 of 60 stalled before `oohold`, none after.
+- `make B=build-dbg DEBUG=1` builds an image that counts things (`count n` in the source)
+  and shows six counters, four hex digits each, in place of the end of the page on port
+  80: bad IP checksum, bad TCP checksum, IP length beyond the frame, early segments,
+  resends, RSTs sent. This is how the reordering was found on the server. Not for images
+  that are measured or kept running.
 - `make B=build-small TBITS=10` builds an image with at most 2^10 connection slots, then
   `B=build-small unshare -Urn ./tap.sh python3 tools/churn.py [HELD] [LOOPS]` checks that
   connections that end (five ways) give their slots back, and with `FLOOD=n` in front that
@@ -132,8 +141,7 @@ Two things differ locally:
 - `B=build-hz tools/deploy.sh root@2.28.113.14` copies the image to /boot/k3.bin and
   reboots into it ONCE through a GRUB entry ("k3" in /etc/grub.d/40_custom, loaded with
   `multiboot`). Ubuntu stays installed and is what any later reset boots. Up after ~4 s.
-- `curl --cacert build-hz/ca.pem https://2.28.113.14/`, or tapc from here:
-  `B=build-hz DST=2.28.113.14:443 build/tapc 0.0.0.0 30000 400 www/index.html`
+- `curl --cacert build-hz/ca.pem https://2.28.113.14/` and `curl http://2.28.113.14/`
 - `B=build-hz tools/knock.sh 2.28.113.14` resets it: a TCP packet to port a, then one to
   port b (build-hz/knock). Linux and ssh are back ~12 s later. This is a backdoor for
   development (two port scans in a row could trigger it); it is only assembled with KNOCK
@@ -141,7 +149,12 @@ Two things differ locally:
 - The image never answers ping; the user's reset button in the Hetzner console is the
   fallback if a build doesn't come up or the knock doesn't work.
 - Be modest with load from the user's home connection; the user is setting up a separate
-  load generator.
+  load generator. From here: `B=build-hz DST=2.28.113.14:443 build/tapc 0.0.0.0 20000 400
+  www/index.html`, and with `PLAIN=1 INFLIGHT=32` and `DST=...:80` for port 80. Base ports
+  below 32768: above, a port may be taken by something else on this machine.
+- A browser against the server: `tools/nssdb.py DIR/.pki/nssdb build-hz/ca.pem`, then
+  `HOME=DIR google-chrome --headless=new --no-sandbox --user-data-dir=DIR/c --dump-dom
+  https://2.28.113.14/`; `tools/ffcheck.py https://2.28.113.14/ build-hz/ca.pem "Hello"`.
 
 ## The certificate (`tools/gen.py`, `cert/`)
 - `cert/server.key` (ECDSA P-256) and `cert/server.pem` (leaf, then intermediates) are the
@@ -195,8 +208,9 @@ No timer and no copy of what was sent, except the handshake flight. Our side of 
 is a function of its keys: the flight, then one record of `RL` bytes per request answered. A
 connection knows the next byte it expects (`C_NXT`), our next byte (`C_SND`), where our
 records start (`C_APP`) and the client's last ack (`C_ACK`).
-- In-order data is taken (a segment that overlaps what we have is trimmed), data from the
-  future gets an ack of what we expect, a keep-alive probe gets an ack.
+- In-order data is taken (a segment that overlaps what we have is trimmed), data from
+  further on is kept (see below) and gets an ack of what we expect, a keep-alive probe
+  gets an ack.
 - Loss shows in two ways, and both lead to `.resend`, which builds our bytes again from the
   client's ack on (flight bytes from the handshake buffer, records by sealing the response
   again under the same sequence number): old data arriving again with an ack below `C_SND`
@@ -217,6 +231,13 @@ records start (`C_APP`) and the client's last ack (`C_ACK`).
   went to another and that needs it (the rest of its ClientHello arrives, or its flight
   has to go out again) is reset. That takes 1024 other handshakes starting within one
   client's retransmission time: more buffers when step 4 makes handshakes that fast.
+- A segment from further on than we expect is kept (`oohold`: one per connection, the
+  earliest, in 1,024 buffers of 2 KiB given out in a circle) and used as soon as what
+  comes before it has arrived (`.reply`). This matters on a real network: between the
+  user's machine and the server, two segments sent back to back (a ClientHello in two
+  parts; Finished and the request) arrive swapped 5-25% of the time. Dropping the early
+  one cost a client timeout (+220 ms) on a quarter of all fetches; Linux on the same
+  server counts the same swaps (TCPOFOQueue) and hides them the same way.
 - Port 80 is the same machine without keys: a connection there starts with `C_ST` = 1, its
   "records" are the bare response, and its requests are found by counting line ends
   (`.http`: two in a row, CRs ignored, end a request; a request body would be read as
@@ -317,6 +338,16 @@ are step 3's job.
   very long shell commands with heredocs can be refused by a safety check, so write scripts
   with the Write tool and run them; snap Firefox can't start through its launcher, so
   `tools/ffcheck.py` runs the binary inside the snap.
+- A fetch that sometimes takes +200 ms is a client retransmission timeout: something of
+  ours or of the client's didn't count. Count on the server (`DEBUG=1`), and compare with
+  Linux on the same machine (`nstat` there) before blaming either side.
+- A register that "is still zero" isn't after a call that returns something in it: the
+  slot was "freed" by writing a buffer address into it (found by `tools/churn.py`).
+- tc: `action gact drop random netrand drop 100` drops everything (the first action is
+  the default); it is `gact pass random netrand drop 100`. tcpdump in the namespace needs
+  `-Z root`.
+- `pkill -f pattern` over ssh kills the ssh command that carries the pattern too: write a
+  pid file, or `pgrep -f "http[.]server"`.
 - Hetzner's web console garbles `|` and `[`: use ssh.
 
 ## Tried and rejected (k2)

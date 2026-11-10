@@ -13,6 +13,8 @@ OURIP := $(shell python3 tools/ip.py $(IP))
 # TBITS=n (tests): no more than 2^n connection slots, however much memory there is
 TBITS ?=
 TBITSDEF := $(if $(TBITS),-DTBITS=$(TBITS),)
+# DEBUG=1 (development): count dropped and resent packets, shown in the page on port 80
+DEBUGDEF := $(if $(DEBUG),-DDEBUG,)
 
 # The image: hand-written assembly (src/os.asm) -> flat binary, loaded at 1 MiB; and a
 # disk image that boots it: the boot sector (src/boot.asm), then the image, padded
@@ -39,7 +41,7 @@ $(GEN) &: tools/gen.py tools/ec.py www/index.html $(ID)
 	CERT=$(CERT) python3 tools/gen.py www/index.html $(B)
 
 $(B)/os.bin: src/os.asm $(GEN) $(B)/ip
-	nasm -f bin -DOURIP=$(OURIP) $(KNOCKDEF) $(TBITSDEF) -I$(B)/ -o $@ -l $(B)/os.lst src/os.asm
+	nasm -f bin -DOURIP=$(OURIP) $(KNOCKDEF) $(TBITSDEF) $(DEBUGDEF) -I$(B)/ -o $@ -l $(B)/os.lst src/os.asm
 	@echo "image: $$(stat -c %s $@) bytes"
 
 # asm crypto checked against pyca/cryptography on the host (32-bit process)

@@ -2,7 +2,7 @@
 # Boot the image on a tap interface instead of slirp and run a command against it: a real
 # Ethernet segment (ARP, the host's own traffic, random initial sequence numbers), and no
 # slirp walking every open socket. No root needed inside a throwaway namespace:
-# Usage: [B=build] [KVM=1] [LOSS=1] [MTU=n] unshare -Urn ./tap.sh COMMAND [ARGS...]   e.g. ... ./taprunc.sh 2000 1024 4
+# Usage: [B=build] [KVM=1] [LOSS=1] [REORDER=25] [MTU=n] unshare -Urn ./tap.sh COMMAND [ARGS...]   e.g. ... ./taprunc.sh 2000 1024 4
 # The host is 10.0.2.2 plus 10.0.2.32-63; the guest is 10.0.2.15.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -25,6 +25,8 @@ if [[ -n ${LOSS:-} ]]; then
   tc qdisc add dev "$TAP" handle ffff: ingress
   tc filter add dev "$TAP" parent ffff: protocol ip u32 match u32 0 0 action gact pass random netrand drop $((100 / LOSS))
 fi
+# REORDER=n: n% of the packets to the guest overtake the others, which are held 5 ms (not with LOSS)
+[[ -n ${REORDER:-} ]] && tc qdisc add dev "$TAP" root netem delay 5ms reorder "$REORDER%"
 [[ -n ${MTU:-} ]] && ip link set "$TAP" mtu "$MTU"
 ACCEL=(-cpu max)
 [[ ${KVM:-1} == 1 && -w /dev/kvm ]] && ACCEL=(-accel kvm -cpu host)
