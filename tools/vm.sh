@@ -4,6 +4,7 @@
 # and NOCA (arrays), and boot starts QEMU (QEMU_PID).
 
 B=${B:-build}
+HPORT=${HPORT:-$((PORT + 1000))}                        # where the guest's port 80 is forwarded to
 NAME=$(cat "$B/name")
 URL="https://${NAME}:${PORT}/"
 GUEST=$(cat "$B/ip")                                    # the address baked into the image
@@ -20,7 +21,7 @@ boot() {
   QEMU_LOG=$(mktemp)
   qemu-system-x86_64 -nodefaults -display none -no-reboot -machine q35 "${ACCEL[@]}" -m 256 \
     -drive "file=${IMG%os.bin}disk.img,format=raw,if=none,id=d0,snapshot=on" \
-    -netdev "user,id=n0,net=${GUEST%.*}.0/24,hostfwd=tcp:127.0.0.1:${PORT}-${GUEST}:443" \
+    -netdev "user,id=n0,net=${GUEST%.*}.0/24,hostfwd=tcp:127.0.0.1:${PORT}-${GUEST}:443,hostfwd=tcp:127.0.0.1:${HPORT}-${GUEST}:80" \
     -device pcie-root-port,id=rp1,chassis=1 -device virtio-net-pci,bus=rp1,netdev=n0,disable-legacy=on,romfile= \
     -device pcie-root-port,id=rp2,chassis=2 -device virtio-scsi-pci,bus=rp2 -device scsi-hd,drive=d0 >"$QEMU_LOG" 2>&1 &
   QEMU_PID=$!

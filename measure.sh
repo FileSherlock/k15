@@ -26,6 +26,9 @@ for _ in 1 2; do
   B2=$("${CURL[@]}" "$URL" "${URL}x") || { echo "FAIL: repeat"; exit 1; }
   [[ "$B2" == "$EXPECT"$'\n'"$EXPECT" ]] || { echo "FAIL: keep-alive got '$B2'"; exit 1; }
 done
+# the same page over plain HTTP on port 80, fresh and keep-alive
+H=$(curl -s --max-time 10 "http://127.0.0.1:$HPORT/" "http://127.0.0.1:$HPORT/x") || { echo "FAIL: curl exit $? (plain HTTP)"; exit 1; }
+[[ "$H" == "$EXPECT"$'\n'"$EXPECT" ]] || { echo "FAIL: plain HTTP got '$H'"; exit 1; }
 # and nobody who doesn't trust our CA gets in (the chain is checked, not waved through)
 if [[ -s $B/ca.pem ]] && "${NOCA[@]}" -o /dev/null "$URL"; then
   echo "FAIL: curl accepted the certificate without our CA"; exit 1

@@ -8,7 +8,8 @@
 // 64, 128, ... open and at the end it fetches the page over every connection and compares the body.
 // With a barrier directory, workers wait until all have opened before the final fetch, and hold
 // their connections until all have finished it, so every connection is open at the same time.
-// Env: INFLIGHT (handshakes/fetches at once, default 4), TIMEOUT (seconds, default 60),
+// Env: PLAIN (set: plain HTTP to port 80, no TLS), INFLIGHT (handshakes/fetches at once,
+// default 4), TIMEOUT (seconds, default 60),
 // DST (ip:port), B (build directory: B/name is the name the certificate must carry, B/ca.pem
 // the CA to trust; an empty ca.pem means the system's roots, for a real certificate).
 #define _GNU_SOURCE
@@ -43,7 +44,7 @@ typedef struct {
 static const char REQ[] = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
 static conn *C;
 static int N, ep, inflight, opened, served, hs_err, get_err, closed_err, in_use;
-static int INFLIGHT = 4, TIMEOUT = 60;
+static int INFLIGHT = 4, TIMEOUT = 60, PLAIN;
 static SSL_CTX *ctx;
 static struct sockaddr_in src, dst;
 static char expect[4096];
@@ -81,6 +82,7 @@ static void fail(conn *c) {
 }
 
 static int blocked(conn *c, int r) {  // after an SSL call failed: 1 = wait for the socket
+    if (PLAIN) return r < 0 && errno == EAGAIN ? want(c, EPOLLIN), 1 : 0;
     int e = SSL_get_error(c->ssl, r);
     if (e == SSL_ERROR_WANT_READ) return want(c, EPOLLIN), 1;
     if (e == SSL_ERROR_WANT_WRITE) return want(c, EPOLLOUT), 1;
@@ -107,6 +109,13 @@ static void drive(conn *c, uint32_t ev) {
         socklen_t l = sizeof err;
         getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &err, &l);
         if (err) return fail(c);
+        if (PLAIN) {
+            c->st = IDLE;
+            inflight--;
+            opened++;
+            want(c, 0);
+            return;
+        }
         c->ssl = SSL_new(ctx);
         SSL_set_fd(c->ssl, c->fd);
         SSL_set_connect_state(c->ssl);
@@ -124,14 +133,14 @@ static void drive(conn *c, uint32_t ev) {
         return;
     }
     if (c->st == REQUEST) {
-        if ((r = SSL_write(c->ssl, REQ, sizeof REQ - 1)) <= 0) {
+        if ((r = PLAIN ? write(c->fd, REQ, sizeof REQ - 1) : SSL_write(c->ssl, REQ, sizeof REQ - 1)) <= 0) {
             if (!blocked(c, r)) fail(c);
             return;
         }
         c->st = RESPONSE;
     }
     if (c->st == RESPONSE) {
-        if ((r = SSL_read(c->ssl, buf, sizeof buf)) <= 0) {
+        if ((r = PLAIN ? read(c->fd, buf, sizeof buf) : SSL_read(c->ssl, buf, sizeof buf)) <= 0) {
             if (!blocked(c, r)) fail(c);
             return;
         }
@@ -220,6 +229,7 @@ int main(int argc, char **argv) {
     }
     if (getenv("INFLIGHT")) INFLIGHT = atoi(getenv("INFLIGHT"));
     if (getenv("TIMEOUT")) TIMEOUT = atoi(getenv("TIMEOUT"));
+    PLAIN = getenv("PLAIN") != NULL;
     N = atoi(argv[3]);
     FILE *f = fopen(argv[4], "rb");
     if (!f) { perror(argv[4]); return 2; }
@@ -229,7 +239,7 @@ int main(int argc, char **argv) {
     inet_pton(AF_INET, argv[1], &src.sin_addr);
     src.sin_port = htons(atoi(argv[2]));
     char dip[64] = "10.0.2.15", name[256] = "", path[600];
-    int dport = 443;
+    int dport = PLAIN ? 80 : 443;
     if (getenv("DST")) sscanf(getenv("DST"), "%63[^:]:%d", dip, &dport);
     inet_pton(AF_INET, dip, &dst.sin_addr);
     dst.sin_port = htons(dport);

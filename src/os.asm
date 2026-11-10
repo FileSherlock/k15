@@ -3,6 +3,7 @@
 ; Boot: by src/boot.asm from a disk, or as a multiboot v1 "a.out kludge" kernel (GRUB,
 ;       `qemu -kernel`). Sets up its own segments, stack and zeroed memory.
 ; NIC:  virtio-net (modern PCI interface), polled. Our IP is baked in (OURIP).
+; TCP:  ports 443 (TLS) and 80 (the same page without); see `tcp`.
 ; TLS:  1.3, TLS_CHACHA20_POLY1305_SHA256, X25519, ecdsa_secp256r1_sha256.
 ; Like k2, and unlike k1, this one is meant to be secure: a fresh X25519 key and a fresh ECDSA nonce per
 ; handshake (rdrand), a real certificate chain, and client records are authenticated before
@@ -106,6 +107,7 @@ S_TH    equ 64
 
 C_IP    equ 0               ; connection: the client's address (0: the slot is free),
 C_PORTS equ 4               ; its port and ours
+C_PLAIN equ 6               ; (the high byte of ours: 0 for port 80, plain HTTP)
 C_FLG   equ 44              ; F_OPEN, or F_CLOSED: FINs exchanged, but the client lacks something
 F_OPEN  equ 1
 F_CLOSED equ 2
@@ -646,9 +648,11 @@ tcp:
         int3
 .nok:
 %endif
-        cmp word [ebx+36], 0xBB01
+        cmp word [ebx+36], 0xBB01 ; port 443: TLS
+        je .port
+        cmp word [ebx+36], 0x5000 ; port 80: the same without
         jne nsret
-        cmp [ebx+26], ebx       ; (no client is 0.0.0.0: that marks a free slot)
+.port:  cmp [ebx+26], ebx       ; (no client is 0.0.0.0: that marks a free slot)
         je nsret
         movzx eax, byte [ebx+46]
         shr eax, 4
@@ -787,6 +791,9 @@ tcp:
         mov ax, [MSSTAB+eax*2]
         mov [ebp+C_MSS], ax
         mov byte [ebp+C_FLG], F_OPEN
+        cmp [ebp+C_PLAIN], bl
+        jne .est
+        inc dword [ebp+C_ST]    ; port 80: no handshake, its first request is number 0
 
 .est:   mov eax, [NOW]
         mov [ebp+C_AGE], eax
@@ -919,6 +926,8 @@ tcp:
         ; Finished, which has other keys, and anything forged are skipped like the junk they are).
 .walk:  test ecx, ecx
         jz .reply
+        cmp byte [ebp+C_PLAIN], 0
+        je .http
         mov eax, [ebp+C_LEN]
         test eax, eax
         jz .rec
@@ -989,6 +998,28 @@ tcp:
         sub ecx, eax
         jmp .walk
 
+        ; Port 80. A request ends with an empty line (C_LEN: line ends in a row so far; CRs
+        ; don't count either way) and gets the response.
+.http:  mov edx, [ebp+C_LEN]
+.hb:    lodsb
+        cmp al, 13
+        je .hn
+        cmp al, 10
+        jne .h0
+        inc edx
+        cmp edx, 2
+        jb .hn
+        cmp edi, OB + OBMAX - RL
+        ja .h0                  ; (no room for another response)
+        mov edx, [ebp+C_ST]
+        dec edx
+        inc dword [ebp+C_ST]
+        call respond
+.h0:    xor edx, edx
+.hn:    dec ecx
+        jnz .hb
+        mov [ebp+C_LEN], edx
+
 .reply: mov esi, OB             ; our answer is at OB, up to edi; it follows what we sent before
         mov ecx, edi
         sub ecx, esi
@@ -1033,7 +1064,10 @@ tcp:
         xor eax, eax
 .recs:  xor edx, edx
         mov ecx, RL
-        div ecx                 ; eax = the record the ack is in, edx = where in it
+        cmp [ebp+C_PLAIN], dl
+        jne .rl
+        mov ecx, RESP_LEN - 1
+.rl:    div ecx                 ; eax = the record the ack is in, edx = where in it
         push edx
         mov edx, eax
         mov ecx, [ebp+C_ST]
@@ -1163,17 +1197,23 @@ cookie_ok:
         pop eax
         ret
 
-; respond: our response to request number edx of connection ebp, as a record at edi (which moves on)
+; respond: our response to request number edx of connection ebp at edi (which moves on): as
+; a record under the connection's key, or on port 80 as it is
 respond:
         push esi
         push ecx
         push ebx
         mov esi, RESP
         mov ecx, RESP_LEN
-        lea ebx, [ebp+C_KIV]
+        cmp byte [ebp+C_PLAIN], 0
+        jne .tls
+        dec ecx                 ; port 80: as it is (without the byte that says what a record holds)
+        rep movsb
+        jmp .done
+.tls:   lea ebx, [ebp+C_KIV]
         clc
         icall seal
-        pop ebx
+.done:  pop ebx
         pop ecx
         pop esi
         ret

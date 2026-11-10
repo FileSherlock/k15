@@ -4,9 +4,10 @@ k3 is k2 (`../k2`: 3,231 bytes, QEMU with an ISA NE2000, scored in connections p
 taken off its machine contract and put on a Hetzner cloud server. Decided with the user
 (2026-11-10):
 - the load is k6-style: ramp to N users in 60 s, hold, under 1% errors
-- plain HTTP on port 80 (for the connection count) and HTTPS on 443 (as fast as it will go)
+- plain HTTP on port 80 (for the connection count) and HTTPS on 443 (as fast as it will go).
+  Port 80 has none of the security below: it serves the same public page to anyone.
 - size comes later ("we can optimize more later"): correctness and capacity first. The image
-  is still one assembly file and still small (5,531 bytes); don't golf it, don't bloat it.
+  is still one assembly file and still small (5,627 bytes); don't golf it, don't bloat it.
 - security as in k2 (below) still holds for everything behind TLS
 
 ## Where it stands
@@ -36,7 +37,10 @@ Steps 1 (virtio-net) and 2 (boot on the server) are done. Next:
   536, 1220, 1440 (`MSSTAB`; four sizes so that two bits can carry it). Over tap with an
   MTU of 300 (tapc's ClientHello is 1460 bytes: six segments; our flight: three) and 3% loss
   each way: 2,000 of 2,000 served.
-- Port 80: the same static page without TLS. Everything not 443 is dropped today.
+- Port 80: done. The same response without TLS; a request ends with an empty line.
+  Over tap: 640,000 connections from 32 addresses held and all fetched in a 2 GiB VM
+  (`MEM=2048 PLAIN=1 INFLIGHT=64 ... ./taprunc.sh 20000 1024 32`), 8,000 with 3% loss, and
+  with an MTU of 300 as well.
 - Not yet checked against a real browser over the internet (only curl and tapc).
 
 **4. Handshake rate.** Long mode, then 64-bit curve code (the CPU has mulx/adx; no sha_ni,
@@ -72,9 +76,11 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   image: its identity, the name in a generated certificate, the address it answers on, and
   (development only) the two ports that reset it. The scripts take `B` from the environment.
 - `./measure.sh` builds, boots the disk image in QEMU, fetches with curl (chain and name
-  verified, fresh connections + keep-alive, and a check that curl refuses without our CA)
-  and runs `tools/abuse.py` (forged, replayed, truncated records and bad ClientHellos must
-  be ignored and leave real connections working). Under a second with KVM.
+  verified, fresh connections + keep-alive, plain HTTP on port 80, and a check that curl
+  refuses without our CA) and runs `tools/abuse.py` (forged, replayed, truncated records
+  and bad ClientHellos must be ignored and leave real connections working; requests in
+  pieces and pipelined on port 80). Under two seconds with KVM. Through slirp the guest's
+  443 is 127.0.0.1:`PORT` (8443) and its 80 is `HPORT` (PORT + 1000).
 - `./browsers.sh` checks Firefox and Chrome with our CA as a trusted root in throwaway
   profiles (no exceptions; Chrome's net-log must show no certificate error flags) and that
   Chrome refuses without the CA. Run after any TLS/cert/TCP/HTTP change.
@@ -85,7 +91,8 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   Ethernet segment: ARP, a Linux TCP as the peer, random ISNs. `LOSS=1` (before `unshare`)
   drops 1% of the packets in each direction, `MTU=n` sets the tap's MTU, and `TIMEOUT=10`
   makes a hung connection fail fast instead of after 60 s. W can be up to 32 (10.0.2.32-63:
-  the second 16 share their low nibble with the first).
+  the second 16 share their low nibble with the first). `PLAIN=1 INFLIGHT=64` in front runs
+  the same over plain HTTP to port 80.
 - `make B=build-small TBITS=10` builds an image with at most 2^10 connection slots, then
   `B=build-small unshare -Urn ./tap.sh python3 tools/churn.py [HELD] [LOOPS]` checks that
   connections that end (five ways) give their slots back, and with `FLOOD=n` in front that
@@ -170,7 +177,7 @@ Two things differ locally:
   VERSION_1, and polls the used ring. It kicks only when the device hasn't set NO_NOTIFY.
   `nic_send` copies FR into the next transmit buffer and waits if the device holds all N.
 - `tcp`: ARP requests for OURIP get a reply; then only IPv4 without options, unfragmented,
-  TCP, to OURIP, with both checksums right and a length that fits the frame, port 443 gets
+  TCP, to OURIP, with both checksums right and a length that fits the frame, port 443 or 80 gets
   further. `ethfix` turns the frame's Ethernet header around; `tcp_send` cuts an answer
   into segments, `tcp_seg` sends one.
 - `tools/ec.py`: the curve code's other half. The asm has one Montgomery multiplication
@@ -210,6 +217,10 @@ records start (`C_APP`) and the client's last ack (`C_ACK`).
   went to another and that needs it (the rest of its ClientHello arrives, or its flight
   has to go out again) is reset. That takes 1024 other handshakes starting within one
   client's retransmission time: more buffers when step 4 makes handshakes that fast.
+- Port 80 is the same machine without keys: a connection there starts with `C_ST` = 1, its
+  "records" are the bare response, and its requests are found by counting line ends
+  (`.http`: two in a row, CRs ignored, end a request; a request body would be read as
+  more request lines).
 - A record header split over segments is carried in the slot (`C_HDR`); a record split over
   segments is still skipped, not read (see Shortcuts).
 
@@ -274,8 +285,9 @@ are step 3's job.
 - The server random is the client's, nudged. Freshness comes from our key share.
 - No check for an all-zero X25519 result (a client can only weaken its own connection).
 - No alerts, no close_notify, no KeyUpdate, no session tickets.
-- TCP: no SACK, timestamps or window scaling, no timers, we never close first.
-  Bare-LF HTTP response.
+- TCP: no SACK, timestamps or window scaling, no timers, we never close first (not even
+  for `Connection: close`: the client has the Content-Length). Bare-LF HTTP response.
+- HTTP: any request, whatever it asks for, gets the page; a request body is not understood.
 - `keys` writes 20 junk bytes after an IV: the handshake makes both key blocks in `KA` and
   copies them into the slot.
 - The handshake's scratch (transcript, key schedule, curve registers) is global: one

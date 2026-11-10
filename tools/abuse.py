@@ -6,6 +6,8 @@
   2. a ClientHello without an x25519 key share gets no working session
   3. junk instead of a ClientHello, and an oversized "ClientHello", do no harm
   4. after all of that a normal client is still served
+  5. plain HTTP on port 80 (127.0.0.1:$HPORT): a request in pieces gets one response, two in
+     one segment get two, bytes without an empty line get none
 
 Uses Python's ssl with memory BIOs, so that raw bytes can be slipped into the TCP stream
 between TLS records.
@@ -14,9 +16,11 @@ import os
 import socket
 import ssl
 import sys
+import time
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", "8443"))
+HPORT = int(os.environ.get("HPORT", PORT + 1000))
 BUILD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", os.environ.get("B", "build"))
 NAME = open(os.path.join(BUILD, "name")).read()
 EXPECT = open(os.path.join(BUILD, "..", "www", "index.html"), "rb").read()
@@ -143,6 +147,29 @@ def main():
             pass
         s.close()
         good &= check(f"still serving after {name}", served())
+
+    # 5. port 80
+    def plain(pieces, want):
+        """Send the pieces one by one, then FIN; count the responses until the server's FIN."""
+        s = socket.create_connection((HOST, HPORT), timeout=5)
+        buf = b""
+        try:
+            for piece in pieces:
+                s.sendall(piece)
+                time.sleep(0.05)
+            s.shutdown(socket.SHUT_WR)
+            while got := s.recv(4096):
+                buf += got
+        except OSError as e:
+            buf = b"error %r" % e
+        s.close()
+        return buf.count(EXPECT) == want and buf.count(b"HTTP/1.1 200") == want
+
+    good &= check("port 80: a request gets a response", plain([REQ], 1))
+    good &= check("port 80: a request in three pieces gets one", plain([REQ[:5], REQ[5:-2], REQ[-2:]], 1))
+    good &= check("port 80: two requests at once get two", plain([REQ + REQ], 2))
+    good &= check("port 80: bytes without an empty line get none", plain([os.urandom(64).replace(b"\n", b"x") * 40], 0))
+    good &= check("port 80: still serving", plain([REQ], 1))
     return 0 if good else 1
 
 
