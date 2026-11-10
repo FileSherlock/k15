@@ -3,7 +3,7 @@
 # Ethernet segment (ARP, the host's own traffic, random initial sequence numbers), and no
 # slirp walking every open socket. No root needed inside a throwaway namespace:
 # Usage: [B=build] [KVM=1] [LOSS=1] [MTU=n] unshare -Urn ./tap.sh COMMAND [ARGS...]   e.g. ... ./taprunc.sh 2000 1024 4
-# The host is 10.0.2.2 plus 10.0.2.32-47; the guest is 10.0.2.15.
+# The host is 10.0.2.2 plus 10.0.2.32-63; the guest is 10.0.2.15.
 set -euo pipefail
 cd "$(dirname "$0")"
 export B=${B:-build}
@@ -16,7 +16,7 @@ ip tuntap add dev "$TAP" mode tap
 sysctl -q "net.ipv6.conf.$TAP.disable_ipv6=1" 2>/dev/null || true
 ip link set "$TAP" multicast off
 ip addr add 10.0.2.2/24 dev "$TAP"
-for i in $(seq 32 47); do ip addr add "10.0.2.$i/24" dev "$TAP"; done
+for i in $(seq 32 63); do ip addr add "10.0.2.$i/24" dev "$TAP"; done
 ip link set "$TAP" up
 # LOSS=n: drop n% of the packets in each direction (host -> guest by netem, guest -> host by
 # an ingress filter), and MTU=n sets the tap's MTU (a small one splits the client's segments)
