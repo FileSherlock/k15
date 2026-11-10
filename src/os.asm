@@ -39,6 +39,9 @@ EXP     equ BSS + 0x0E080   ; exponent for inv: modulus - 2
 E       equ BSS + 0x0E100   ; our X25519 secret (32 bytes), then
 K       equ E + 32          ; the ECDSA nonce (32 bytes, and 4 zero bytes: it is read as 9 limbs)
 DHS     equ BSS + 0x0E180   ; X25519 shared secret
+MN      equ BSS + 0x0E201   ; moduli (made at boot): 8 dwords | 0 | -1/m mod 2^32, and a zero
+MP256   equ MN + 44         ; byte in front. n and p of P-256,
+M25519  equ MP256 + 44      ; and 2^255 - 19
 REGS    equ BSS + 0x0E400   ; the curve machine's 16 registers of 9 limbs (not in the image's
                             ; page: TCG takes a slow path for every write to a page with code)
 CHB     equ 0x400000        ; ClientHello reassembly: 1024 x 4 KiB, by slirp's initial seq
@@ -115,12 +118,7 @@ shaconst:
         mov byte [R_NINE], 9    ; the X25519 base point
 %ifdef HOST
         mov esi, REGC
-        mov edi, REGS
-        push REGC_LEN
-        pop ecx
-        rep movsb
-        popad
-        ret
+        xor ecx, ecx
 %else
         mov esi, nicinit        ; NE2000 setup: (register, value) pairs
         mov dh, 3
@@ -131,9 +129,48 @@ shaconst:
         mov al, ah
         out dx, al
         loop .ni
+%endif
         mov edi, REGS           ; the constant registers follow nicinit: x(G) R, 4b R, d R, 1
         mov cl, REGC_LEN
         rep movsb
+        mov edi, MN             ; the moduli. n: its low half is data, then FFFFFFFF FFFFFFFF
+        movsd                   ; 0 FFFFFFFF
+        movsd
+        movsd
+        movsd
+        or eax, -1
+        stosd
+        stosd
+        scasd
+        stosd
+        scasd
+        movsd                   ; -1/n
+        scasd
+        stosd                   ; p256: FFFFFFFF x 3, 0 x 3, 1, FFFFFFFF; -1/p = 1
+        stosd
+        stosd
+        add edi, 12
+        inc dword [edi]
+        scasd
+        stosd
+        scasd
+        inc dword [edi]
+        scasd
+        scasd
+        push -19                ; 2^255 - 19; -1/p = 0x286BCA1B
+        pop eax
+        stosd
+        or eax, -1
+        mov cl, 6
+        rep stosd
+        shr eax, 1
+        stosd
+        scasd
+        mov dword [edi], 0x286BCA1B
+%ifdef HOST
+        popad
+        ret
+%else
 
         xor ebx, ebx            ; FR: unsolicited ARP reply "10.0.2.15 is at <whatever MAC>"
         mov word [ebx+12], 0x0608 ; (the MAC is IVT junk: fine, the NIC is promiscuous)
@@ -786,6 +823,7 @@ expand:
 ; Elliptic curves: 256-bit arithmetic mod m, lazily reduced, in a 16-register machine.
 ; tools/ec.py has the programs, the bounds that make this safe, and a model of all of it.
 ; A modulus is: m (8 dwords) | 0 | -1/m mod 2^32, with a zero byte in front; ebp points at it.
+; (All three are built at boot.)
                                 ; 0-3: x(G) R, 4b R, d R, 1 (copied from the image at boot)
 R_X2    equ REGS + 5*36         ; r after sigr
 R_Z2    equ REGS + 6*36         ; s after SIGN
@@ -834,7 +872,8 @@ sigr:   pushad
 ; smult: X2 = x of (256-bit number at ebx) * the base point, mod the modulus at ebp, canonical.
 ; esi = init program, followed by the ladder step program.
 smult:  call vm
-        mov ecx, 255
+        xor ecx, ecx
+        dec cl                  ; bit 255
 .l:     bt [ebx], ecx
         sbb edx, edx
         call cswap              ; the step doubles (X2 : Z2) and adds it to (X3 : Z3)
@@ -1263,4 +1302,4 @@ SHTAIL: db 0x13, 0x03, 0x00, 0x00, 0x2e, 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04
 %else
 %include "build/regs.inc"
 %endif
-%include "build/ec.inc"         ; curve programs and moduli
+%include "build/ec.inc"         ; curve programs

@@ -6,16 +6,15 @@ Usage: gen.py www/index.html build/
 The server's identity comes from cert/:
   cert/server.key   its private key (PEM, must be ECDSA P-256)
   cert/server.pem   its certificate, followed by any intermediates (PEM)
-If they are missing, a private CA (cert/ca.key, cert/ca.pem) and the smallest leaf we found
-that curl, Chrome and Firefox accept are made, for NAME (default 127.0.0.1; an IP address or
-a DNS name). To serve with a real certificate instead, drop its two files into cert/.
+If they are missing, a private CA (cert/ca.pem: there is no CA key, see make_identity) and
+the smallest leaf we found that curl, Chrome and Firefox accept are made, for NAME (default
+127.0.0.1; an IP address or a DNS name). To serve with a real certificate instead, drop its two files into cert/.
 Nothing here ever renews: the certificate is baked into the image.
 
-Outputs: build/gen.inc (TLS blobs), build/ec.inc (curve programs and moduli), build/regs.inc
+Outputs: build/gen.inc (TLS blobs), build/ec.inc (curve programs), build/regs.inc
 (curve constants and the private key: the image is a secret), build/ca.pem (what clients must trust; empty if the
 chain is a real one) and build/name (the host name to test with).
 """
-import datetime
 import ipaddress
 import os
 import sys
@@ -23,7 +22,6 @@ import sys
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.x509.oid import NameOID
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ec as curve  # noqa: E402
@@ -47,57 +45,97 @@ def private_pem(key):
                              serialization.NoEncryption())
 
 
-def make_ca():
-    key = ec.generate_private_key(ec.SECP256R1())
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "k2")])
-    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
-            .public_key(key.public_key()).serial_number(x509.random_serial_number())  # not the leaf's 1:
-            # NSS refuses two certificates with the same issuer and serial (Firefox: bad_certificate)
-            .not_valid_before(datetime.datetime(2026, 1, 1))
-            .not_valid_after(datetime.datetime(2049, 12, 31))
-            .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
-            .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False),
-                           critical=True)
-            .sign(key, hashes.SHA256()))
-    os.makedirs(CERT, exist_ok=True)
-    put(f"{CERT}/ca.key", private_pem(key))
-    put(f"{CERT}/ca.pem", cert.public_bytes(serialization.Encoding.PEM))
-    return key, cert
+def ec_add(P, Q):
+    """P-256 points in affine coordinates (None = infinity)."""
+    p = curve.P256
+    if P is None or Q is None:
+        return P or Q
+    if P[0] == Q[0]:
+        if (P[1] + Q[1]) % p == 0:
+            return None
+        lam = (3 * P[0] * P[0] - 3) * pow(2 * P[1], -1, p) % p
+    else:
+        lam = (Q[1] - P[1]) * pow(Q[0] - P[0], -1, p) % p
+    x = (lam * lam - P[0] - Q[0]) % p
+    return x, (lam * (P[0] - x) - P[1]) % p
 
 
-def make_leaf(ca_key, ca_cert, name):
-    """Smallest X.509 we found that all three clients accept under a trusted CA: v3 (the
-    subjectAltName needs it), empty subject, one extension. LEAF=option,... tries variants."""
+def ec_mul(k, P):
+    acc = None
+    while k:
+        if k & 1:
+            acc = ec_add(acc, P)
+        P, k = ec_add(P, P), k >> 1
+    return acc
+
+
+ECDSA_SHA256 = tlv(0x30, tlv(0x06, bytes.fromhex("2a8648ce3d040302")))
+EC_P256 = tlv(0x30, tlv(0x06, bytes.fromhex("2a8648ce3d0201")) + tlv(0x06, bytes.fromhex("2a8648ce3d030107")))
+VALIDITY = tlv(0x30, tlv(0x17, b"260101000000Z") + tlv(0x17, b"491231000000Z"))
+
+
+def make_identity(name):
+    """A leaf certificate for `name` and the CA that signed it: cert/server.key, .pem, ca.pem.
+
+    The leaf is the smallest X.509 we found that curl, Chrome and Firefox accept under a
+    trusted CA: v3 (the subjectAltName needs it), empty subject, one extension, and an 8-byte
+    signature. The last works because the CA signs nothing else, so we may pick the signature
+    first and the CA's key second: take the curve point R with the smallest x coordinate as
+    the nonce point, so r = x(R) is tiny, set s = 1, and solve the verification equation
+    R = (z G + r Q) / s for the CA's public key Q = (R - z G) / r. That is a perfectly valid
+    ECDSA signature under Q. Nobody knows log R, so nobody (us included) knows Q's private
+    key: this CA can never sign a second certificate, which makes it harmless to trust.
+    (Its own self-signature is a dummy for the same reason; no client checks a trust
+    anchor's.) LEAF=option,... tries variants of the leaf.
+    """
+    opt = os.environ.get("LEAF", "").split(",")
     key = ec.generate_private_key(ec.SECP256R1())
-    sigalg = tlv(0x30, tlv(0x06, bytes.fromhex("2a8648ce3d040302")))  # ecdsa-with-SHA256
-    algid = tlv(0x30, tlv(0x06, bytes.fromhex("2a8648ce3d0201")) + tlv(0x06, bytes.fromhex("2a8648ce3d030107")))
-    opt = os.environ.get("LEAF", "").split(",")  # experiments
     # (a compressed point would save 32 bytes: curl takes it, Firefox says
     # SEC_ERROR_UNSUPPORTED_EC_POINT_FORM once the chain is trusted)
     point = key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.CompressedPoint
                                           if "compressed" in opt else serialization.PublicFormat.UncompressedPoint)
-    spki = tlv(0x30, algid + tlv(0x03, b"\x00" + point))
+    spki = tlv(0x30, EC_P256 + tlv(0x03, b"\x00" + point))
     try:
         gn = tlv(0x87, ipaddress.ip_address(name).packed)
     except ValueError:
         gn = tlv(0x82, name.encode())
-    # critical, as RFC 5280 wants with an empty subject
+    # critical, as RFC 5280 wants with an empty subject (Chrome: INVALID otherwise)
     san = tlv(0x30, tlv(0x06, b"\x55\x1d\x11") + (b"" if "noncritical" in opt else tlv(0x01, b"\xff"))
               + tlv(0x04, tlv(0x30, gn)))
     subject = tlv(0x30, tlv(0x31, tlv(0x30, tlv(0x06, b"\x55\x04\x03") + tlv(0x0c, b"x")))) if "subject" in opt else tlv(0x30, b"")
-    validity = tlv(0x30, tlv(0x17, b"260101000000Z") + tlv(0x17, b"491231000000Z"))
-    tbs = tlv(0x30, tlv(0xa0, tlv(0x02, b"\x02")) + tlv(0x02, b"\x01") + sigalg
-              + ca_cert.subject.public_bytes() + validity + subject + spki
-              + tlv(0xa3, tlv(0x30, san)))
-    # ECDSA signatures vary in length: take a short one (r and s without padding bytes)
-    while True:
-        sig = ca_key.sign(tbs, ec.ECDSA(hashes.SHA256()))
-        if len(sig) <= 70 - int(os.environ.get("GRIND", "1")):
-            break
-    der = tlv(0x30, tbs + sigalg + tlv(0x03, b"\x00" + sig))
-    cert = x509.load_der_x509_certificate(der)
+    # The CA's name: one attribute, OID 2.5.4 = "". (An empty name: curl and Firefox refuse,
+    # MOZILLA_PKIX_ERROR_EMPTY_ISSUER_NAME. Firefox calls a 1-byte OID bad DER.)
+    ca_name = tlv(0x30, tlv(0x31, tlv(0x30, tlv(0x06, b"\x55\x04") + tlv(0x13, b""))))
+    tbs = tlv(0x30, tlv(0xa0, tlv(0x02, b"\x02")) + tlv(0x02, b"\x01") + ECDSA_SHA256
+              + ca_name + VALIDITY + subject + spki + tlv(0xa3, tlv(0x30, san)))
+
+    p, n = curve.P256, curve.N256
+    h = hashes.Hash(hashes.SHA256())
+    h.update(tbs)
+    z = int.from_bytes(h.finalize(), "big")
+    r = 1
+    while pow((r ** 3 - 3 * r + curve.B256) % p, (p - 1) // 2, p) != 1:
+        r += 1
+    R = (r, pow((r ** 3 - 3 * r + curve.B256) % p, (p + 1) // 4, p))
+    Q = ec_mul(pow(r, -1, n), ec_add(R, ec_mul(n - z % n, (curve.GX256, curve.GY256))))
+    sig = tlv(0x30, tlv(0x02, bytes([r])) + tlv(0x02, b"\x01"))
+    ca_pub = ec.EllipticCurvePublicNumbers(Q[0], Q[1], ec.SECP256R1()).public_key()
+    ca_pub.verify(sig, tbs, ec.ECDSA(hashes.SHA256()))  # raises if the trick went wrong
+    leaf = tlv(0x30, tbs + ECDSA_SHA256 + tlv(0x03, b"\x00" + sig))
+
+    # the CA: an ordinary root certificate around Q
+    ca_spki = tlv(0x30, EC_P256 + tlv(0x03, b"\x00" + ca_pub.public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)))
+    ca_ext = (tlv(0x30, tlv(0x06, b"\x55\x1d\x13") + tlv(0x01, b"\xff") + tlv(0x04, tlv(0x30, tlv(0x01, b"\xff"))))
+              + tlv(0x30, tlv(0x06, b"\x55\x1d\x0f") + tlv(0x01, b"\xff") + tlv(0x04, tlv(0x03, b"\x01\x06"))))
+    ca_tbs = tlv(0x30, tlv(0xa0, tlv(0x02, b"\x02")) + tlv(0x02, os.urandom(8).hex().encode()[:8]) + ECDSA_SHA256
+                 + ca_name + VALIDITY + ca_name + ca_spki + tlv(0xa3, tlv(0x30, ca_ext)))
+    ca = tlv(0x30, ca_tbs + ECDSA_SHA256 + tlv(0x03, b"\x00" + tlv(0x30, tlv(0x02, b"\x01") + tlv(0x02, b"\x01"))))
+
+    os.makedirs(CERT, exist_ok=True)
     put(f"{CERT}/server.key", private_pem(key))
-    put(f"{CERT}/server.pem", cert.public_bytes(serialization.Encoding.PEM))
+    for path, der in ((f"{CERT}/server.pem", leaf), (f"{CERT}/ca.pem", ca)):
+        put(path, x509.load_der_x509_certificate(der).public_bytes(serialization.Encoding.PEM))
 
 
 def db(name, data):
@@ -110,12 +148,7 @@ def le(v, n=32):
 
 def main(html_path, out):
     if not (os.path.exists(f"{CERT}/server.key") and os.path.exists(f"{CERT}/server.pem")):
-        if os.path.exists(f"{CERT}/ca.key"):
-            ca_key = serialization.load_pem_private_key(open(f"{CERT}/ca.key", "rb").read(), None)
-            ca_cert = x509.load_pem_x509_certificate(open(f"{CERT}/ca.pem", "rb").read())
-        else:
-            ca_key, ca_cert = make_ca()
-        make_leaf(ca_key, ca_cert, os.environ.get("NAME", "127.0.0.1"))
+        make_identity(os.environ.get("NAME", "127.0.0.1"))
     key = serialization.load_pem_private_key(open(f"{CERT}/server.key", "rb").read(), None)
     chain = x509.load_pem_x509_certificates(open(f"{CERT}/server.pem", "rb").read())
     if not isinstance(key, ec.EllipticCurvePrivateKey) or key.curve.name != "secp256r1":
@@ -157,15 +190,14 @@ def main(html_path, out):
         f.write("; generated by tools/gen.py from tools/ec.py: SECRET (holds the private key)\n")
         for name in ("INIT25519", "STEP25519", "INIT256", "STEP256", "FIN", "SIGN"):
             f.write(db(name, curve.PROGRAMS[name]))  # (each STEP must follow its INIT)
-        # moduli: m | 0 | -1/m mod 2^32, each with a zero byte in front
-        for name, m in (("M25519", curve.P25519), ("MN", curve.N256), ("MP256", curve.P256)):
-            f.write("        db 0\n" + db(name, le(m) + le(0, 4) + le(curve.mprime(m), 4)))
     # the constant registers GX, B4, D and ONE (9 limbs each; ONE's zeros are not stored),
     # copied to the register file at boot
     regs = b"".join(le(v, 36) for v in (curve.GX256 * R % curve.P256, 4 * curve.B256 * R % curve.P256,
                                         d * R % curve.N256)) + b"\x01"
+    # then what boot can't compute of the group order n: its low half and -1/n mod 2^32
     with open(f"{out}/regs.inc", "w") as f:
-        f.write("; generated by tools/gen.py: SECRET (holds the private key)\n" + db("REGC", regs))
+        f.write("; generated by tools/gen.py: SECRET (holds the private key)\n" + db("REGC", regs)
+                + db("NLOW", le(curve.N256 % (1 << 128), 16) + le(curve.mprime(curve.N256), 4)))
 
 
 if __name__ == "__main__":
