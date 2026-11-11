@@ -1,6 +1,7 @@
 # Sourced by measure.sh and browsers.sh: the test machine (shaped like the server), and how a client
 # reaches the server (its certificate's name, and the CA to trust if it is our private one).
-# Needs PORT and IMG; B (default build) is where the image was built. Sets NAME, URL, CURL
+# Needs PORT and IMG; B (default build) is where the image was built; SMP is how many
+# processors the machine has (default 2, as the server). Sets NAME, URL, CURL
 # and NOCA (arrays), and boot starts QEMU (QEMU_PID).
 
 B=${B:-build}
@@ -19,7 +20,7 @@ ACCEL=(-cpu max)
 
 boot() {
   QEMU_LOG=$(mktemp)
-  qemu-system-x86_64 -nodefaults -display none -no-reboot -machine q35 "${ACCEL[@]}" -m 256 \
+  qemu-system-x86_64 -nodefaults -display none -no-reboot -machine q35 -smp "${SMP:-2}" "${ACCEL[@]}" -m 256 \
     -drive "file=${IMG%os.bin}disk.img,format=raw,if=none,id=d0,snapshot=on" \
     -netdev "user,id=n0,net=${GUEST%.*}.0/24,hostfwd=tcp:127.0.0.1:${PORT}-${GUEST}:443,hostfwd=tcp:127.0.0.1:${HPORT}-${GUEST}:80" \
     -device pcie-root-port,id=rp1,chassis=1 -device virtio-net-pci,bus=rp1,netdev=n0,disable-legacy=on,romfile= \
