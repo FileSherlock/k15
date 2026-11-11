@@ -132,13 +132,12 @@ BORN    equ NV + 88         ; when we booted, in units of 2^32 cycles (make LIFE
 TMMASK  equ NV + 92         ; SYNs that may be answered again (`tnote`): how many places, less 1,
 TMF     equ NV + 96         ;   where the SYNs are (128 bytes each: tries left, length, frame),
 TMT     equ NV + 100        ;   and where the times they came are (a dword each; 0: none)
-THAND   equ NV + 104        ;   how far this processor has got round them (`tdue`),
+THAND   equ NV + 104        ;   how far this processor has got round them (`tidle`),
 TNOW    equ NV + 108        ;   the time, in units of 2^20 cycles,
 TLAST   equ NV + 112        ;   when a SYN was last answered again,
 TTRY    equ NV + 116        ;   and how often the SYN in hand may be yet (0: it is the client's)
-RBASE   equ NV + 120        ; the processors' rings of frames (`.drain`): where the first one is,
+RBASE   equ NV + 120        ; the processors' rings of frames (`drain`): where the first one is,
 RSTEP   equ NV + 124        ;   how far apart they are,
-RMASK   equ NV + 128        ;   how many frames one holds, less 1,
 MYRING  equ NV + 132        ;   and where this processor's is
 HKS     equ BSS + 0x0F400   ; the eleven round keys of `prf`, made at boot
 HKO     equ HKS + 176       ;   and its output
@@ -157,8 +156,8 @@ OO_DATA equ 16
 TABV    equ 0x1000000       ; The table space: from 16 MiB up (see the top of this file). Boot
                             ; divides it: n handshake buffers, n places of 2 KiB for early
                             ; segments (n a power of two: about 1/32 and 1/64 of it), 4 n
-                            ; SYNs of late (`tnote`), a ring of frames for each processor
-                            ; (`.drain`), then the two connection tables: the one for TLS,
+                            ; SYNs of late (`tnote`), a ring of n frames for each processor
+                            ; (`drain`), then the two connection tables: the one for TLS,
                             ; the one for port 80.
 HSP     equ TABV            ; Handshake buffers (see `hsnew`): each holds
 %assign HS_SHIFT 12
@@ -248,8 +247,11 @@ TSLOT   equ 128
 ; Development builds (make DEBUG=1) count things in DBG and show six counters, four hex
 ; digits each, in place of the end of the page on port 80: `count n` adds one to counter n.
 ; 0: frames with a bad length or checksum, 1: cycles per frame handled (an average, made when
-; shown), 2: connections refused for lack of room, 3: segments that came early, 4: resends,
-; 5: RSTs sent.
+; shown), 2: connections refused for lack of room and frames lost to a full ring (`drain`),
+; 3: segments that came early, 4: resends, 5: RSTs sent. With DEBUG=2, 3 and 5 are instead
+; what tells how busy this processor is: the turns of its polling loop that found nothing to
+; do, in units of 4,096, and the time, in units of 2^24 cycles. Two fetches give a rate, and
+; a processor with nothing to do gives the rate that means idle (bench/busy.sh does that).
 DBG     equ BSS + 0x0F500
 %macro count 1
 %ifdef DEBUG
@@ -386,13 +388,9 @@ BITS 64
         mov [TMT], eax
         shr ecx, 5
         add eax, ecx
-        mov [RBASE], eax        ; a ring of frames for each processor: n frames, 4,096 at
-        mov [MYRING], eax       ; most, and 2 KiB in front for how far it is
+        mov [RBASE], eax        ; a ring of frames for each processor: n frames, and 2 KiB
+        mov [MYRING], eax       ; in front for how far it is
         mov ecx, [HSMASK]
-        cmp ecx, 4095
-        jbe .rn
-        mov ecx, 4095
-.rn:    mov [RMASK], ecx
         add ecx, 2
         shl ecx, 11
         mov [RSTEP], ecx
@@ -603,6 +601,8 @@ shaconst:
         add eax, edi
         mov [rsi+4], eax        ; available ring: flags, idx, N entries
         mov [rbp+40], eax
+        mov byte [rax], 1       ; (its flags: no interrupts. We look for ourselves, and
+                                ; nobody would take them)
         lea eax, [rax+rcx*2+6+4095]
         and eax, -4096
         mov [rsi+8], eax        ; used ring: flags, idx, N x (id, length)
@@ -754,7 +754,8 @@ shaconst:
         jne .idle
         call stock
         jmp .poll
-.idle:  pause
+.idle:  count 9                 ; (a turn with nothing to do)
+        pause
         jmp .poll
 
 ; ring1: the next frame in this processor's ring goes through `tcp`; ZF if there is none.
@@ -763,7 +764,7 @@ ring1:  mov ebx, [MYRING]
         mov eax, [rbx+64]
         cmp eax, [rbx]
         je .none
-        and eax, [RMASK]
+        and eax, [HSMASK]
         inc eax
         shl eax, 11
         lea esi, [rbx+rax]
@@ -777,7 +778,6 @@ ring1:  mov ebx, [MYRING]
         jnz .go                 ; 32 of them)
         call txkick
 .go:    call tcpd
-        call tdue
         or al, 1
 .none:  ret
 
@@ -785,10 +785,11 @@ ring1:  mov ebx, [MYRING]
 ; frame into the ring of the processor whose connection it is. That takes a few hundred
 ; cycles a frame, and it is done before every frame handled and at intervals during what
 ; takes long (`bdrain`), so the device's ring (256 on the server) only has to hold what
-; comes in some tens of microseconds, and a burst waits in ours (thousands of frames)
-; instead of being lost. A connection is one processor's: which, the hash of its addresses
-; and ports says (the bits that also pick the place of an early segment: those are then
-; one processor's too). Clobbers rax, rcx, rdx, rbx, rsi, rdi, xmm0.
+; comes in some tens of microseconds, and what we can't keep up with waits in ours (n
+; frames each, see TABV: 16,384 in 4 GiB) instead of being lost: with handshakes to make
+; that is what half a second brings. A connection is one processor's: which, the hash of
+; its addresses and ports says (the bits that also pick the place of an early segment:
+; those are then one processor's too). Clobbers rax, rcx, rdx, rbx, rsi, rdi, xmm0.
 drain:  mov esi, [Q0+8]         ; used ring: anything new?
         mov eax, [Q0+Q_SEEN]
         cmp ax, [rsi+2]
@@ -819,11 +820,11 @@ drain:  mov esi, [Q0+8]         ; used ring: anything new?
         mov edi, [rbx]          ; first)
         mov eax, edi
         sub eax, [rbx+64]
-        cmp eax, [RMASK]
-        ja .give                ; (full: the frame is lost)
+        cmp eax, [HSMASK]
+        ja .lost                ; (full: the frame is lost)
         cmp ecx, 2044
         ja .give                ; (and so is one that would not fit its place there)
-        and edi, [RMASK]
+        and edi, [HSMASK]
         inc edi
         shl edi, 11
         add edi, ebx
@@ -842,6 +843,8 @@ drain:  mov esi, [Q0+8]         ; used ring: anything new?
         mov rdx, [Q0+Q_NOTE]
         mov word [rdx], 0
         jmp drain
+.lost:  count 2
+        jmp .give
 .done:  ret
 
 ; bdrain: the same, from the middle of long work, on whichever processor: keeps the eight
@@ -906,7 +909,8 @@ apstart: mov esp, STACK
         jne .rest
         call stock
         jmp .poll
-.rest:  pause
+.rest:  count 9
+        pause
         jmp .poll
 
 %ifdef DEBUG
@@ -950,6 +954,7 @@ pcird:  and al, 0xFC
 txbuf:  pushad
 .lock:  lock bts dword [abs TXLOCK], 0 ; (one processor at a time, until `txgo`)
         jnc .mine
+        call bdrain             ; (what comes in while we wait must not wait for us)
         pause
         jmp .lock
 .mine:  mov ebx, [Q1+4]         ; available ring
@@ -960,6 +965,7 @@ txbuf:  pushad
         cmp dx, [Q1+12]
         jbe .room
         call txkick.now         ; (whoever queued them: another processor may be waiting for us)
+        call bdrain
         jmp .full
 .room:  and eax, [Q1+12]        ; buffer = descriptor = ring position
         shl eax, 11
@@ -1130,7 +1136,7 @@ tcp:
         mov eax, [rbx+P_ACK]
         bswap eax
         mov [rbx+P_ACK], eax
-        rdtsc                   ; the time, in units of 2^20 cycles (for `tdue`) and of
+        rdtsc                   ; the time, in units of 2^20 cycles (for `tnote`) and of
         shrd eax, edx, 20       ; 2^37 (40 to 70 seconds)
         mov [TNOW], eax
         shr edx, 5
@@ -1645,11 +1651,13 @@ tcp:
 ; seconds for the rest of the connection (it has sent its SYN twice, so it has no round
 ; trip to go by). Instead the SYNs of late are kept: 4 n places (see TABV), a client's
 ; picked by its hash, whatever was there is gone. A connection made takes its SYN out
-; (`.make`). The polling loops go round the places, one a turn (`tdue`), and a SYN that
-; is still there after 2^29 cycles (a quarter of a second at 2.1 GHz) goes through `tcp`
-; once more, as if it had just come, three times at most. No more than one such a tick
+; (`.make`). A polling loop with no frame to handle goes round the places, 8 a turn
+; (`tidle`), and a SYN that is still there after 2^29 cycles (a quarter of a second at
+; 2.1 GHz) goes through `tcp` once more, as if it had just come, three times at most.
+; Only then: while frames wait in our ring, the client's answer may be one of them (under
+; more load than we can take, they wait longer than that). No more than one such a tick
 ; (2^20 cycles): a flood of SYNs from made-up addresses gets one SYN-ACK each as before,
-; and a few hundred a second on top.
+; and at most two thousand a second on top.
 ; tnote: keep the SYN in FR, if it is no longer than 120 bytes (they are 74)
 tnote:  pushad
         mov ecx, [RXLEN]
@@ -1685,13 +1693,12 @@ tnote:  pushad
 .no:    popad
         ret
 
-; tdue: the next 8 places of this processor's: a SYN that has waited long enough? Then it
-; is answered again (one at most). tidle: the same, when there was no frame to tell the
-; time by. (Clobber everything.)
+; tidle: the next 8 places of this processor's: a SYN that has waited long enough? Then it
+; is answered again (one at most). (Clobbers everything.)
 tidle:  rdtsc
         shrd eax, edx, 20
         mov [TNOW], eax
-tdue:   push 8
+        push 8
         pop rsi
 .next:  mov eax, [abs NCPUM]
         inc eax
@@ -1871,6 +1878,14 @@ respond:
         mov edx, [DBG+28]
         div dword [DBG+32]
         mov [DBG+4], eax
+%if DEBUG > 1                   ; (make DEBUG=2: how busy, in place of counters 3 and 5)
+        mov eax, [DBG+36]
+        shr eax, 12
+        mov [DBG+12], eax
+        rdtsc
+        shrd eax, edx, 24
+        mov [DBG+20], eax
+%endif
         dec edi                 ; (the page ends with a line end)
         mov esi, DBG + 24
         std

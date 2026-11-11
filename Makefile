@@ -19,8 +19,9 @@ IDLE ?=
 TSHARE ?=
 TABLEDEF := $(if $(CAP),-DCAP=$(CAP),) $(if $(IDLE),-DIDLE=$(IDLE),) $(if $(TSHARE),-DTSHARE=$(TSHARE),)
 # DEBUG=1 (development): count dropped and resent packets, shown in the page on port 80
+# (DEBUG=2: and how busy each processor is, see bench/busy.sh)
 # LIFE=n (development): the machine is reset after about n minutes (at 2.1 GHz), come what may
-DEBUGDEF := $(if $(DEBUG),-DDEBUG,) $(if $(LIFE),-DLIFE=$(LIFE),)
+DEBUGDEF := $(if $(DEBUG),-DDEBUG=$(DEBUG),) $(if $(LIFE),-DLIFE=$(LIFE),)
 
 # The image: hand-written assembly (src/os.asm) -> flat binary, loaded at 1 MiB; and a
 # disk image that boots it: the boot sector (src/boot.asm), then the image, padded
