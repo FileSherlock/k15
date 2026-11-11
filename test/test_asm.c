@@ -1,5 +1,5 @@
 /* Host harness for the asm crypto (src/os.asm built with -DHOST): prints the same lines as
- * test_crypto.c so test/test_crypto.py can check them. Build: gcc -m32 -no-pie. */
+ * test_crypto.c so test/test_crypto.py can check them. Build: see the Makefile. */
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -32,8 +32,7 @@ static void hex(const char *tag, const u8 *p, u32 n)
 
 int main(void)
 {
-    static u8 m[2000], out[4096], tmp[2100];
-    u8 h[32], kiv[68] = {0};
+    static u8 m[2000], out[4096], tmp[2100], h[32], kiv[68];
     setbuf(stdout, NULL);
     u32 i, lens[] = {0, 3, 55, 56, 63, 64, 119, 1000, 1999};
     if (mmap((void *)0x200000, 0x100000, PROT_READ | PROT_WRITE,

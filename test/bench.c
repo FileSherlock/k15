@@ -10,7 +10,7 @@ static double now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);retu
 int main(void){
     mmap((void *)0x200000, 0x100000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
     __asm__ volatile("call shaconst" ::: "memory","cc");
-    u8 u[32]={9}; int i;
+    static u8 u[32]={9}; int i;
     for(i=0;i<32;i++) E[i]=i*7+1, K[i]=i*13+5;
     double t=now();
     for(i=0;i<20;i++){ const u8*p=u; ASMCALL(x25519, "+S"(p)); }

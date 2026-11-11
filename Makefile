@@ -49,10 +49,12 @@ $(B)/os.bin: src/os.asm $(GEN) $(B)/ip
 	nasm -f bin -DOURIP=$(OURIP) $(KNOCKDEF) $(TABLEDEF) $(DEBUGDEF) -I$(B)/ -o $@ -l $(B)/os.lst src/os.asm
 	@echo "image: $$(stat -c %s $@) bytes"
 
-# asm crypto checked against pyca/cryptography on the host (32-bit process)
+# asm crypto checked against pyca/cryptography on the host (the asm calls and pushes as it
+# likes: no red zone; and it wants its buffers below 4 GiB: no PIE)
+HOSTCC := gcc -no-pie -fno-pie -O1 -mno-red-zone
 $(B)/test_asm: test/test_asm.c src/os.asm $(GEN)
-	nasm -f elf32 -DHOST -I$(B)/ -o $(B)/os_host.o src/os.asm
-	gcc -m32 -no-pie -fno-pie -O1 -o $@ test/test_asm.c $(B)/os_host.o
+	nasm -f elf64 -DHOST -I$(B)/ -o $(B)/os_host.o src/os.asm
+	$(HOSTCC) -o $@ test/test_asm.c $(B)/os_host.o
 
 test: $(B)/test_asm
 	python3 tools/ec.py
@@ -60,7 +62,7 @@ test: $(B)/test_asm
 
 # what the curve and hash code cost natively (the same object the tests use, timed on this host)
 bench: $(B)/test_asm test/bench.c
-	gcc -m32 -no-pie -fno-pie -O1 -o $(B)/bench test/bench.c $(B)/os_host.o
+	$(HOSTCC) -o $(B)/bench test/bench.c $(B)/os_host.o
 	$(B)/bench
 
 .PHONY: all test bench FORCE
