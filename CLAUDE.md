@@ -45,10 +45,11 @@ connection tables". Where the limits are now:
   million for TLS: `TSHARE`). The server's other 2 GiB are above 4 GiB and unused: long
   mode (step 4), or PAE paging before that, would double the tables.
 - A ramp ("N users in 60 s"): the guest's cycles per frame, then whatever the host's
-  virtio path and the network carry. At 1,880 cycles per frame and three frames to open a
-  connection and fetch once, one core of the server does about 350,000 new plain
-  connections a second, if they reach it. Not measured there: the load generator is the
-  user's to set up, and `tools/rawc.c` only speaks to a tap.
+  virtio path and the network carry. At under 2,800 cycles per frame on the server and
+  three frames to open a connection and fetch once, one core there has time for a
+  quarter of a million new plain connections a second, if they reach it. Not measured
+  there: the load generator is the user's to set up (`tools/rawc.c` can use a real
+  interface, see its header, but has only been run on the tap).
 - TLS: the handshake (step 4) and the size-coded record code (~27,000 cycles per request).
 - No timers at all: we never close first, a client that vanishes keeps its slot until a
   new connection needs it (and then only after about an hour of silence: `IDLE`), and
