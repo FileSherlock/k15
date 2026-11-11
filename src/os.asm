@@ -60,6 +60,8 @@ MAXCPU  equ 4
 TRAMP   equ 0x8000          ; where the others start, in real mode (`tramp` is copied there)
 TXLOCK  equ 0x8F00          ; held from `txbuf` to `txgo`
 NCPUM   equ 0x8F04          ; how many processors take frames, less 1 (a power of two, less 1)
+KST     equ 0x8F08          ; reset knock: 1 after the first port (development builds)
+NOIDT   equ 0x8F10          ; ten zero bytes: an IDT with nothing in it (`reset`)
 APMEM   equ 0x900000        ; for each other processor 32 KiB: four page tables, its page 0,
 APBSS   equ 0xA00000        ; and 2 MiB: its BSS
 RING    equ BSS + 0x140000  ; Frames for this processor (the first one writes them there,
@@ -114,7 +116,6 @@ Q_NOTE  equ 24              ;     it (a qword)
 Q1      equ Q0 + 32         ;   transmit queue, the same
 VCAP    equ VST + 88        ;   where the device's structures are, by kind (qwords at 8 * kind)
 VMUL    equ VST + 136       ;   (the dword read after each, at 8 * kind: for notify, its offset multiplier)
-KST     equ VST + 184       ;   reset knock: 1 after the first port (development builds)
 NV      equ BSS + 0x0F200
 RXLEN   equ NV              ; the length of the frame in FR
 HSNEXT  equ NV + 4          ; handshake buffers looked at so far (`hsnew`)
@@ -632,7 +633,8 @@ shaconst:
         rep movsb
         mov edi, TXLOCK         ; (what is shared down there starts as zero: that memory
         xor eax, eax            ; is whatever the loader left in it)
-        stosq
+        mov cl, 4
+        rep stosq
         mov ebx, 1
 .cpu:   mov r8d, ebx
         shl r8d, 15
@@ -874,7 +876,7 @@ tcpd:   rdtsc                   ; (`tcp`, with the cycles spent on frames, and h
 ; reset: the machine starts over (development builds only: the knock, and LIFE)
 reset:  mov al, 0xFE
         out 0x64, al            ; keyboard controller: pulse the reset line
-        lidt [KST+4]            ; (and if that does nothing: no IDT, then a fault)
+        lidt [abs NOIDT]        ; (and if that does nothing: no IDT, then a fault)
         int3
 %endif
 
@@ -1044,10 +1046,10 @@ tcp:
         xchg al, ah             ; comes back up in whatever its disk boots by default
         cmp eax, KNOCK_A
         jne .kb
-        mov byte [KST], 1
+        mov byte [abs KST], 1   ; (the two packets may go to different processors)
 .kb:    cmp eax, KNOCK_B
         jne .nok
-        cmp byte [KST], 1
+        cmp byte [abs KST], 1
         jne .nok
         jmp reset
 .nok:

@@ -10,23 +10,27 @@ taken off its machine contract and put on a Hetzner cloud server. Decided with t
   AES-GCM), all the cores and all the RAM, and timers for the tail. **Security can never
   be lowered, only raised.** The measure is still something like connections divided by
   the size of the binary, so a feature has to pay for its bytes. The image is one assembly
-  file (10,549 bytes): don't golf it, don't bloat it.
+  file (10,561 bytes): don't golf it, don't bloat it.
 - security as in k2 (below) still holds for everything behind TLS
 
 ## Where it stands
-Works, locally and (the 32-bit predecessor) on the server: boot from GRUB or a BIOS boot
-sector into 64-bit long mode, all the RAM the machine has (also above 4 GiB), all its
+Works, locally and on the server: boot from GRUB or a BIOS boot sector into 64-bit long
+mode, all the RAM the machine has (also above 4 GiB), all its
 processors (up to 4), modern virtio-net, ARP, a TCP that copes with loss, reordering, small
 segments and made-up clients, two hashed connection tables sized from the machine's memory
 (20 bytes per connection on port 80, 128 per TLS connection), TLS 1.3 with a verified
 certificate on 443 (ChaCha20-Poly1305 and AES-128-GCM), the same page over plain HTTP on
 80, keep-alive requests on both.
 
-**The 64-bit image has not been on the server yet** (2026-11-11: everything below was
-measured here, on a Ryzen 7 3800X under KVM). The server has one receive queue and 2
-processors at 2.1 GHz (looked at over ssh): expect about half of the per-core numbers.
+On the server (2026-11-11, late, from the user's machine, RTT 11 ms; a `DEBUG=1 LIFE=8`
+image): both processors answer (the debug page says which); a handshake costs 375,000 to
+383,000 cycles there when the nonces were made while idle, which at 2.1 GHz is 5,500 a
+second and processor, about 4,500 under full load; a verified HTTPS fetch with curl takes
+35 ms (49 before), a keep-alive request 10 ms (one round trip), both ciphers; 600 TLS
+connections opened with 8 in flight in 1.8 s, all held and fetched; the knock resets it.
+What it does under real load is still to be measured, from a load generator.
 
-| measured here | |
+| measured here (Ryzen 7 3800X, KVM) | |
 |---|---|
 | full handshakes/s over tap (`NOMARK=1 ... taprunc.sh 8000 1024 8`: 64,000, all verified) | 7,300 on one processor, 13,300 on two (140 before the night of 2026-11-11) |
 | a handshake's crypto natively (`make bench`) | 300,000 cycles: X25519, both halves, 211,000; an ECDSA signature 89,000, or 2,000 when the nonces were made while idle (16 million before) |
@@ -36,25 +40,28 @@ processors at 2.1 GHz (looked at over ssh): expect about half of the per-core nu
 | plain connections held over tap, 2 GiB VM (32-bit image) | 83,983,904 of 84,000,000 tried, each fetched twice |
 | connections opened and fetched per second over tap | ~80,000-100,000 (QEMU's packet path is the limit, not the guest) |
 | guest cycles per frame, plain HTTP (`DEBUG=1`, counter 1) | 1,880 (32-bit image; under 2,800 on the server) |
-| with loss over tap (`tools/suite.sh`) | 3% and 5%, MTU 300, reordering, both ciphers, a two-segment flight, 1 and 2 processors: all served (see "Learned the hard way" for the two bugs this found) |
+| with loss over tap (`tools/suite.sh`) | 3%, MTU 300, reordering, both ciphers, a two-segment flight, 1, 2 and 4 processors: all served, also over 12 to 24 runs of each (see "Learned the hard way" for the two bugs this found) |
+| at 5% loss, 12 runs of each | 2 fetches of 240,000 ran past tapc's 60 s: a lost SYN-ACK leaves a Linux client with a retransmission timeout of 3 s, then 6 s, and two more losses on that connection are a minute (captured). No fault of ours, but ours to shorten: the timer in the plan |
 | emulated (KVM=0) | boots in 7 s (the tables for the curves), `measure.sh` passes |
 
-On the server, the 32-bit image (2026-11-11, from the user's machine, RTT 11 ms): HTTPS and
-HTTP fetched with curl, Chrome and Firefox; 400 TLS connections held and fetched; 10 x
-1,000 plain connections; 60 of 60 single fetches in 49 ms (HTTPS) and 24 ms (HTTP) each.
+Before that, the 32-bit image on the server (2026-11-11, early): HTTPS and HTTP fetched
+with curl, Chrome and Firefox; 400 TLS connections held and fetched; 10 x 1,000 plain
+connections; 60 of 60 single fetches in 49 ms (HTTPS) and 24 ms (HTTP) each. The browsers
+have not been pointed at the 64-bit image on the server yet (locally they have).
 
 ## Plan
 Done of the user's four gaps: (1) the handshake but for session tickets, (2) records,
 (3) processors and RAM but for the offloads. Not done: (4) timers.
 
 **Next, in the order of what they are worth:**
-- **Run it on the server.** Long mode, the memory map from GRUB, the second processor
-  (INIT/SIPI under Hetzner's KVM), the card's registers through our own page tables: all
-  new, all only seen in QEMU here. Then the numbers above, from a load generator (the
-  user's; `tools/rawc.c` can use a real interface).
+- **Measure it on the server under load.** It runs there (above); the numbers that count
+  (a ramp of handshakes, held connections in 4 GiB, plain connections a second) need a
+  load generator next to it (the user's; `tools/rawc.c` can use a real interface), not
+  a home connection.
 - **A retransmission timer** (gap 4). We still never send anything unasked: a lost SYN-ACK
-  costs the client its SYN timeout (1 s), everything else its retransmission timeout
-  (200 ms and up, or its tail loss probe). A queue of what was sent with a fixed timeout
+  costs the client its SYN timeout (1 s) and after that a retransmission timeout of 3 s
+  for the rest of the connection (it has no round-trip time to go by), everything else its
+  retransmission timeout (200 ms and up, or its tail loss probe). A queue of what was sent with a fixed timeout
   is in time order by itself (no wheel needed); when an entry comes due and its connection
   still lacks an ack, treat it as if the client had asked (`.resend`). For a SYN-ACK the
   entry has to carry the SYN (there is no slot yet).
@@ -199,13 +206,19 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
   `multiboot`). Ubuntu stays installed and is what any later reset boots. Up after ~4 s
   (more now: all 4 GiB are zeroed, and the curve tables take 25 ms).
 - `curl --cacert build-hz/ca.pem https://2.28.113.14/` and `curl http://2.28.113.14/`
+- For a first look at anything new, add `DEBUG=1 LIFE=8` to that `make`: the page on
+  port 80 then starts with how many processors take frames (less 1) and which one
+  answered, and the machine resets itself after about 8 minutes whatever happens (a
+  `LIFE` image is for nothing else). Without `LIFE`, an image whose network side does not
+  work stays up until the user presses reset.
 - A connection that fails at once from here is ours, not the server's: tapc prints
   `bind/connect port N: Address already in use` when another program on this machine has
   the port. Ten runs of 1,000 from base port 32000 each lost port 32770 that way (a
   browser's connection had it); ten from 20000 lost none. That was the "1 in 1,000" of
   the first night on the server.
 - `B=build-hz tools/knock.sh 2.28.113.14` resets it: a TCP packet to port a, then one to
-  port b (build-hz/knock). Linux and ssh are back ~12 s later. This is a backdoor for
+  port b (build-hz/knock). Linux and ssh are back ~25 s later ("connection refused" on
+  port 22 means Linux is booting; a timeout means the image is still there). This is a backdoor for
   development (two port scans in a row could trigger it); it is only assembled with KNOCK
   set and must be left out of anything that gets benchmarked or kept running.
 - The image never answers ping; the user's reset button in the Hetzner console is the
@@ -562,6 +575,16 @@ retrying, the tag compared with `repe cmpsb`, the calls through interrupt gates.
   Linux on the same machine (`nstat` there) before blaming either side.
 - A register that "is still zero" isn't after a call that returns something in it: the
   slot was "freed" by writing a buffer address into it (found by `tools/churn.py`).
+- Memory we did not zero is not zero. The transmit lock is in low memory (it has to be
+  shared), where the boot sector had left a copy of the image: whether the lock started
+  out held depended on which byte of the image lay there, so a build with 60 bytes more
+  hung, and one with 40 more did not. Found because `DEBUG=1` and `KNOCK=` images
+  stopped answering; it would have been GRUB's leftovers on the server.
+- What is in BSS is per processor, whether one thinks of it or not: the knock's "first
+  port seen" was, and the two packets of a knock went to different processors half the
+  time (on the server: the second knock worked). It is in the shared low memory now. The
+  debug counters are per processor too (the page shows the answering one's), and a
+  division by "frames counted" faulted on a processor that counted none.
 - tc: `action gact drop random netrand drop 100` drops everything (the first action is
   the default); it is `gact pass random netrand drop 100`.
 - `pkill -f pattern` over ssh kills the ssh command that carries the pattern too: write a
@@ -583,7 +606,9 @@ retrying, the tag compared with `repe cmpsb`, the calls through interrupt gates.
 - An X25519 key share reused for a short window, the same.
 
 ## Workflow
-`./measure.sh` after every change (a second); `make test` after touching crypto or ec.py
+`./measure.sh` after every change (a second; also once each with `DEBUG=1`, `KNOCK=` and
+`LIFE=` images after touching boot or the loops: those builds move everything); `make
+test` after touching crypto or ec.py
 (the model first: change `tools/ec.py`, run it, then the asm); `tools/suite.sh` after
 anything else, and with `SMP=1` after touching what the processors share. After touching
 `.resend`, `tcp_send`, the handshake buffers or the cookie rules, also the lossy runs
