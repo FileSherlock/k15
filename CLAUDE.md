@@ -434,7 +434,12 @@ are step 3's job.
   leaf; none of the three clients does, so the test clients clear that one flag.
 
 ## Workflow
-`./measure.sh` after every change (it is under a second); `make test` after touching crypto
-or ec.py; `./browsers.sh` and a tap run after any TLS, TCP or HTTP change; then the server
-(deploy, fetch, knock) for anything that could behave differently on a real network.
-Commit when the user asks.
+`./measure.sh` after every change (it is under two seconds); `make test` after touching
+crypto or ec.py; `./browsers.sh` and tap runs after any TLS, TCP or HTTP change: tapc with
+`LOSS=3`, with `MTU=300 LOSS=3`, with `REORDER=25`, plain as well as TLS, and the same
+against the realistic chain (`B=build-real`); after touching the tables, the driver or
+the polling loop also `build/rawc 1000000`, `build/rawc 1000000 20000` (a full transmit
+ring), `churn.py` with `FLOOD=20000` and a run into a small table (`CAP=1024`). Then the
+server (deploy, fetch, knock) for anything that could behave differently on a real network.
+Commit when the user asks. (The night of 2026-11-11 was worked on a branch, `night`, with
+a commit per step, because nobody was there to ask.)
