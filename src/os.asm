@@ -1,17 +1,22 @@
 ; os.asm - bare-metal HTTPS server, flat image loaded at 1 MiB (nasm -f bin)
 ;
 ; Boot: by src/boot.asm from a disk, or as a multiboot v1 "a.out kludge" kernel (GRUB,
-;       `qemu -kernel`). Sets up long mode, its own segments, stack and zeroed memory.
-; CPU:  64-bit, with rdrand (secrets) and the AES instructions (the hash that places connections).
+;       `qemu -kernel`). Sets up long mode, its own segments, stack and zeroed memory, and
+;       starts the other processors if there are any (up to MAXCPU in all).
+; CPU:  64-bit, with rdrand (secrets), AES and PCLMULQDQ (the hash that places connections;
+;       AES-GCM), SSE4.1, and BMI2 and ADX (mulx, adcx, adox: the curves).
 ; NIC:  virtio-net (modern PCI interface), polled. Our IP is baked in (OURIP).
 ; TCP:  ports 443 (TLS) and 80 (the same page without); see `tcp`.
-; TLS:  1.3, TLS_CHACHA20_POLY1305_SHA256, X25519, ecdsa_secp256r1_sha256.
+; TLS:  1.3, TLS_CHACHA20_POLY1305_SHA256 and TLS_AES_128_GCM_SHA256, X25519,
+;       ecdsa_secp256r1_sha256.
 ; Like k2, and unlike k1, this one is meant to be secure: a fresh X25519 key and a fresh ECDSA nonce per
 ; handshake (rdrand), a real certificate chain, and client records are authenticated before
 ; they get an answer. See CLAUDE.md for the shortcuts that remain.
 ;
-; Convention: every routine preserves all registers (pushad/popad) unless it
-; says otherwise. All buffers live at fixed addresses in zeroed RAM at 2 MiB.
+; Convention: a routine keeps the eight registers of old (pushad/popad: macros here) unless
+; it says otherwise; r8-r15 and the SSE registers are scratch, the crypto's to use. All
+; buffers live at fixed addresses in zeroed RAM at 2 MiB: one set for each processor (see
+; MAXCPU below).
 ;
 ; Memory, as the page tables built at boot show it (2 MiB pages): the first 16 MiB as they
 ; are, and behind them, in one piece, all the other RAM the loader's memory map names,
@@ -125,6 +130,7 @@ POOLN   equ NV + 64         ; how many of the nonces made are left
 POOLFILL equ NV + 68        ; how far the next ones are (32 for each k G there is)
 CPUN    equ NV + 72         ; which processor this is (0: the one that booted)
 CLAIMQ  equ NV + 80         ; the first 8 bytes of the slot `find` chose for a new connection
+BORN    equ NV + 88         ; when we booted, in units of 2^32 cycles (make LIFE=n)
 HKS     equ BSS + 0x0F400   ; the eleven round keys of `prf`, made at boot
 HKO     equ HKS + 176       ;   and its output
 KA      equ BSS + 0x0F300   ; application keys as `keys` makes them (2 x 48 bytes + 20 of junk)
@@ -239,6 +245,9 @@ DBG     equ BSS + 0x0F500
         inc dword [DBG + 4 * %1]
 %endif
 %endmacro
+%ifndef DEBUG
+%define tcpd tcp            ; (the polling loops call `tcp` through what counts its cycles)
+%endif
 
 %ifdef HOST
 BITS 64
@@ -608,6 +617,10 @@ shaconst:
         stosd
         loop .hk
 
+%ifdef LIFE
+        rdtsc
+        mov [BORN], edx
+%endif
         ; The other processors, should there be any (up to MAXCPU - 1): each gets page
         ; tables (as ours, but for BSS and page 0) and a copy of BSS as it is now: all the
         ; constants, and nothing yet of what must not be the same on two processors (the
@@ -617,6 +630,9 @@ shaconst:
         push TRAMPLEN
         pop rcx
         rep movsb
+        mov edi, TXLOCK         ; (what is shared down there starts as zero: that memory
+        xor eax, eax            ; is whatever the loader left in it)
+        stosq
         mov ebx, 1
 .cpu:   mov r8d, ebx
         shl r8d, 15
@@ -689,7 +705,14 @@ shaconst:
         jnc .w
         ret
 
-.poll:  mov esi, [Q0+8]         ; used ring: anything new?
+.poll:
+%ifdef LIFE                     ; development builds (make LIFE=n): after about n minutes the
+        rdtsc                   ; machine is reset, whatever happens: a test server then
+        sub edx, [BORN]         ; boots what its disk boots by default, also when the network
+        cmp edx, LIFE * 28      ; side of a new image turns out not to work (2^32 cycles
+        ja reset                ; are 2 s at 2.1 GHz)
+%endif
+        mov esi, [Q0+8]         ; used ring: anything new?
         mov eax, [Q0+Q_SEEN]
         cmp ax, [rsi+2]
         jne .frame
@@ -756,19 +779,7 @@ shaconst:
         mov word [rdx], 0
 .nk:    test ebp, ebp
         jnz .more
-%ifdef DEBUG
-        rdtsc                   ; (cycles spent on frames, and how many frames)
-        push rax
-        call tcp
-        rdtsc
-        pop rdx
-        sub eax, edx
-        add [DBG+24], eax
-        adc dword [DBG+28], 0
-        inc dword [DBG+32]
-%else
-        call tcp
-%endif
+        call tcpd
 .more:  test byte [Q0+Q_SEEN], 31 ; (if frames keep coming, every 32 of them)
         jnz .poll
         call txkick
@@ -827,7 +838,7 @@ apstart: mov esp, STACK
         xor edi, edi
         rep movsb
         inc dword [RTAIL]
-        call tcp
+        call tcpd
         test byte [RTAIL], 31
         jnz .poll
         call txkick
@@ -839,6 +850,33 @@ apstart: mov esp, STACK
         jmp .poll
 .rest:  pause
         jmp .poll
+
+%ifdef DEBUG
+tcpd:   rdtsc                   ; (`tcp`, with the cycles spent on frames, and how many frames)
+        push rax
+        call tcp
+        rdtsc
+        pop rdx
+        sub eax, edx
+        add [DBG+24], eax
+        adc dword [DBG+28], 0
+        inc dword [DBG+32]
+        ret
+%endif
+
+%ifdef KNOCK_A
+%define RESET
+%endif
+%ifdef LIFE
+%define RESET
+%endif
+%ifdef RESET
+; reset: the machine starts over (development builds only: the knock, and LIFE)
+reset:  mov al, 0xFE
+        out 0x64, al            ; keyboard controller: pulse the reset line
+        lidt [KST+4]            ; (and if that does nothing: no IDT, then a fault)
+        int3
+%endif
 
 ; pcird: eax = PCI configuration dword at register eax of the device at ebx (dx = 0xCFC after)
 pcird:  and al, 0xFC
@@ -1011,10 +1049,7 @@ tcp:
         jne .nok
         cmp byte [KST], 1
         jne .nok
-        mov al, 0xFE
-        out 0x64, al            ; keyboard controller: pulse the reset line
-        lidt [KST+4]            ; (and if that does nothing: no IDT, then a fault)
-        int3
+        jmp reset
 .nok:
 %endif
         cmp word [rbx+36], 0xBB01 ; port 443: TLS
@@ -1668,6 +1703,10 @@ respond:
         rep movsb
 %ifdef DEBUG
         pushad
+        mov al, [abs NCPUM]     ; (the first two digits: how many processors take frames,
+        shl al, 4               ; less 1, and which one this is)
+        or al, [CPUN]
+        mov [DBG+1], al
         mov eax, [DBG+24]       ; (counter 1: cycles per frame)
         mov edx, [DBG+28]
         div dword [DBG+32]
@@ -1782,9 +1821,14 @@ hsnew:  push rax
 
 ; tcp_send: ecx bytes at esi to the client of connection ebp, in segments, from our sequence
 ; number edx; flags al on the last. If it takes several segments, none of them acknowledges
-; what this packet brought (but what came before it): the client then keeps sending its data
-; until it has all of the answer, whichever part gets lost, and it is acknowledged when its
-; ack says so (F_DEFER, in `tcp`). Not when we close: then there is no later.
+; the last byte the client sent: the client then keeps sending that byte until it has all
+; of the answer, whichever part gets lost, and it is acknowledged when its ack says so
+; (F_DEFER, in `tcp`). Not when we close: then there is no later.
+; (It was "none acknowledges what this packet brought". But an answer that goes out again
+; because of a duplicate ack is sent for a packet that brought nothing: its segments then
+; acknowledged everything, and if the one that filled the hole was lost again, and the
+; client's next duplicate ack too, nobody had anything left to send. 1 handshake in 8,000
+; at 3% loss with a flight of two segments.)
 tcp_send:
         pushad
         movzx ebx, byte [rbp+C_FLG]
@@ -1797,7 +1841,7 @@ tcp_send:
         jbe .last
         test al, 1
         jnz .seg
-        mov edi, [abs P_SEQ]
+        dec edi
         or byte [rbp+C_FLG], F_DEFER
 .seg:   push rax
         push rcx

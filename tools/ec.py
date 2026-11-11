@@ -39,7 +39,9 @@ Scalar multiplications, the three a handshake needs:
     first: no partial sum can then meet the point it is added to, except for a share of
     2^-240 or so of all nonces (see `sign`).
 Table lookups read all 16 entries of a window and keep one (the asm: with masks).
-One inversion a^(m-2) for all three moduli, the two X25519 results sharing one.
+One inversion a^(m-2) for all three moduli. The two X25519 results share one; the
+signatures' r and 1/k are made 64 at a time (the asm's `stock`), with two inversions for
+all of them (`binv`: Montgomery's trick, which here gives exactly what `inv` gives).
 """
 import os
 import sys
@@ -322,6 +324,21 @@ class Machine:
             if e >> i & 1:
                 r[REG["T1"]] = self.mul(r[REG["T1"]], r[REG["T0"]])
 
+    def binv(self, xs):
+        """What `inv` makes of each of xs, with one `inv`: of their product."""
+        r, t0, t1 = self.r, REG["T0"], REG["T1"]
+        p = [xs[0]]
+        for x in xs[1:]:
+            p.append(self.mul(p[-1], x))
+        self.inv(p[-1])
+        out = [0] * len(xs)
+        for i in range(len(xs) - 1, 0, -1):
+            r[t0] = self.mul(r[t1], p[i - 1])
+            r[t1] = self.mul(r[t1], xs[i])
+            out[i] = r[t0]
+        out[0] = r[t1]
+        return out
+
     def entry(self, e):
         self.r[:len(e)] = e
 
@@ -437,6 +454,12 @@ def selftest():
     for row in t25519:
         assert all(len(e) == 3 for e in row)
     assert t25519[0][0] == (1, 1, 0)
+    for f in (F25519, FP256, FN256):                # one inversion for many: the same residues
+        mach.f = f
+        xs = [int.from_bytes(os.urandom(32), "little") for _ in range(9)] + [1, f.m - 1]
+        for x, y in zip(xs, mach.binv(xs)):
+            mach.inv(x)
+            assert y % f.m == mach.r[REG["T1"]] % f.m
     mach.muls = 0
     for t in range(8):
         # X25519: our scalar is unclamped, so compare shared secrets, both ways round
