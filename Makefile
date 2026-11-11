@@ -10,9 +10,11 @@ IP ?= 10.0.2.15
 KNOCK ?=
 KNOCKDEF := $(if $(KNOCK),-DKNOCK_A=$(word 1,$(subst $(comma), ,$(KNOCK))) -DKNOCK_B=$(word 2,$(subst $(comma), ,$(KNOCK))),)
 OURIP := $(shell python3 tools/ip.py $(IP))
-# TBITS=n (tests): no more than 2^n connection slots, however much memory there is
-TBITS ?=
-TBITSDEF := $(if $(TBITS),-DTBITS=$(TBITS),)
+# CAP=n (tests): no more than n slots in each connection table, however much memory there is.
+# IDLE=n (tests): how long a connection must have been quiet to be replaced when there is no room
+CAP ?=
+IDLE ?=
+TBITSDEF := $(if $(CAP),-DCAP=$(CAP),) $(if $(IDLE),-DIDLE=$(IDLE),)
 # DEBUG=1 (development): count dropped and resent packets, shown in the page on port 80
 DEBUGDEF := $(if $(DEBUG),-DDEBUG,)
 

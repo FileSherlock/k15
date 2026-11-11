@@ -16,8 +16,15 @@ BITS 32
 %include "conf.inc"             ; CHAIN_LEN
 
 BSS     equ 0x200000
-FR      equ 0               ; Ethernet frame: received, then rewritten in place as reply.
-                            ; At address 0 (old real-mode IVT, unused) so `xor reg, reg` loads it.
+FR      equ 0               ; the Ethernet frame being handled. At address 0 (old real-mode
+                            ; IVT, unused), so `xor reg, reg` loads it and its fields are a
+P_IP    equ FR + 26         ; byte away: the client's address,
+P_PORTS equ FR + 34         ;   its port and ours (as on the wire),
+P_SEQ   equ FR + 38         ;   its sequence number (in host order once `tcp` has started;
+                            ;   moved on past bytes we already had)
+P_ACK   equ FR + 42         ;   its ack (the same)
+P_FL    equ FR + 47         ;   its flags
+P_MORE  equ FR + 48         ;   (in place of the window) 1: its data is to be acknowledged now
 TR      equ BSS + 0x20000   ; handshake transcript
 VB      equ BSS + 0x30000   ; what a client record should look like (for its tag)
 SB      equ BSS + 0x40000   ; seal scratch: Poly1305 input
@@ -54,21 +61,12 @@ MAC     equ VST + 4         ;   our MAC address (6 bytes, from the device)
 Q0      equ VST + 16        ;   receive queue: desc, avail, used (addresses), size - 1, used entries seen, notify address
 Q1      equ VST + 48        ;   transmit queue, the same
 KST     equ VST + 160       ;   reset knock: 1 after the first port (development builds)
-NV      equ BSS + 0x0F200   ; the packet being handled:
-P_SEQ   equ NV              ;   its sequence number (moved on past bytes we already had)
-P_ACK   equ NV + 4          ;   its ack
-P_FL    equ NV + 8          ;   its flags (+1: its data is to be acknowledged now, +2: no such connection)
-RXLEN   equ NV + 12         ;   the length of its frame
-HSNEXT  equ NV + 16         ; handshake buffers given out so far
-P_DATA  equ NV + 20         ;   its payload
-P_LEN   equ NV + 24         ;   and how long that is
-P_IP    equ NV + 28         ;   the client's address
-P_PORTS equ NV + 32         ;   the client's port and ours (both as on the wire)
-NOW     equ NV + 36         ;   when it came (see C_AGE)
-TMASK   equ NV + 40         ; number of connection slots - 1
-OONEXT  equ NV + 48         ; early segments kept so far
-P_HINT  equ NV + 44         ;   a hash of the client's address and ports (see `cookie`)
-HINT    equ 0x3FC
+NV      equ BSS + 0x0F200
+RXLEN   equ NV              ; the length of the frame in FR
+HSNEXT  equ NV + 4          ; handshake buffers given out so far
+NOW     equ NV + 8          ; when the frame came, in units of 2^35 cycles (a byte: see C_AGE)
+TT      equ NV + 12         ; the table of TLS connections: address, number of buckets
+PT      equ NV + 20         ; the table of connections to port 80: the same
 HKS     equ BSS + 0x0F400   ; ChaCha20 state for `prf`: constants, a key made at boot, input
 HKO     equ HKS + 64        ;   and its output block
 KA      equ BSS + 0x0F300   ; application keys as `keys` makes them (2 x 48 bytes + 20 of junk)
@@ -78,9 +76,9 @@ TXB     equ 0x700000        ; transmit buffers, the same
 %ifndef OURIP
 %define OURIP 0x0F02000A    ; 10.0.2.15, as it is on the wire (make IP=a.b.c.d)
 %endif
-OOP     equ 0xC00000        ; segments that came early: OON buffers of 2 KiB, given out in a circle
+OOP     equ 0xC00000        ; segments that came early: OON places of 2 KiB (see `oohold`)
 OON     equ 1024
-OO_OWNER equ 0              ;   the connection it is kept for
+OO_TAG  equ 0               ;   whose it is: a word of the client's hash (0: nobody's)
 OO_SEQ  equ 4               ;   its sequence number,
 OO_LEN  equ 8               ;   length
 OO_FIN  equ 12              ;   and whether it had a FIN
@@ -96,14 +94,18 @@ CHMAX   equ 0xF00
 %if CHAIN_LEN + 1024 > (1 << HS_SHIFT) - HS_FL
 %error "the certificate chain is too long for a handshake buffer"
 %endif
-CONNS   equ 0x2000000       ; the connection table: a power of two of slots, as many as fit
-SLOT    equ 160             ; the memory behind it (sized and zeroed at boot)
-PROBE   equ 16              ; a connection is in one of so many slots: see `find`
+CONNS   equ 0x2000000       ; the connection tables, from here to the end of memory (sized and
+                            ; zeroed at boot): first the one for TLS, then the one for port 80
+BUCKET  equ 16              ; slots in a bucket (see `find`)
+TSHARE  equ 3               ; the TLS table gets 1/2^TSHARE of that memory
+%ifndef IDLE
+%define IDLE 32             ; a connection that has been quiet for longer than this (in units of
+%endif                      ; 2^35 cycles: 5 to 9 minutes) may be replaced when a new one finds no room
+HINT    equ 0x3FC           ; see the cookie in `tcp`
 OBMAX   equ 0x40000         ; room for one answer at OB
 %ifndef HOST
 RL      equ RESP_LEN + 21   ; a response as a record: header, response and content type, tag
 %endif
-RSMAX   equ 256             ; the most records built again at once (RSMAX * RL <= OBMAX)
 
 S_Z     equ -128            ; slot offsets from ebp = SLOTS + 128
 S_EH    equ -96
@@ -113,26 +115,25 @@ S_HS    equ 0
 S_TS    equ 32
 S_TH    equ 64
 
-C_IP    equ 0               ; connection: the client's address (0: the slot is free),
-C_PORTS equ 4               ; its port and ours
-C_PLAIN equ 6               ; (the high byte of ours: 0 for port 80, plain HTTP)
-C_FLG   equ 44              ; F_OPEN, or F_CLOSED: FINs exchanged, but the client lacks something
-F_OPEN  equ 1
-F_CLOSED equ 2
-C_DEFER equ 45              ; 1: the client's data is not acknowledged before it has our answer
-C_ST    equ 8               ; 0 = waiting for the ClientHello, else 1 + the number of requests
+; A connection's slot. One for port 80 is the first PSLOT bytes; one for TLS has it all.
+C_IP    equ 0               ; the client's address (0: the slot is free)
+C_PORT  equ 4               ; and port (a word)
+C_FLG   equ 6               ; a byte: F_CLOSED, F_DEFER, which segment size the client takes
+F_CLOSED equ 1              ;   (bits 2-3: MSSTAB), on port 80 whether a line has just ended (bit 7)
+F_DEFER equ 2               ; F_CLOSED: FINs exchanged, but the client lacks something
+F_DEFER_BIT equ 1           ; F_DEFER: its data is not acknowledged before it has our answer
+C_AGE   equ 7               ; when its last packet came (NOW; a byte)
+C_NXT   equ 8               ; next sequence number we expect from the client
+C_SND   equ 12              ; our next sequence number
+C_ACK   equ 16              ; the client's last ack
+PSLOT   equ 20
+C_ST    equ 20              ; 0 = waiting for the ClientHello, else 1 + the number of requests
                             ; answered (the next record's sequence number, both directions)
-C_NXT   equ 12              ; next sequence number we expect from the client
-C_LEN   equ 16              ; ClientHello bytes so far; then see the record walk in `tcp`
-C_SND   equ 20              ; our next sequence number
-C_APP   equ 24              ; our sequence number where the records start (after the flight)
-C_ACK   equ 28              ; the client's last ack
-C_HS    equ 32              ; its handshake buffer + 1 (if that still says so itself)
-C_MSS   equ 36              ; the most the client takes in one segment (a word)
-C_OOO   equ 40              ; the segment kept for it + 1 (if that still says so itself): see `oohold`
-C_AGE   equ 48              ; when its last packet came
-C_HDR   equ 52              ; a record header that came in pieces (5 bytes)
-C_KIV   equ 64              ; our application key | 0 counter | iv, then the client's
+C_LEN   equ 24              ; ClientHello bytes so far; then see the record walk in `tcp`
+C_HS    equ 28              ; its handshake buffer + 1 (a word; if that still says so itself)
+C_HDRN  equ 30              ; a byte: see the record walk
+C_KIV   equ 32              ; our application key | 0 counter | iv, then the client's
+TSLOT   equ 128
 
 ; Routines that are called from several places and not from inner loops are reached through
 ; interrupt gates: `int n` is 2 bytes (int1 and int3: 1) where a call is 5, and a gate costs 2 bytes
@@ -180,9 +181,9 @@ NGATES  equ %0
 %endrep
 %endmacro
 %if CHAIN_LEN > 1100            ; (tcp_out is only called, rather than fallen into, for a long chain)
-%define GATELIST sha256, hmac, expand, thash, seal, keys, rev32, stage, x25519, inv, chacha, csum, handshake, sigr, tcp, nic_send
+%define GATELIST sha256, hmac, expand, thash, seal, keys, rev32, stage, x25519, inv, chacha, csum, handshake, sigr, tcp
 %else
-%define GATELIST sha256, hmac, expand, thash, seal, keys, rev32, stage, x25519, inv, chacha, csum, handshake, sigr, tcp, nic_send
+%define GATELIST sha256, hmac, expand, thash, seal, keys, rev32, stage, x25519, inv, chacha, csum, handshake, sigr, tcp
 %endif
         gates GATELIST
 
@@ -218,31 +219,40 @@ start:                          ; Entered in 32-bit protected mode by whoever lo
         cmp ecx, eax
         jbe .mem
         xchg eax, ecx
-.mem:   shl ecx, 10
-        xchg eax, ecx
-        xor edx, edx
-        mov ecx, SLOT
-        div ecx                 ; slots that fit
-        bsr ecx, eax            ; ... rounded down to a power of two
-%ifdef TBITS                    ; (make TBITS=n: no more than 2^n, to test a full table)
-        cmp ecx, TBITS
-        jbe .tb
-        mov ecx, TBITS
-.tb:
-%endif
-        xor eax, eax
-        inc eax
-        shl eax, cl
-        push eax
-        imul ecx, eax, SLOT
+.mem:   shl ecx, 10             ; bytes from CONNS to the end of memory
+        push ecx
         add ecx, CONNS - BSS
         shr ecx, 2
         xor eax, eax
         mov edi, BSS
-        rep stosd               ; zero everything from 2 MiB to the end of the table
-        pop eax
-        dec eax
-        mov [TMASK], eax
+        rep stosd               ; zero everything from 2 MiB up
+        pop ecx
+        mov eax, ecx            ; the tables: for TLS a share of that memory,
+        shr eax, TSHARE + 11    ; in buckets (of BUCKET * TSLOT = 2048 bytes)
+%ifdef CAP                      ; (make CAP=n: no more than n slots in each table, to test full ones)
+        cmp eax, CAP / BUCKET
+        jbe .tc
+        mov eax, CAP / BUCKET
+.tc:
+%endif
+        mov edi, TT
+        mov dword [edi], CONNS
+        mov [edi+4], eax
+        shl eax, 11
+        sub ecx, eax            ; and for port 80 the rest
+        add eax, CONNS
+        mov [edi+8], eax
+        xchg eax, ecx
+        xor edx, edx
+        mov ecx, BUCKET * PSLOT
+        div ecx
+%ifdef CAP
+        cmp eax, CAP / BUCKET
+        jbe .pc
+        mov eax, CAP / BUCKET
+.pc:
+%endif
+        mov [edi+12], eax
         fninit
 %endif
 ; shaconst: SHA-256 constants from their definition: KT[i] = frac(cbrt(prime i)) * 2^32
@@ -530,22 +540,9 @@ pcird:  and al, 0xFC
         in eax, dx
         ret
 
-; ethfix: Ethernet header of the frame in FR for sending it back: to its sender, from us
-ethfix: pushad
-        xor edi, edi
-        lea esi, [edi+6]
-        movsd
-        movsw
-        mov esi, MAC
-        movsd
-        movsw
-        popad
-        ret
-
-; nic_send: transmit ecx bytes from FR. Each frame gets its own buffer, the next of N in a
-; circle; if the device still has all N, wait for it.
-nic_send:
-        pushad
+; txbuf: ebx = where to build the next frame to send. Each frame gets its own buffer, the next
+; of N in a circle; if the device still has all N, wait for it.
+txbuf:  pushad
         mov ebx, [Q1+4]         ; available ring
         mov esi, [Q1+8]         ; used ring
         movzx eax, word [ebx+2]
@@ -554,29 +551,46 @@ nic_send:
         cmp dx, [Q1+12]
         ja .full
         and eax, [Q1+12]        ; buffer = descriptor = ring position
+        shl eax, 11
+        add eax, TXB + 12
+        mov [esp+16], eax
+        popad
+        ret
+
+; txgo: send the frame of ecx bytes that was built where txbuf said
+txgo:   pushad
+        mov ebx, [Q1+4]
+        movzx eax, word [ebx+2]
+        and eax, [Q1+12]
         mov [ebx+4+eax*2], ax
-        mov edi, eax
-        shl edi, 4
-        add edi, [Q1]
-        lea edx, [ecx+12]
-        mov [edi+8], edx        ; length with the header (12 zero bytes: nobody writes there)
-        mov edi, eax
-        shl edi, 11
-        add edi, TXB + 12
-        push esi
-        xor esi, esi            ; FR
-        rep movsb
-        pop esi
+        shl eax, 4
+        add eax, [Q1]
+        add ecx, 12
+        mov [eax+8], ecx        ; length with the header (12 zero bytes: nobody writes there)
         inc word [ebx+2]
+        mov esi, [Q1+8]
         test byte [esi], 1
         jnz .nk
         mov edx, [Q1+20]
         mov word [edx], 1       ; notify queue 1
 .nk:    popad
-nsret:  fret
+        ret
+
+; ethhdr: at edi (which moves on) the start of a frame to the sender of the one in FR: to its
+; address, from ours (clobbers esi)
+ethhdr: push 6
+        pop esi                 ; FR + 6
+        movsd
+        movsw
+        mov esi, MAC
+        movsd
+        movsw
+        ret
 
 ; ----------------------------------------------------------------------------
-; tcp: handle the frame in FR (RXLEN bytes).
+; tcp: handle the frame in FR (RXLEN bytes). FR stays as it came, except that its sequence
+; number and ack are turned into host order (P_SEQ, P_ACK); what we send is built in the
+; transmit buffers (`tcp_seg`).
 ;
 ; Each connection knows the next byte it expects from the client (C_NXT), our next byte
 ; (C_SND) and the client's last ack (C_ACK). What we have sent is never stored, except the
@@ -590,57 +604,59 @@ nsret:  fret
 ; So that the first always works, an answer of several segments does not acknowledge the
 ; client's data (`tcp_send`): that happens when the client's ack says it has all of it.
 ;
-; Connections live in a hashed table (`find`). A SYN gets a SYN-ACK and no slot (`cookie`);
-; the first packet that acknowledges it makes the connection. A segment that comes before
-; its predecessor is kept (`oohold`). Port 80 is the same without TLS: a request ends with
-; an empty line, and its "record" is the response as it is.
+; Connections live in two hashed tables (`find`): one for port 443, one with small slots for
+; port 80, which is the same without TLS (a request ends with an empty line, and its
+; "record" is the response as it is). A SYN gets a SYN-ACK and no slot (`.syn`); the first
+; packet that acknowledges it makes the connection. A segment that comes before its
+; predecessor is kept (`oohold`).
 tcp:
-        xor ebx, ebx            ; FR
+        xor ebx, ebx            ; FR (and 0), all the way through
         cmp word [ebx+12], 0x0608
         jne .ip
         cmp word [ebx+20], 0x0100 ; ARP request for our address: answer it
-        jne nsret
+        jne .ret
         cmp dword [ebx+38], OURIP
-        jne nsret
-        mov byte [ebx+21], 2    ; reply: the sender becomes the target, we are the sender
-        lea esi, [ebx+22]
-        lea edi, [ebx+32]
-        push 10
+        jne .ret
+        call txbuf
+        mov edi, ebx
+        call ethhdr
+        push 12                 ; the request's type and header up to the operation,
+        pop esi
+        push 9
         pop ecx
         rep movsb
+        mov al, 2               ; which is: reply. We are its sender,
+        stosb
         mov esi, MAC
-        lea edi, [ebx+22]
         movsd
         movsw
-        mov dword [edi], OURIP
-        call ethfix
+        mov eax, OURIP
+        stosd
+        push 22                 ; the request's sender is its target
+        pop esi
+        mov cl, 10
+        rep movsb
         mov cl, 42
-        jmp nic_send
+        call txgo
+        fret
 .ip:    cmp word [ebx+12], 0x0008 ; IPv4, no options, not a fragment, TCP, to us, all of it
-        jne nsret               ; in this frame, both checksums right: nothing else gets
+        jne .ret                ; in this frame, both checksums right: nothing else gets
         cmp byte [ebx+14], 0x45 ; any further
-        jne nsret
+        jne .ret
         test word [ebx+20], 0xFF3F
-        jnz nsret
+        jnz .ret
         cmp byte [ebx+23], 6
-        jne nsret
+        jne .ret
         cmp dword [ebx+30], OURIP
-        jne nsret
+        jne .ret
         movzx ecx, word [ebx+16]
         xchg cl, ch             ; IP total length
         lea eax, [ecx+14]
         cmp eax, [RXLEN]
-%ifdef DEBUG
-        jbe .lenok
-        count 2
-        fret
-.lenok:
-%else
-        ja nsret
-%endif
+        ja .bad
         sub ecx, 20             ; TCP length
         cmp ecx, 20
-        jb nsret
+        jb .bad
         push ecx
         lea esi, [ebx+14]
         push 20
@@ -648,14 +664,7 @@ tcp:
         icall csum
         pop ecx
         test ax, ax
-%ifdef DEBUG
-        jz .ipok
-        count 0
-        fret
-.ipok:
-%else
-        jnz nsret
-%endif
+        jnz .bad
         mov [ebx+22], bl        ; the pseudo header, in place: 0, protocol, TCP length, addresses
         mov eax, ecx
         xchg al, ah
@@ -667,14 +676,12 @@ tcp:
         icall csum
         pop ecx
         test ax, ax
-%ifdef DEBUG
-        jz .tcpok
+        jz .sums
         count 1
         fret
-.tcpok:
-%else
-        jnz nsret
-%endif
+.bad:   count 0
+.ret:   fret
+.sums:
 %ifdef KNOCK_A                  ; development builds only (make KNOCK=a,b): a packet to port a,
         movzx eax, word [ebx+36] ; then one to port b, resets the machine, so a test server
         xchg al, ah             ; comes back up in whatever its disk boots by default
@@ -694,58 +701,57 @@ tcp:
         cmp word [ebx+36], 0xBB01 ; port 443: TLS
         je .port
         cmp word [ebx+36], 0x5000 ; port 80: the same without
-        jne nsret
-.port:  cmp [ebx+26], ebx       ; (no client is 0.0.0.0: that marks a free slot)
-        je nsret
+        jne .ret
+.port:  cmp [ebx+P_IP], ebx     ; (no client is 0.0.0.0: that marks a free slot)
+        je .ret
         movzx eax, byte [ebx+46]
         shr eax, 4
         shl eax, 2              ; TCP header length
         cmp al, 20
-        jb nsret
+        jb .ret
         sub ecx, eax            ; payload length
-        jb nsret
+        jb .ret
         lea esi, [ebx+eax+34]   ; payload
-        mov [P_DATA], esi
-        mov [P_LEN], ecx
-        mov eax, [ebx+38]
+        mov eax, [ebx+P_SEQ]
         bswap eax
-        mov [P_SEQ], eax
-        mov eax, [ebx+42]
+        mov [ebx+P_SEQ], eax
+        mov eax, [ebx+P_ACK]
         bswap eax
-        mov [P_ACK], eax
-        rdtsc                   ; the time, in units of 2^24 cycles (some milliseconds)
-        shrd eax, edx, 24
-        mov [NOW], eax
-        movzx edx, byte [ebx+47]
-        mov [P_FL], edx
-        mov eax, [ebx+34]
-        mov [P_PORTS], eax
-        mov eax, [ebx+26]
-        mov [P_IP], eax
-        xchg eax, [ebx+30]      ; turn the frame around: whatever we send goes to its sender
-        mov [ebx+26], eax
-        rol dword [ebx+34], 16
-        call ethfix
-        call find               ; ebp = the connection's slot, or the one for a new connection
-        setc [P_FL+2]
+        mov [ebx+P_ACK], eax
+        rdtsc                   ; the time, in units of 2^35 cycles (10 to 17 seconds)
+        shr edx, 3
+        mov [NOW], dl
+        mov [ebx+P_MORE], bl
+        mov dl, [ebx+P_FL]
+        call find               ; ebp = the connection's slot; or, if it has none, eax = -1
+        sbb eax, eax            ; and ebp = a slot for a new one (0: there is no room)
         test dl, 4
         jz .nrst
-        cmp [P_FL+2], bl        ; RST: if it is the next thing its connection expects, that
-        jne nsret               ; was the connection
-        mov eax, [P_SEQ]
+        inc eax                 ; RST: if it is the next thing its connection expects, that
+        jz .ret                 ; was the connection
+        mov eax, [ebx+P_SEQ]
         cmp eax, [ebp+C_NXT]
-        jne nsret
+        jne .ret
 .free:  and dword [ebp+C_IP], 0
         fret
 .nrst:  test dl, 2
         jz .nsyn
         test dl, 16
-        jnz nsret
-        ; SYN. It gets a SYN-ACK and no slot: our initial sequence number is a keyed hash of
-        ; the client's address, ports and initial sequence number (a "SYN cookie": see
-        ; `cookie`), and the slot is made when an ack shows that the client received it
-        ; (`.miss`). So only clients that really are at their address can take up slots.
-        movzx ecx, byte [ebx+46] ; its options: how much the client takes in one segment
+        jnz .ret
+        ; SYN. It gets a SYN-ACK and no slot: the slot is made when an ack shows that the
+        ; client received it (`.miss`), so only clients that really are at their address can
+        ; take up slots. For that our initial sequence number is a "cookie", made of W, a
+        ; keyed hash of the client's address and ports (`prf`):
+        ;   bits 10-31: W xor the low bits of the client's initial sequence number, so that
+        ;               the packet that follows the SYN-ACK is recognised as the first;
+        ;   bits 2-9:   W (HINT): tells a packet that acknowledges a SYN-ACK of ours, first
+        ;               or not, from one of a connection we don't know;
+        ;   bits 0-1:   which of four segment sizes the client takes (MSSTAB).
+        inc eax
+        jnz .syn
+        test ebp, ebp
+        jz .deny                ; (no room where this connection would go: say so now)
+.syn:   movzx ecx, byte [ebx+46] ; its options: how much the client takes in one segment
         shr ecx, 4
         lea ecx, [ecx*4-20]
         lea esi, [ebx+54]
@@ -771,11 +777,13 @@ tcp:
 .onx:   add esi, edi
         sub ecx, edi
         jmp .opt
-.optd:  mov eax, [P_SEQ]
+.optd:  mov eax, [ebx+P_SEQ]
         lea edi, [eax+1]        ; (the SYN takes a sequence number, and so does ours)
-        call cookie
-        cmp edx, 536            ; its low two bits: which of four sizes, the largest that is
-        sbb eax, -1             ; not more than the client's
+        shl eax, 10
+        xor eax, [HKO+8]
+        and al, 0xFC
+        cmp edx, 536            ; the largest of the four sizes that is not more than the
+        sbb eax, -1             ; client's
         cmp edx, 1220
         sbb eax, -1
         cmp edx, 1440
@@ -785,118 +793,122 @@ tcp:
         mov esi, SYNOPT
         push 4
         pop ecx
-        call tcp_seg
+.seg:   call tcp_seg
         fret
+.deny:  count 2
+        mov al, 0x14            ; RST|ACK: connection refused
+        mov edi, [ebx+P_SEQ]
+        inc edi
+        xor edx, edx
+        xor ecx, ecx
+        jmp .seg
 
 .nsyn:  test dl, 16
-        jz nsret
-        cmp [P_FL+2], bl
-        je .est
+        jz .ret
+        inc eax
+        jnz .est
         ; No such connection. If this is the first packet after one of our SYN-ACKs, it is a
         ; new one, in the slot `find` chose. If it acknowledges a SYN-ACK of ours but is not
         ; the first (that one got lost, and its ack before it), the client will send the
         ; first again: nothing to do. Anything else that expects an answer is told that there
         ; is no connection (after a FIN we forget at once; and we may have been restarted).
-.miss:  call cookie_ok
-        je .make
-        mov eax, [P_ACK]
-        dec eax
-        xor eax, [P_HINT]
+.miss:  call ckx
+        jz .make
         test eax, HINT
-        jz nsret
-        mov eax, [P_FL]
-        and eax, 1
-        or eax, [P_LEN]
-        jz nsret
+        jz .ret
+        test dl, 1
+        jnz .rst
+        test ecx, ecx
+        jz .ret
 .rst:   count 5
         mov al, 4               ; RST, where the client's ack says
-        mov edx, [P_ACK]
+        mov edx, [ebx+P_ACK]
         xor ecx, ecx
         xor edi, edi
-        call tcp_seg
-        fret
-.make:  mov edi, ebp
-        push SLOT / 4
+        jmp .seg
+.full:  count 2                 ; there is no room for it: refused
+        jmp .rst
+.make:  test ebp, ebp
+        jz .full
+        push ecx
+        mov edi, ebp
+        push PSLOT / 4
         pop ecx
-        xor eax, eax
+        cmp [ebx+P_PORTS+2], bl
+        je .mk
+        mov cl, C_KIV / 4       ; (a slot of the TLS table goes on)
+.mk:    xor eax, eax
         rep stosd
-        mov eax, [P_IP]
+        pop ecx
+        mov eax, [ebx+P_IP]
         mov [ebp+C_IP], eax
-        mov eax, [P_PORTS]
-        mov [ebp+C_PORTS], eax
-        mov eax, [P_SEQ]
+        mov eax, [ebx+P_PORTS]
+        mov [ebp+C_PORT], ax
+        mov eax, [ebx+P_SEQ]
         mov [ebp+C_NXT], eax
-        mov eax, [P_ACK]
+        mov eax, [ebx+P_ACK]
         mov [ebp+C_SND], eax
-        mov [ebp+C_APP], eax
         mov [ebp+C_ACK], eax
         dec eax
-        and eax, 3
-        mov ax, [MSSTAB+eax*2]
-        mov [ebp+C_MSS], ax
-        mov byte [ebp+C_FLG], F_OPEN
-        cmp [ebp+C_PLAIN], bl
-        jne .est
-        inc dword [ebp+C_ST]    ; port 80: no handshake, its first request is number 0
+        and al, 3
+        shl al, 2
+        mov [ebp+C_FLG], al     ; (the segment size the SYN-ACK noted)
 
-.est:   mov eax, [NOW]
-        mov [ebp+C_AGE], eax
-        mov esi, [P_DATA]
-        mov ecx, [P_LEN]
+.est:   mov al, [NOW]
+        mov [ebp+C_AGE], al
         ; The client's ack counts if it is in [C_ACK, C_SND]. edx = 1: it lacks something we
         ; sent, 2: and says so with the same ack as before, 0: neither
         xor edx, edx
-        mov eax, [P_ACK]
+        mov eax, [ebx+P_ACK]
         sub eax, [ebp+C_ACK]    ; how much further than before
         mov edi, [ebp+C_SND]
         sub edi, [ebp+C_ACK]    ; how much there is to acknowledge
         cmp eax, edi
         ja .odd
         jb .ak0
-        cmp byte [ebp+C_FLG], F_OPEN
-        jne .free               ; it has all we sent, our FIN included: done
-        cmp byte [ebp+C_DEFER], bl ; If that was an answer of several segments, its data is
-        je .ak1                 ; acknowledged only now
-        mov [ebp+C_DEFER], bl
-        inc byte [P_FL+1]
+        test byte [ebp+C_FLG], F_CLOSED
+        jnz .free               ; it has all we sent, our FIN included: done
+        btr dword [ebp+C_FLG], F_DEFER_BIT ; If that was an answer of several segments, its
+        jnc .ak1                ; data is acknowledged only now
+        inc byte [ebx+P_MORE]
         jmp .ak1
-.odd:   call cookie_ok          ; not an ack for this connection: for a new one from the same
-        je .make                ; address and port (whose predecessor we never saw end)?
+.odd:   call ckx                ; not an ack for this connection: for a new one from the same
+        jz .make                ; address and port (whose predecessor we never saw end)?
         jmp .ak
 .ak0:   inc edx
         test eax, eax
         jnz .ak1
         inc edx
 .ak1:   add [ebp+C_ACK], eax
-.ak:    cmp byte [ebp+C_FLG], F_OPEN
-        je .open
+.ak:    test byte [ebp+C_FLG], F_CLOSED
+        jz .open
         test edx, edx           ; closed, but the client lacks something (our FIN at least):
-        jz nsret                ; if it asks, by sending anything but a plain new ack, it gets
+        jz .ret                 ; if it asks, by sending anything but a plain new ack, it gets
         cmp dl, 2               ; that again
         je .resend
-        mov eax, [P_FL]
-        and eax, 1
-        or eax, ecx
+        test byte [ebx+P_FL], 1
+        jnz .resend
+        test ecx, ecx
         jnz .resend
         fret
 .open:  mov eax, [ebp+C_NXT]
-        sub eax, [P_SEQ]        ; how many of this segment's bytes we already have
+        sub eax, [ebx+P_SEQ]    ; how many of this segment's bytes we already have
         js .early
         jz .inord
         cmp eax, ecx
         ja .old
         jb .trim
-        test byte [P_FL], 1     ; all of its data is old; a FIN after it would be new
+        test byte [ebx+P_FL], 1 ; all of its data is old; a FIN after it would be new
         jz .old
 .trim:  add esi, eax            ; drop what we have, the rest is new
         sub ecx, eax
-        add [P_SEQ], eax
+        add [ebx+P_SEQ], eax
         jmp .new
 .early: count 3                 ; From further on: what comes before it is late (neighbours do
         neg eax                 ; get swapped on the way) or lost. Keep it for when that
         cmp eax, 0xFFFF         ; arrives, if it is inside our window and not empty, and say
         ja .ack                 ; what we expect.
-        mov eax, [P_FL]
+        mov al, [ebx+P_FL]
         and eax, 1
         or eax, ecx
         jz .ack
@@ -911,17 +923,19 @@ tcp:
         jmp .send
 .inord: test ecx, ecx
         jnz .new
-        test byte [P_FL], 1
+        test byte [ebx+P_FL], 1
         jnz .new
         cmp dl, 2               ; no data: an ack. The same ack twice with something
         je .resend              ; outstanding: a segment of ours is missing
-        cmp byte [P_FL+1], 0
+        cmp [ebx+P_MORE], bl
         jne .ack
         fret
 
 .new:   mov edi, OB             ; edi = end of our answer
 .more:  add [ebp+C_NXT], ecx    ; ecx new bytes at esi, in order
-        cmp dword [ebp+C_ST], 0
+        cmp [ebx+P_PORTS+2], bl
+        je .plain
+        cmp [ebp+C_ST], ebx
         jne .walk
         mov eax, [ebp+C_LEN]    ; waiting for the ClientHello: collect it in a handshake buffer
         lea edx, [eax+ecx]      ; bytes so far, these included
@@ -958,7 +972,6 @@ tcp:
         mov ecx, edi            ; keep the flight: a client that sends its ClientHello again
         sub ecx, OB             ; has to get this one again (it may have got it already)
         mov [ebx+HS_FLEN], ecx
-        add [ebp+C_APP], ecx    ; our application data starts after it
         push edi
         mov esi, OB
         lea edi, [ebx+HS_FL]
@@ -968,24 +981,25 @@ tcp:
         pop ecx
         sub ecx, eax            ; (anything behind the ClientHello is the first record)
         lea esi, [ebx+HS_CH+eax]
-        and dword [ebp+C_LEN], 0
+        xor ebx, ebx
+        mov [ebp+C_LEN], ebx
         jmp .walk
 .junk:  mov dword [ebp+C_LEN], CHMAX + 1 ; no ClientHello will come of this
         jmp .reply
 
-        ; Records. C_LEN > 0: that many bytes of a record that is not looked at are still to
-        ; come. C_LEN < 0: so many bytes of a record header are in C_HDR. Only an application
+        ; Records. C_LEN bytes of a record that is not looked at are still to come; or, if
+        ; C_HDRN is not 0, so many bytes of a record header are in C_LEN. Only an application
         ; record that is all in this segment, has more than a tag and carries the tag of the
         ; client's next record counts, and then it gets one response (so the client's
         ; Finished, which has other keys, and anything forged are skipped like the junk they are).
 .walk:  test ecx, ecx
         jz .reply
-        cmp byte [ebp+C_PLAIN], 0
-        je .http
+        movzx eax, byte [ebp+C_HDRN]
+        test eax, eax
+        jnz .hdr
         mov eax, [ebp+C_LEN]
         test eax, eax
         jz .rec
-        js .hdr
         cmp eax, ecx
         jbe .skip
         mov eax, ecx
@@ -993,28 +1007,27 @@ tcp:
         sub ecx, eax
         sub [ebp+C_LEN], eax
         jmp .walk
-.hdr:   neg eax                 ; the rest of a header that began in an earlier segment
-        mov dl, [esi]
-        mov [ebp+C_HDR+eax], dl
+.hdr:   mov dl, [esi]           ; the rest of a header that began in an earlier segment
         inc esi
         dec ecx
-        inc eax
-        neg eax
+        cmp al, 4
+        je .hend
+        mov [ebp+C_LEN+eax], dl
+        inc byte [ebp+C_HDRN]
+        jmp .walk
+.hend:  mov dh, [ebp+C_LEN+3]   ; its last byte: the record's length, which is skipped
+        movzx eax, dx
         mov [ebp+C_LEN], eax
-        cmp eax, -5
-        jne .walk
-        movzx eax, word [ebp+C_HDR+3]
-        xchg al, ah
-        mov [ebp+C_LEN], eax    ; its body is skipped
+        mov [ebp+C_HDRN], bl
         jmp .walk
 .rec:   cmp ecx, 5
         jae .whole
-        mov dl, [esi]           ; a header that goes on in the next segment
-        mov [ebp+C_HDR+eax], dl
+.some:  mov dl, [esi]           ; a header that goes on in the next segment
+        mov [ebp+C_LEN+eax], dl
         inc esi
         inc eax
-        dec dword [ebp+C_LEN]
-        loop .rec
+        loop .some
+        mov [ebp+C_HDRN], al
         jmp .reply
 .whole: movzx eax, word [esi+3]
         xchg al, ah
@@ -1052,34 +1065,35 @@ tcp:
         sub ecx, eax
         jmp .walk
 
-        ; Port 80. A request ends with an empty line (C_LEN: line ends in a row so far; CRs
-        ; don't count either way) and gets the response.
-.http:  mov edx, [ebp+C_LEN]
+        ; Port 80. A request ends with an empty line (the top bit of C_FLG: the last line
+        ; has just ended; CRs don't count either way) and gets the response.
+.plain: test ecx, ecx
+        jz .reply
+        movzx edx, byte [ebp+C_FLG]
+        shr edx, 7
 .hb:    lodsb
         cmp al, 13
         je .hn
         cmp al, 10
         jne .h0
         inc edx
-        cmp edx, 2
+        cmp dl, 2
         jb .hn
         cmp edi, OB + OBMAX - RL
         ja .h0                  ; (no room for another response)
-        mov edx, [ebp+C_ST]
-        dec edx
-        inc dword [ebp+C_ST]
         call respond
 .h0:    xor edx, edx
-.hn:    dec ecx
-        jnz .hb
-        mov [ebp+C_LEN], edx
+.hn:    loop .hb
+        and byte [ebp+C_FLG], 0x7F
+        shl edx, 7
+        or [ebp+C_FLG], dl
 
-.reply: call oobuf               ; Is a segment that came early next now? Then go on with it.
-        jc .out
+.reply: call ooent              ; Is a segment that came early next now? Then go on with it.
+        jne .out
         mov eax, [ebp+C_NXT]
         sub eax, [ebx+OO_SEQ]   ; how many of its bytes we have by now
         js .out                 ; (it is still ahead)
-        and dword [ebp+C_OOO], 0
+        and dword [ebx+OO_TAG], 0
         mov ecx, [ebx+OO_LEN]
         cmp eax, ecx
         ja .out
@@ -1092,14 +1106,16 @@ tcp:
         sub ecx, eax
         mov al, [ebx+OO_FIN]
         or [P_FL], al
+        xor ebx, ebx
         jmp .more
-.out:   mov esi, OB             ; our answer is at OB, up to edi; it follows what we sent before
+.out:   xor ebx, ebx
+        mov esi, OB             ; our answer is at OB, up to edi; it follows what we sent before
         mov ecx, edi
         sub ecx, esi
         mov al, 0x10            ; ACK
-        jecxz .fin
+        jz .fin
         mov al, 0x18            ; ACK|PSH
-.fin:   test byte [P_FL], 1
+.fin:   test byte [ebx+P_FL], 1
         jz .send
         inc dword [ebp+C_NXT]   ; the client's FIN takes a sequence number and gets ours with
         or al, 1                ; the answer
@@ -1108,8 +1124,8 @@ tcp:
         test al, 1
         jz .sq
         inc dword [ebp+C_SND]   ; (ours takes one too)
-        mov byte [ebp+C_FLG], F_CLOSED
-        mov edi, [P_ACK]        ; If the client had all we sent and there was nothing more to
+        or byte [ebp+C_FLG], F_CLOSED
+        mov edi, [ebx+P_ACK]    ; If the client had all we sent and there was nothing more to
         sub edi, edx            ; say, that was the connection (should our FIN get lost, the
         or edi, ecx             ; client's next one is told that there is none). If not, the
         jnz .sq                 ; slot stays until the client has the rest.
@@ -1118,56 +1134,71 @@ tcp:
 .sq:    call tcp_send
         fret
 
-        ; The client lacks what we sent from its ack on: build that again, at most RSMAX
-        ; records of it, and send it. (Whether more is missing its next ack will say.)
+        ; The client lacks the end of what we sent, from its ack on: build that again and
+        ; send it: the last of our records (as many as OB has room for: whether more is
+        ; missing its next ack will say), and before them the end of the flight if it lacks
+        ; that too.
 .resend:
         count 4
         mov edi, OB
-        mov eax, [P_ACK]
-        sub eax, [ebp+C_APP]
-        jns .recs
-        call hsbuf              ; inside the flight: it is in the handshake buffer, unless
-        jc .reset               ; that has gone to another connection since
-        mov ecx, [ebx+HS_FLEN]
-        add eax, ecx            ; from this byte of the flight
-        cmp eax, ecx
-        jae nsret
-        lea esi, [ebx+HS_FL+eax]
-        sub ecx, eax
-        rep movsb
-        xor eax, eax
-.recs:  xor edx, edx
+        mov eax, [ebp+C_SND]
+        sub eax, [ebx+P_ACK]    ; so many bytes (our FIN, if it lacks that, is not one)
+        test byte [ebp+C_FLG], F_CLOSED
+        jz .rsz
+        dec eax
+.rsz:   mov ecx, RESP_LEN - 1   ; in records of this length: on port 80 the bare response
+        cmp [ebx+P_PORTS+2], bl
+        je .recs
         mov ecx, RL
-        cmp [ebp+C_PLAIN], dl
-        jne .rl
-        mov ecx, RESP_LEN - 1
-.rl:    div ecx                 ; eax = the record the ack is in, edx = where in it
-        push edx
-        mov edx, eax
-        mov ecx, [ebp+C_ST]
-        dec ecx                 ; records sent
-        sub ecx, edx
-        jle .none
-        cmp ecx, RSMAX
-        jbe .again
-        mov ecx, RSMAX
-.again: call respond
+        mov edx, [ebp+C_ST]
+        dec edx
+        imul edx, ecx           ; all our records together
+        cmp eax, edx
+        jbe .recs
+        sub eax, edx            ; more than those: the end of the flight, which is in the
+        call hsbuf              ; handshake buffer, unless that has gone to another
+        jc .reset               ; connection since
+        mov esi, [ebx+HS_FLEN]
+        sub esi, eax
+        jb .ret0                ; (more than we ever sent)
+        lea esi, [ebx+esi+HS_FL]
+        push ecx
+        xchg eax, ecx
+        rep movsb
+        pop ecx
+        xor ebx, ebx
+        xchg eax, edx           ; and then all the records
+.recs:  mov esi, eax            ; eax = bytes of records, ecx = the length of one
+        add eax, ecx
+        dec eax
+        xor edx, edx
+        div ecx                 ; so many records, the last of them possibly not from its start
+        push eax
+        imul eax, ecx
+        sub eax, esi
+        xchg eax, esi           ; esi = how much of the first one the client has
+        pop ecx
+        mov edx, [ebp+C_ST]     ; (port 80 has no such thing, and doesn't care)
+        dec edx
+        sub edx, ecx            ; the first one's number
+        jecxz .none
+.again: cmp edi, OB + OBMAX - RL
+        ja .none                ; (as many as there is room for)
+        call respond
         inc edx
         loop .again
-.none:  pop eax
-        lea esi, [eax+OB]
+.none:  add esi, OB
         mov ecx, edi
         sub ecx, esi
-        jb nsret
+        jb .ret0
         mov al, 0x19            ; (after our FIN: that again too)
-        cmp byte [ebp+C_FLG], F_OPEN
-        jne .rs
+        test byte [ebp+C_FLG], F_CLOSED
+        jnz .rs
         mov al, 0x18
-        test ecx, ecx
-        jz nsret
-.rs:    mov edx, [P_ACK]
+        jecxz .ret0
+.rs:    mov edx, [ebx+P_ACK]
         call tcp_send
-        fret
+.ret0:  fret
 .reset: mov al, 4               ; we can't go on with this connection: say so and forget it
         mov edx, [ebp+C_SND]
         xor ecx, ecx
@@ -1175,113 +1206,125 @@ tcp:
         call tcp_seg
         jmp .free
 
-; find: ebp = the slot of the connection the packet belongs to (P_IP, P_PORTS). If there is
-; none: CF, and ebp = the slot a new one would get. A connection is in one of the PROBE slots
-; from where the keyed hash of its address and ports points; a new one takes a free one of
-; those, or else the one that has been quiet for the longest (which ends that connection).
+; find: ebp = the slot of the connection the packet in FR belongs to. If it has none: CF, and
+; ebp = the slot a new one would get, or 0 if there is no room for it.
+; A connection is in one of two buckets of BUCKET slots, picked by two words of the keyed
+; hash of its address and ports (`prf`; clients can't aim at each other's buckets). A new one
+; goes into the bucket with more free slots. If both are full, it takes the place of the
+; connection in them that has been quiet for the longest, if that is longer than IDLE: such
+; a client has probably gone without saying so. If none has, the new one is refused.
 find:   pushad
-        xor eax, eax
-        xor edx, edx
         call prf
-        xchg eax, ebx
-        mov eax, [HKO+4]        ; (another word of the hash: see `cookie`)
-        mov [P_HINT], eax
-        mov eax, [P_IP]
-        mov edx, [P_PORTS]
-        xor esi, esi            ; the slot for a new one (none yet) and how long it has been
-        push PROBE              ; quiet (edi; free: forever)
+        mov esi, PT             ; the table for port 80,
+        push PSLOT
         pop ecx
-.l:     and ebx, [TMASK]
-        lea ebp, [ebx+ebx*4]
-        shl ebp, 5              ; * SLOT
-        add ebp, CONNS
-        cmp [ebp+C_IP], eax
-        jne .no
-        cmp [ebp+C_PORTS], edx
-        je .ret                 ; (CF = 0)
-.no:    push eax
-        or eax, -1
-        cmp dword [ebp+C_IP], 0
-        je .age
-        mov eax, [NOW]
-        sub eax, [ebp+C_AGE]
-.age:   test esi, esi
-        jz .take
-        cmp eax, edi
-        jbe .nx
-.take:  mov esi, ebp
-        mov edi, eax
-.nx:    pop eax
-        inc ebx
-        loop .l
-        mov ebp, esi
-        stc
+        cmp byte [P_PORTS+2], 0
+        je .tab
+        mov esi, TT             ; or the one for TLS
+        mov cl, TSLOT
+.tab:   mov eax, [HKO+4]
+        call .where
+        push ebp                ; the second bucket
+        mov eax, [HKO]
+        call .where
+        push ebp                ; the first
+        mov eax, [P_IP]
+        mov di, [P_PORTS]
+        xor esi, esi            ; esi = the slot that has been quiet for longer than bh
+        mov bh, IDLE
+        call .scan
+        mov bl, dl              ; free slots in the first bucket
+        mov ebp, [esp+4]
+        call .scan
+        pop eax
+        pop ebp
+        cmp dl, bl
+        ja .pick                ; the second has more
+        xchg eax, ebp
+        mov dl, bl
+.pick:  test dl, dl
+        jnz .free
+        mov ebp, esi            ; no free slot in either
+        jmp .miss
+.free:  cmp dword [ebp+C_IP], 0
+        je .miss
+        add ebp, ecx
+        jmp .free
+.miss:  stc
 .ret:   mov [esp+8], ebp
         popad
         ret
+.where: mul dword [esi+4]       ; ebp = the bucket for hash eax: number (hash * buckets) >> 32
+        imul edx, ecx
+        shl edx, 4              ; (* BUCKET)
+        add edx, [esi]
+        mov ebp, edx
+        ret
+.scan:  mov edx, BUCKET << 8    ; dh = slots to look at, dl = free ones seen
+.s:     cmp [ebp+C_IP], eax
+        jne .other
+        cmp [ebp+C_PORT], di
+        jne .other
+        add esp, 12             ; found (CF = 0): drop the return address and the buckets
+        jmp .ret
+.other: cmp dword [ebp+C_IP], 0
+        jne .used
+        inc edx
+        jmp .nx
+.used:  push eax
+        mov al, [NOW]
+        sub al, [ebp+C_AGE]     ; how long it has been quiet
+        cmp al, bh
+        jbe .young
+        mov bh, al
+        mov esi, ebp
+.young: pop eax
+.nx:    add ebp, ecx
+        dec dh
+        jnz .s
+        ret
 
-; prf: eax = a keyed hash of the client's address and ports (P_IP, P_PORTS), eax and edx:
-; the first word of a ChaCha20 block under a key made at boot (HKS), these as its counter and nonce
+; prf: HKO = a keyed hash of the client's address and ports: a ChaCha20 block under a key
+; made at boot (HKS), with those as its counter. Its words pick the two buckets (0, 1), make
+; the cookie (2: W) and place a segment kept for later (3).
 prf:    pushad
         mov edi, HKS + 48
-        xchg eax, ebx
         mov eax, [P_IP]
         stosd
         mov eax, [P_PORTS]
         stosd
-        xchg eax, ebx
-        stosd
-        xchg eax, edx
-        stosd
+        scasd
+        scasd                   ; edi = HKO
         mov esi, HKS
-        icall chacha            ; (edi = HKO = HKS + 64)
-        mov eax, [edi]
-        mov [esp+28], eax
+        icall chacha
         popad
         ret
 
-; cookie: eax = our initial sequence number for the client whose own is eax: a keyed hash of
-; address, ports and that number, except for the bits HINT, which are a hash of address and
-; ports alone (so a packet that acknowledges a SYN-ACK of ours can be told from one of a
-; connection we don't know, even without the client's initial sequence number), and the
-; low two bits: 0 here, the SYN-ACK puts the client's segment size there. Needs P_HINT (`find`).
-cookie: push edx
-        xor edx, edx
-        inc edx
-        call prf
-        xor eax, [P_HINT]
-        and eax, ~HINT
-        xor eax, [P_HINT]
-        and al, 0xFC
-        pop edx
-        ret
-
-; cookie_ok: ZF if the packet (P_SEQ, P_ACK) is the first one after a SYN-ACK of ours
-cookie_ok:
-        push eax
-        push edx
+; ckx: eax = 0 (and ZF) if the packet is the first after a SYN-ACK of ours: its ack is the
+; cookie for its sequence number (see `.syn`). Bits HINT of eax are 0 if it acknowledges a
+; SYN-ACK of ours at all.
+ckx:    push edx
         mov eax, [P_SEQ]
         dec eax
-        call cookie
+        shl eax, 10
         mov edx, [P_ACK]
         dec edx
-        and dl, 0xFC
-        cmp eax, edx
+        xor eax, edx
+        xor eax, [HKO+8]
+        and eax, -4
         pop edx
-        pop eax
         ret
 
-; respond: our response to request number edx of connection ebp at edi (which moves on): as
-; a record under the connection's key, or on port 80 as it is
+; respond: our response to request number edx of the connection ebp at edi (which moves on):
+; as a record under the connection's key, or on port 80 as it is. (ebx = 0)
 respond:
         push esi
         push ecx
-        push ebx
         mov esi, RESP
         mov ecx, RESP_LEN
-        cmp byte [ebp+C_PLAIN], 0
+        cmp [ebx+P_PORTS+2], bl
         jne .tls
-        dec ecx                 ; port 80: as it is (without the byte that says what a record holds)
+        dec ecx                 ; port 80: without the byte that says what a record holds
         rep movsb
 %ifdef DEBUG
         pushad
@@ -1306,37 +1349,31 @@ respond:
         popad
 %endif
         jmp .done
-.tls:   lea ebx, [ebp+C_KIV]
+.tls:   push ebx
+        lea ebx, [ebp+C_KIV]
         clc
         icall seal
-.done:  pop ebx
-        pop ecx
+        pop ebx
+.done:  pop ecx
         pop esi
         ret
 
-; oohold: keep the segment in hand (ecx bytes at esi, sequence number P_SEQ, FIN or not) for
-; connection ebp until what comes before it is here (`.reply` in `tcp`). One per connection,
-; the earliest; in buffers given out in a circle like the handshake buffers.
+; oohold: keep the segment in hand (ecx bytes at esi, sequence number P_SEQ, FIN or not)
+; until what comes before it is here (`.reply` in `tcp`). There are OON places for such
+; segments; a client's place is picked by its hash, and whatever was there is gone, unless
+; it is an earlier segment of the same client.
 oohold: pushad
-        call oobuf
-        jc .new
+        call ooent
+        jne .fill
         mov eax, [P_SEQ]
         sub eax, [ebx+OO_SEQ]
-        jns .ret                ; the one it has comes first
-        jmp .fill
-.new:   mov ebx, [OONEXT]
-        inc dword [OONEXT]
-        and ebx, OON - 1
-        inc ebx
-        mov [ebp+C_OOO], ebx
-        dec ebx
-        shl ebx, 11
-        add ebx, OOP
-        mov [ebx+OO_OWNER], ebp
-.fill:  mov eax, [P_SEQ]
+        jns .ret                ; the one kept comes first
+.fill:  mov eax, [HKO+12]
+        mov [ebx+OO_TAG], eax
+        mov eax, [P_SEQ]
         mov [ebx+OO_SEQ], eax
         mov [ebx+OO_LEN], ecx
-        mov eax, [P_FL]
+        mov al, [P_FL]
         and eax, 1
         mov [ebx+OO_FIN], eax
         lea edi, [ebx+OO_DATA]
@@ -1344,31 +1381,27 @@ oohold: pushad
 .ret:   popad
         ret
 
-; oobuf: ebx = the segment kept for connection ebp; CF if there is none (any more)
-oobuf:  mov ebx, [ebp+C_OOO]
-        dec ebx
-        js .none
+; ooent: ebx = the client's place for a segment kept for later; ZF if what is there is its own
+ooent:  push eax
+        mov eax, [HKO+12]
+        mov ebx, eax
+        and ebx, OON - 1
         shl ebx, 11
         add ebx, OOP
-        cmp [ebx+OO_OWNER], ebp
-        jne .none
-        clc
-        ret
-.none:  stc
+        cmp [ebx+OO_TAG], eax
+        pop eax
         ret
 
 ; hsbuf: ebx = the handshake buffer of connection ebp; CF if it has none (any more)
-hsbuf:  mov ebx, [ebp+C_HS]
+hsbuf:  movzx ebx, word [ebp+C_HS]
         dec ebx
         js .none
         shl ebx, HS_SHIFT
         add ebx, HSP
         cmp [ebx+HS_OWNER], ebp
-        jne .none
-        clc
-        ret
+        je .ok
 .none:  stc
-        ret
+.ok:    ret
 
 ; hsnew: ebx = a handshake buffer for connection ebp: the next in a circle. Whoever had it
 ; loses it (HS_OWNER says whose it is): a ClientHello that was arriving in pieces is then
@@ -1377,7 +1410,7 @@ hsnew:  mov ebx, [HSNEXT]
         inc dword [HSNEXT]
         and ebx, HSN - 1
         inc ebx
-        mov [ebp+C_HS], ebx
+        mov [ebp+C_HS], bx
         dec ebx
         shl ebx, HS_SHIFT
         add ebx, HSP
@@ -1389,18 +1422,21 @@ hsnew:  mov ebx, [HSNEXT]
 ; number edx; flags al on the last. If it takes several segments, none of them acknowledges
 ; what this packet brought (but what came before it): the client then keeps sending its data
 ; until it has all of the answer, whichever part gets lost, and it is acknowledged when its
-; ack says so (C_DEFER, in `tcp`). Not when we close: then there is no later.
+; ack says so (F_DEFER, in `tcp`). Not when we close: then there is no later.
 tcp_send:
         pushad
-        movzx ebx, word [ebp+C_MSS]
+        movzx ebx, byte [ebp+C_FLG]
+        shr ebx, 2
+        and ebx, 3
+        movzx ebx, word [MSSTAB+ebx*2]
         mov edi, [ebp+C_NXT]
-        mov byte [ebp+C_DEFER], 0
+        and byte [ebp+C_FLG], ~F_DEFER
         cmp ecx, ebx
         jbe .last
         test al, 1
         jnz .seg
         mov edi, [P_SEQ]
-        inc byte [ebp+C_DEFER]
+        or byte [ebp+C_FLG], F_DEFER
 .seg:   push eax
         push ecx
         mov ecx, ebx
@@ -1417,12 +1453,12 @@ tcp_send:
         popad
         ret
 
-; tcp_seg: send one segment: ecx bytes at esi, flags al, sequence number edx, ack edi, in the
-; frame in FR, whose addresses and ports are in place
+; tcp_seg: send one segment to the sender of the frame in FR: ecx bytes at esi, flags al,
+; sequence number edx, ack edi
 tcp_seg:
         pushad
-        xor ebx, ebx            ; FR
         mov ebp, ecx            ; payload length
+        call txbuf              ; ebx = the frame
         bswap edx
         mov [ebx+38], edx
         bswap edi
@@ -1432,25 +1468,39 @@ tcp_seg:
         jz .nopt
         mov byte [ebx+46], 0x60 ; a SYN's "payload" is 4 bytes of options
 .nopt:  mov [ebx+47], al
-        mov word [ebx+48], 0xFFFF ; window: we take whatever comes, at once
+        xor eax, eax
+        mov [ebx+50], eax       ; checksum (for now), nothing urgent
+        dec eax
+        mov [ebx+48], ax        ; window: we take whatever comes, at once
         lea edi, [ebx+54]
         rep movsb
         mov [edi], cl           ; zero pad byte for an odd length checksum
-        lea ecx, [ebp+20]       ; TCP length
-        mov eax, ecx
-        xchg al, ah
-        mov [ebx+24], ax        ; pseudo header in place: 0, 6 (still there: protocol TCP),
-        mov [ebx+22], bl        ; length, then the IPs
-        and dword [ebx+50], 0
+        mov edi, ebx
+        call ethhdr
+        mov eax, 0x00450008     ; IPv4, a header of 20 bytes, nothing special
+        stosd
+        scasw                   ; (the length: below)
+        mov eax, 0x00400000     ; no id: never to be fragmented
+        stosd
+        lea eax, [ebp+20]       ; where TTL, protocol and checksum go, first the rest of the
+        xchg al, ah             ; pseudo header: 0, protocol, TCP length; the addresses follow
+        shl eax, 16
+        mov ah, 6
+        stosd
+        mov eax, OURIP
+        stosd
+        mov eax, [P_IP]
+        stosd
+        mov eax, [P_PORTS]
+        rol eax, 16
+        stosd
         lea esi, [ebx+22]
-        add ecx, 12
+        lea ecx, [ebp+32]
         icall csum
         mov [ebx+50], ax
         lea ecx, [ebp+40]
         xchg cl, ch
         mov [ebx+16], cx        ; IP total length
-        mov [ebx+15], bl        ; nothing special,
-        mov dword [ebx+18], 0x00400000 ; no id: never to be fragmented
         mov dword [ebx+22], 0x0640 ; TTL 64, TCP, checksum 0
         lea esi, [ebx+14]
         push 20
@@ -1458,7 +1508,7 @@ tcp_seg:
         icall csum
         mov [ebx+24], ax
         lea ecx, [ebp+54]
-        icall nic_send
+        call txgo
         popad
         ret
 
