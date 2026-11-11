@@ -126,7 +126,8 @@ C_FLG   equ 6               ; a byte: F_CLOSED, F_DEFER, which segment size the 
 F_CLOSED equ 1              ;   (bits 2-3: MSSTAB), on port 80 whether a line has just ended (bit 7)
 F_DEFER equ 2               ; F_CLOSED: FINs exchanged, but the client lacks something
 F_DEFER_BIT equ 1           ; F_DEFER: its data is not acknowledged before it has our answer
-C_AGE   equ 7               ; when its last packet came (NOW; a byte)
+C_AGE   equ 7               ; when its last packet came (NOW; a byte, so after 256 units of
+                            ; silence a connection looks young again for a while)
 C_NXT   equ 8               ; next sequence number we expect from the client
 C_SND   equ 12              ; our next sequence number
 C_ACK   equ 16              ; the client's last ack

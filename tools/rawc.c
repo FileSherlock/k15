@@ -11,7 +11,13 @@
 // Env: IP0 (first source address, default 10.64.0.0), PPI (ports per address, default 60000),
 //      HOLD (seconds between opening and the second fetch), ROUNDS (second fetches, default 1),
 //      SPLIT (set: the ack and the request go as two packets), CLOSE (set: FIN at the end),
-//      RTO (ms, default 500), TRIES (default 8), GUEST, TAP, DPORT.
+//      RTO (ms, default 500), TRIES (default 8), GUEST, TAP, DPORT, VIA.
+//
+// On a real interface instead of the tap (as root, from a machine next to the server):
+// TAP=eth0 GUEST=<server> VIA=<next hop, whose MAC the frames go to> IP0=<a source address>.
+// The source addresses must be routed back to that machine and must not be its own, or its
+// kernel answers the server's SYN-ACKs with resets (or drop those: iptables -A OUTPUT -p tcp
+// --tcp-flags RST RST -d <server> -j DROP). One address gives PPI connections, at most 64,511.
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
@@ -273,9 +279,10 @@ int main(int argc, char **argv) {
     rlen += hl;
 
     char cmd[128], line[256] = "";
-    snprintf(cmd, sizeof cmd, "ip neigh show %s", guest);
+    const char *via = (e = getenv("VIA")) ? e : guest;
+    snprintf(cmd, sizeof cmd, "ip neigh show %s", via);
     f = popen(cmd, "r");
-    if (!f || !fgets(line, sizeof line, f) || !strstr(line, "lladdr")) return fprintf(stderr, "no neighbour entry for %s\n", guest), 2;
+    if (!f || !fgets(line, sizeof line, f) || !strstr(line, "lladdr")) return fprintf(stderr, "no neighbour entry for %s\n", via), 2;
     pclose(f);
     unsigned m[6];
     sscanf(strstr(line, "lladdr") + 7, "%x:%x:%x:%x:%x:%x", m, m + 1, m + 2, m + 3, m + 4, m + 5);
