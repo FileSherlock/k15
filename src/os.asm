@@ -98,7 +98,9 @@ CHMAX   equ 0xF00
 CONNS   equ 0x2000000       ; the connection tables, from here to the end of memory (sized and
                             ; zeroed at boot): first the one for TLS, then the one for port 80
 BUCKET  equ 16              ; slots in a bucket (see `find`)
-TSHARE  equ 3               ; the TLS table gets 1/2^TSHARE of that memory
+%ifndef TSHARE
+%define TSHARE 3            ; the TLS table gets 1/2^TSHARE of that memory (make TSHARE=n)
+%endif
 %ifndef IDLE
 %define IDLE 64             ; a connection that has been quiet for longer than this (in units of
 %endif                      ; 2^37 cycles: 40 to 70 minutes) may be replaced when a new one finds no room
@@ -672,9 +674,9 @@ tcp:
         call txgo
         ret
 .ip:    cmp word [ebx+12], 0x0008 ; IPv4, no options, not a fragment, TCP, to us, all of it
-        jne .ret                ; in this frame, both checksums right: nothing else gets
-        cmp byte [ebx+14], 0x45 ; any further
-        jne .ret
+        jne .ret                ; in this frame, the TCP checksum right: nothing else gets
+        cmp byte [ebx+14], 0x45 ; any further. (The IP header has a checksum of its own, but
+        jne .ret                ; what we use of it is fixed here or goes into TCP's.)
         test word [ebx+20], 0xFF3F
         jnz .ret
         cmp byte [ebx+23], 6
@@ -689,14 +691,6 @@ tcp:
         sub ecx, 20             ; TCP length
         cmp ecx, 20
         jb .bad
-        push ecx
-        lea esi, [ebx+14]
-        push 20
-        pop ecx
-        call csum
-        pop ecx
-        test ax, ax
-        jnz .bad
         mov [ebx+22], bl        ; the pseudo header, in place: 0, protocol, TCP length, addresses
         mov eax, ecx
         xchg al, ah
@@ -844,7 +838,7 @@ tcp:
         ; is no connection (after a FIN we forget at once; and we may have been restarted).
 .miss:  call ckx
         jz .make
-        test eax, HINT
+        test ax, HINT
         jz .ret
         test dl, 1
         jnz .rst
@@ -1118,28 +1112,27 @@ tcp:
         shl edx, 7
         or [ebp+C_FLG], dl
 
-.reply: call ooent              ; Is a segment that came early next now? Then go on with it.
+.reply: xor ebx, ebx
+        call ooent              ; Is a segment that came early next now? Then go on with it.
         jne .out
         mov eax, [ebp+C_NXT]
-        sub eax, [ebx+OO_SEQ]   ; how many of its bytes we have by now
+        sub eax, [edx+OO_SEQ]   ; how many of its bytes we have by now
         js .out                 ; (it is still ahead)
-        and dword [ebx+OO_TAG], 0
-        mov ecx, [ebx+OO_LEN]
+        mov [edx+OO_TAG], ebx
+        mov ecx, [edx+OO_LEN]
         cmp eax, ecx
         ja .out
         jb .use
-        cmp dword [ebx+OO_FIN], 0 ; (all of its data came another way; a FIN after it is new)
+        cmp [edx+OO_FIN], bl    ; (all of its data came another way; a FIN after it is new)
         je .out
-.use:   test byte [P_FL], 1
+.use:   test byte [ebx+P_FL], 1
         jnz .out                ; (nothing follows a FIN)
-        lea esi, [ebx+OO_DATA+eax]
+        lea esi, [edx+OO_DATA+eax]
         sub ecx, eax
-        mov al, [ebx+OO_FIN]
-        or [P_FL], al
-        xor ebx, ebx
+        mov al, [edx+OO_FIN]
+        or [ebx+P_FL], al
         jmp .more
-.out:   xor ebx, ebx
-        mov esi, OB             ; our answer is at OB, up to edi; it follows what we sent before
+.out:   mov esi, OB             ; our answer is at OB, up to edi; it follows what we sent before
         mov ecx, edi
         sub ecx, esi
         mov al, 0x10            ; ACK
@@ -1334,11 +1327,11 @@ prf:    movdqu xmm0, [P_IP]     ; the addresses and ports, and four bytes behind
 ; ckx: eax = 0 (and ZF) if the packet is the first after a SYN-ACK of ours: its ack is the
 ; cookie for its sequence number (see `.syn`). Bits HINT of eax are 0 if it acknowledges a
 ; SYN-ACK of ours at all.
-ckx:    push edx
-        mov eax, [P_SEQ]
+ckx:    push edx                ; (ebx = 0)
+        mov eax, [ebx+P_SEQ]
         dec eax
         shl eax, 10
-        mov edx, [P_ACK]
+        mov edx, [ebx+P_ACK]
         dec edx
         xor eax, edx
         xor eax, [HKO+8]
@@ -1397,33 +1390,32 @@ respond:
 ; until what comes before it is here (`.reply` in `tcp`). There are OON places for such
 ; segments; a client's place is picked by its hash, and whatever was there is gone, unless
 ; it is an earlier segment of the same client.
-oohold: pushad
+oohold: pushad                  ; (ebx = 0)
         call ooent
+        mov eax, [ebx+P_SEQ]
         jne .fill
-        mov eax, [P_SEQ]
-        sub eax, [ebx+OO_SEQ]
+        cmp eax, [edx+OO_SEQ]
         jns .ret                ; the one kept comes first
-.fill:  mov eax, [HKO+12]
-        mov [ebx+OO_TAG], eax
-        mov eax, [P_SEQ]
-        mov [ebx+OO_SEQ], eax
-        mov [ebx+OO_LEN], ecx
-        mov al, [P_FL]
-        and eax, 1
-        mov [ebx+OO_FIN], eax
-        lea edi, [ebx+OO_DATA]
+.fill:  mov [edx+OO_SEQ], eax
+        mov eax, [HKO+12]
+        mov [edx+OO_TAG], eax
+        mov [edx+OO_LEN], ecx
+        mov al, [ebx+P_FL]
+        and al, 1
+        mov [edx+OO_FIN], al
+        lea edi, [edx+OO_DATA]
         rep movsb
 .ret:   popad
         ret
 
-; ooent: ebx = the client's place for a segment kept for later; ZF if what is there is its own
+; ooent: edx = the client's place for a segment kept for later; ZF if what is there is its own
 ooent:  push eax
         mov eax, [HKO+12]
-        mov ebx, eax
-        and ebx, OON - 1
-        shl ebx, 11
-        add ebx, OOP
-        cmp [ebx+OO_TAG], eax
+        mov edx, eax
+        and edx, OON - 1
+        shl edx, 11
+        add edx, OOP
+        cmp [edx+OO_TAG], eax
         pop eax
         ret
 

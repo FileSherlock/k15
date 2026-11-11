@@ -12,9 +12,12 @@ KNOCKDEF := $(if $(KNOCK),-DKNOCK_A=$(word 1,$(subst $(comma), ,$(KNOCK))) -DKNO
 OURIP := $(shell python3 tools/ip.py $(IP))
 # CAP=n (tests): no more than n slots in each connection table, however much memory there is.
 # IDLE=n (tests): how long a connection must have been quiet to be replaced when there is no room
+# TSHARE=n: the table of TLS connections gets 1/2^n of the memory (default 3: an eighth), the
+# table of port 80 connections the rest
 CAP ?=
 IDLE ?=
-TBITSDEF := $(if $(CAP),-DCAP=$(CAP),) $(if $(IDLE),-DIDLE=$(IDLE),)
+TSHARE ?=
+TBITSDEF := $(if $(CAP),-DCAP=$(CAP),) $(if $(IDLE),-DIDLE=$(IDLE),) $(if $(TSHARE),-DTSHARE=$(TSHARE),)
 # DEBUG=1 (development): count dropped and resent packets, shown in the page on port 80
 DEBUGDEF := $(if $(DEBUG),-DDEBUG,)
 
