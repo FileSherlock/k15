@@ -2,6 +2,7 @@
 ;
 ; Boot: by src/boot.asm from a disk, or as a multiboot v1 "a.out kludge" kernel (GRUB,
 ;       `qemu -kernel`). Sets up its own segments, stack and zeroed memory.
+; CPU:  needs rdrand (secrets) and the AES instructions (the hash that places connections).
 ; NIC:  virtio-net (modern PCI interface), polled. Our IP is baked in (OURIP).
 ; TCP:  ports 443 (TLS) and 80 (the same page without); see `tcp`.
 ; TLS:  1.3, TLS_CHACHA20_POLY1305_SHA256, X25519, ecdsa_secp256r1_sha256.

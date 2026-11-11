@@ -17,7 +17,7 @@ OURIP := $(shell python3 tools/ip.py $(IP))
 CAP ?=
 IDLE ?=
 TSHARE ?=
-TBITSDEF := $(if $(CAP),-DCAP=$(CAP),) $(if $(IDLE),-DIDLE=$(IDLE),) $(if $(TSHARE),-DTSHARE=$(TSHARE),)
+TABLEDEF := $(if $(CAP),-DCAP=$(CAP),) $(if $(IDLE),-DIDLE=$(IDLE),) $(if $(TSHARE),-DTSHARE=$(TSHARE),)
 # DEBUG=1 (development): count dropped and resent packets, shown in the page on port 80
 DEBUGDEF := $(if $(DEBUG),-DDEBUG,)
 
@@ -46,7 +46,7 @@ $(GEN) &: tools/gen.py tools/ec.py www/index.html $(ID)
 	CERT=$(CERT) python3 tools/gen.py www/index.html $(B)
 
 $(B)/os.bin: src/os.asm $(GEN) $(B)/ip
-	nasm -f bin -DOURIP=$(OURIP) $(KNOCKDEF) $(TBITSDEF) $(DEBUGDEF) -I$(B)/ -o $@ -l $(B)/os.lst src/os.asm
+	nasm -f bin -DOURIP=$(OURIP) $(KNOCKDEF) $(TABLEDEF) $(DEBUGDEF) -I$(B)/ -o $@ -l $(B)/os.lst src/os.asm
 	@echo "image: $$(stat -c %s $@) bytes"
 
 # asm crypto checked against pyca/cryptography on the host (32-bit process)

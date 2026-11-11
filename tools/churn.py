@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Do connections that end give their slots back? Run against an image with a small table
-(`make B=build-small TBITS=10`: 1024 slots), over tap:
+"""Do connections that end give their slots back? Run against an image with small tables
+(`make B=build-small CAP=1024`: 1024 slots each), over tap:
 
     B=build-small unshare -Urn ./tap.sh python3 tools/churn.py [HELD] [LOOPS]
 
@@ -8,10 +8,9 @@ Opens HELD connections (default 64) and fetches the page over each. Then LOOPS t
 (default 4000, several times the table) a connection comes and goes: in turn a fetch and a
 clean close, a fetch and a reset, a handshake only, a TCP connection that says nothing, and
 one that sends junk. Then fetches again over the HELD ones. If ended connections kept
-their slots, the table would have filled and the new ones would have pushed out the ones
-that were quiet for the longest: the held ones. With FLOOD=N, tools/flood.py sends N SYNs,
-N acks and N data segments from made-up clients before that last round: none of them may
-get a slot either.
+their slots, the table would fill and the new ones would be refused (this then stops with
+a connection error). With FLOOD=N, tools/flood.py sends N SYNs, N acks and N data segments
+from made-up clients before that last round: none of them may get a slot either.
 """
 import os
 import socket
