@@ -92,8 +92,10 @@ VMUL    equ VST + 136       ;   (the dword read after each, at 8 * kind: for not
 KST     equ VST + 184       ;   reset knock: 1 after the first port (development builds)
 NV      equ BSS + 0x0F200
 RXLEN   equ NV              ; the length of the frame in FR
-HSNEXT  equ NV + 4          ; handshake buffers given out so far
+HSNEXT  equ NV + 4          ; handshake buffers looked at so far (`hsnew`)
 NOW     equ NV + 8          ; when the frame came, in units of 2^37 cycles (a byte: see C_AGE)
+HSMASK  equ NV + 56         ; n - 1 (see TABV)
+OOBASE  equ NV + 60         ; where the places for early segments are
 TXK     equ NV + 12         ; 1: frames are queued that the device has not been told about
 TT      equ NV + 16         ; the table of TLS connections: address (a qword), number of buckets
 PT      equ NV + 32         ; the table of connections to port 80: the same
@@ -108,28 +110,30 @@ TXB     equ 0x700000        ; transmit buffers, the same
 %ifndef OURIP
 %define OURIP 0x0F02000A    ; 10.0.2.15, as it is on the wire (make IP=a.b.c.d)
 %endif
-OOP     equ 0xC00000        ; segments that came early: OON places of 2 KiB (see `oohold`)
-OON     equ 1024
-OO_TAG  equ 0               ;   whose it is: a word of the client's hash (0: nobody's)
-OO_SEQ  equ 4               ;   its sequence number,
+OO_TAG  equ 0               ; A segment that came early (see `oohold`): whose it is: a word of
+OO_SEQ  equ 4               ;   the client's hash (0: nobody's), its sequence number,
 OO_LEN  equ 8               ;   length
 OO_FIN  equ 12              ;   and whether it had a FIN
 OO_DATA equ 16
-TABV    equ 0x1000000       ; the table space: from 16 MiB up (see the top of this file)
-HSP     equ TABV            ; handshake buffers: HSN of 16 KiB, given out in a circle
-HSN     equ 1024
-HS_SHIFT equ 14
-HS_OWNER equ 0              ;   the connection it belongs to (a qword)
-HS_FLEN equ 8               ;   length of our flight (0: not sent yet)
-HS_CH   equ 16              ;   the ClientHello record as far as it has arrived (up to CHMAX)
-HS_FL   equ 0x1000          ;   our flight, as it was sent
-CHMAX   equ 0xF00
-%if CHAIN_LEN + 1024 > (1 << HS_SHIFT) - HS_FL
+TABV    equ 0x1000000       ; The table space: from 16 MiB up (see the top of this file). Boot
+                            ; divides it: n handshake buffers, n places of 2 KiB for early
+                            ; segments (n a power of two: about 1/32 and 1/64 of it), then
+                            ; the two connection tables: the one for TLS, the one for port 80.
+HSP     equ TABV            ; Handshake buffers (see `hsnew`): each holds
+%assign HS_SHIFT 12
+%rep 4
+%if CHAIN_LEN + 512 > (1 << HS_SHIFT) - 16
+%assign HS_SHIFT HS_SHIFT + 1
+%endif
+%endrep
+%if CHAIN_LEN + 512 > (1 << HS_SHIFT) - 16
 %error "the certificate chain is too long for a handshake buffer"
 %endif
-CONNS   equ HSP + (HSN << HS_SHIFT) ; the connection tables, from here to the end of the table
-                            ; space (sized and zeroed at boot): first the one for TLS, then
-                            ; the one for port 80
+HS_OWNER equ 0              ;   the connection it belongs to (its slot: a qword),
+HS_FLEN equ 8               ;   the length of our flight (0: not sent yet),
+HS_CH   equ 16              ;   and the ClientHello record as far as it has arrived (up to
+HS_FL   equ HS_CH           ;   CHMAX), then, in its place, our flight as it was sent
+CHMAX   equ (1 << 12) - 16
 BUCKET  equ 16              ; slots in a bucket (see `find`)
 %ifndef TSHARE
 %define TSHARE 3            ; the TLS table gets 1/2^TSHARE of that memory (make TSHARE=n)
@@ -312,7 +316,27 @@ BITS 64
         xor eax, eax
         mov edi, BSS
         rep stosq               ; zero everything from 2 MiB up
-        sub rbx, CONNS - TABV   ; what the two tables have:
+        mov rax, rbx            ; n, for the handshake buffers and the early segments: what
+        shr rax, 17             ; takes up 1/32 and 1/64 of it, or the power of two below
+        bsr rcx, rax
+        cmp cl, 15              ; (C_HS is a word)
+        jbe .hn
+        mov cl, 15
+.hn:    xor eax, eax
+        inc eax
+        shl eax, cl
+        lea edx, [rax-1]
+        mov [HSMASK], edx
+        mov edx, eax
+        shl edx, HS_SHIFT
+        add edx, HSP
+        mov [OOBASE], edx
+        shl eax, 11
+        add eax, edx            ; rax = where the tables start
+        lea rbx, [rbx+TABV]
+        sub rbx, rax            ; what they have:
+        mov edi, TT
+        mov [rdi], rax
         mov rax, rbx            ; for TLS a share of that memory,
         shr rax, TSHARE + 11    ; in buckets (of BUCKET * TSLOT = 2048 bytes)
 %ifdef CAP                      ; (make CAP=n: no more than n slots in each table, to test full ones)
@@ -321,12 +345,10 @@ BITS 64
         mov eax, CAP / BUCKET
 .tc:
 %endif
-        mov edi, TT
-        mov dword [rdi], CONNS
         mov [rdi+8], eax
         shl rax, 11
         sub rbx, rax            ; and for port 80 the rest
-        add rax, CONNS
+        add rax, [rdi]
         mov [rdi+16], rax
         xchg rax, rbx
         xor edx, edx
@@ -953,7 +975,12 @@ tcp:
         jb .ak0
         test byte [rbp+C_FLG], F_CLOSED
         jnz .free               ; it has all we sent, our FIN included: done
-        btr dword [rbp+C_FLG], F_DEFER_BIT ; If that was an answer of several segments, its
+        cmp [rbx+P_PORTS+2], bl
+        je .nhs
+        cmp [rbp+C_ST], ebx
+        je .nhs
+        mov [rbp+C_HS], bx      ; (it has our flight: the handshake buffer can go to another)
+.nhs:   btr dword [rbp+C_FLG], F_DEFER_BIT ; If that was an answer of several segments, its
         jnc .ak1                ; data is acknowledged only now
         inc byte [rbx+P_MORE]
         jmp .ak1
@@ -1049,6 +1076,7 @@ tcp:
         add eax, 5              ; record length
         cmp edx, eax
         jb .reply               ; not all there yet
+        push rsi                ; (the end of this segment)
         push rdx
         push rax
         push rbx
@@ -1057,9 +1085,9 @@ tcp:
         lea ecx, [rax-5]
         icall handshake         ; edi = end of our flight
         pop rbx
-        mov ecx, edi            ; keep the flight: a client that sends its ClientHello again
-        sub ecx, OB             ; has to get this one again (it may have got it already)
-        mov [rbx+HS_FLEN], ecx
+        mov ecx, edi            ; keep the flight, where the ClientHello was: a client that
+        sub ecx, OB             ; sends its ClientHello again has to get this one again (it
+        mov [rbx+HS_FLEN], ecx  ; may have got it already)
         push rdi
         mov esi, OB
         lea edi, [rbx+HS_FL]
@@ -1067,8 +1095,9 @@ tcp:
         pop rdi
         pop rax
         pop rcx
-        sub ecx, eax            ; (anything behind the ClientHello is the first record)
-        lea esi, [rbx+HS_CH+rax]
+        pop rsi
+        sub ecx, eax            ; (anything behind the ClientHello is the first record:
+        sub esi, ecx            ; the end of this segment)
         xor ebx, ebx
         mov [rbp+C_LEN], ebx
         jmp .walk
@@ -1451,7 +1480,7 @@ respond:
         ret
 
 ; oohold: keep the segment in hand (ecx bytes at esi, sequence number P_SEQ, FIN or not)
-; until what comes before it is here (`.reply` in `tcp`). There are OON places for such
+; until what comes before it is here (`.reply` in `tcp`). There are n places (TABV) for such
 ; segments; a client's place is picked by its hash, and whatever was there is gone, unless
 ; it is an earlier segment of the same client.
 oohold: pushad                  ; (ebx = 0)
@@ -1476,9 +1505,9 @@ oohold: pushad                  ; (ebx = 0)
 ooent:  push rax
         mov eax, [HKO+12]
         mov edx, eax
-        and edx, OON - 1
+        and edx, [HSMASK]
         shl edx, 11
-        add edx, OOP
+        add edx, [OOBASE]
         cmp [rdx+OO_TAG], eax
         pop rax
         ret
@@ -1494,19 +1523,34 @@ hsbuf:  movzx ebx, word [rbp+C_HS]
 .none:  stc
 .ok:    ret
 
-; hsnew: ebx = a handshake buffer for connection ebp: the next in a circle. Whoever had it
-; loses it (HS_OWNER says whose it is): a ClientHello that was arriving in pieces is then
-; never finished, and a flight can't be sent a second time.
-hsnew:  mov ebx, [HSNEXT]
+; hsnew: ebx = a handshake buffer for connection rbp: the next in a circle that is not in
+; use, which is to say: whose owner's slot no longer names it (the slot lets go of it when
+; the client has the flight, and so does a slot that is given to another connection). If
+; 16 in a row are in use, the 16th is taken all the same: its owner's ClientHello, if that
+; was arriving in pieces, is then never finished, and its flight can't be sent a second time.
+hsnew:  push rax
+        push rcx
+        push 16
+        pop rcx
+.t:     mov eax, [HSNEXT]
         inc dword [HSNEXT]
-        and ebx, HSN - 1
-        inc ebx
-        mov [rbp+C_HS], bx
-        dec ebx
+        and eax, [HSMASK]
+        mov ebx, eax
         shl ebx, HS_SHIFT
         add ebx, HSP
-        mov [rbx+HS_OWNER], rbp
+        inc eax                 ; (what C_HS calls it)
+        mov r8, [rbx+HS_OWNER]
+        test r8, r8
+        jz .take
+        cmp [r8+C_HS], ax
+        jne .take
+        cmp dword [r8+C_IP], 0
+        loopne .t
+.take:  mov [rbx+HS_OWNER], rbp
         and dword [rbx+HS_FLEN], 0
+        mov [rbp+C_HS], ax
+        pop rcx
+        pop rax
         ret
 
 ; tcp_send: ecx bytes at esi to the client of connection ebp, in segments, from our sequence
