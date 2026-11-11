@@ -132,6 +132,13 @@ POOLFILL equ NV + 68        ; how far the next ones are (32 for each k G there i
 CPUN    equ NV + 72         ; which processor this is (0: the one that booted)
 CLAIMQ  equ NV + 80         ; the first 8 bytes of the slot `find` chose for a new connection
 BORN    equ NV + 88         ; when we booted, in units of 2^32 cycles (make LIFE=n)
+TMMASK  equ NV + 92         ; SYNs that may be answered again (`tnote`): how many places, less 1,
+TMF     equ NV + 96         ;   where the SYNs are (128 bytes each: tries left, length, frame),
+TMT     equ NV + 100        ;   and where the times they came are (a dword each; 0: none)
+THAND   equ NV + 104        ;   how far this processor has got round them (`tdue`),
+TNOW    equ NV + 108        ;   the time, in units of 2^20 cycles,
+TLAST   equ NV + 112        ;   when a SYN was last answered again,
+TTRY    equ NV + 116        ;   and how often the SYN in hand may be yet (0: it is the client's)
 HKS     equ BSS + 0x0F400   ; the eleven round keys of `prf`, made at boot
 HKO     equ HKS + 176       ;   and its output
 KA      equ BSS + 0x0F300   ; application keys as `keys` makes them (2 x 48 bytes + 20 of junk)
@@ -148,8 +155,9 @@ OO_FIN  equ 12              ;   and whether it had a FIN
 OO_DATA equ 16
 TABV    equ 0x1000000       ; The table space: from 16 MiB up (see the top of this file). Boot
                             ; divides it: n handshake buffers, n places of 2 KiB for early
-                            ; segments (n a power of two: about 1/32 and 1/64 of it), then
-                            ; the two connection tables: the one for TLS, the one for port 80.
+                            ; segments (n a power of two: about 1/32 and 1/64 of it), 4 n
+                            ; SYNs of late (`tnote`), then the two connection tables: the
+                            ; one for TLS, the one for port 80.
 HSP     equ TABV            ; Handshake buffers (see `hsnew`): each holds
 %assign HS_SHIFT 12
 %rep 4
@@ -365,8 +373,17 @@ BITS 64
         shl edx, HS_SHIFT
         add edx, HSP
         mov [OOBASE], edx
+        lea ecx, [rax*4-1]      ; 4 n SYNs that may be answered again: 128 bytes each, and
+        mov [TMMASK], ecx       ; a dword for when
         shl eax, 11
-        add eax, edx            ; rax = where the tables start
+        add eax, edx
+        mov [TMF], eax
+        inc ecx
+        shl ecx, 7
+        add eax, ecx
+        mov [TMT], eax
+        shr ecx, 5
+        add eax, ecx            ; rax = where the tables start
         lea rbx, [rbx+TABV]
         sub rbx, rax            ; what they have:
         mov edi, TT
@@ -719,6 +736,7 @@ shaconst:
         cmp ax, [rsi+2]
         jne .frame
         call txkick             ; no: time to tell the device what we have queued for it,
+        call tidle
         cmp dword [POOLN], 0    ; and to get on with the next signatures if there are none
         jne .idle
         call stock
@@ -782,7 +800,8 @@ shaconst:
 .nk:    test ebp, ebp
         jnz .more
         call tcpd
-.more:  test byte [Q0+Q_SEEN], 31 ; (if frames keep coming, every 32 of them)
+.more:  call tdue
+        test byte [Q0+Q_SEEN], 31 ; (if frames keep coming, every 32 of them)
         jnz .poll
         call txkick
         jmp .poll
@@ -841,11 +860,13 @@ apstart: mov esp, STACK
         rep movsb
         inc dword [RTAIL]
         call tcpd
+        call tdue
         test byte [RTAIL], 31
         jnz .poll
         call txkick
         jmp .poll
 .idle:  call txkick
+        call tidle
         cmp dword [POOLN], 0
         jne .rest
         call stock
@@ -1074,7 +1095,9 @@ tcp:
         mov eax, [rbx+P_ACK]
         bswap eax
         mov [rbx+P_ACK], eax
-        rdtsc                   ; the time, in units of 2^37 cycles (40 to 70 seconds)
+        rdtsc                   ; the time, in units of 2^20 cycles (for `tdue`) and of
+        shrd eax, edx, 20       ; 2^37 (40 to 70 seconds)
+        mov [TNOW], eax
         shr edx, 5
         mov [NOW], dl
         mov [rbx+P_MORE], bl
@@ -1135,7 +1158,8 @@ tcp:
 .onx:   add esi, edi
         sub ecx, edi
         jmp .opt
-.optd:  mov eax, [rbx+P_SEQ]
+.optd:  call tnote
+        mov eax, [rbx+P_SEQ]
         lea edi, [rax+1]        ; (the SYN takes a sequence number, and so does ours)
         shl eax, 10
         xor eax, [HKO+8]
@@ -1195,6 +1219,10 @@ tcp:
         mov rax, [CLAIMQ]
         lock cmpxchg [rbp], rdi
         jne .ret
+        mov eax, [HKO+12]       ; (its SYN-ACK has arrived: `tnote`)
+        and eax, [TMMASK]
+        mov edi, [TMT]
+        mov [rdi+rax*4], ebx
         push rcx
         lea rdi, [rbp+8]
         push (PSLOT - 8) / 4
@@ -1576,6 +1604,101 @@ tcp:
         xor edi, edi
         call tcp_seg
         jmp .free
+
+; The one thing we send unasked: a SYN-ACK again. We keep no connection for a SYN, so a
+; lost SYN-ACK costs the client a second, and after that a retransmission timeout of
+; seconds for the rest of the connection (it has sent its SYN twice, so it has no round
+; trip to go by). Instead the SYNs of late are kept: 4 n places (see TABV), a client's
+; picked by its hash, whatever was there is gone. A connection made takes its SYN out
+; (`.make`). The polling loops go round the places, one a turn (`tdue`), and a SYN that
+; is still there after 2^29 cycles (a quarter of a second at 2.1 GHz) goes through `tcp`
+; once more, as if it had just come, three times at most. No more than one such a tick
+; (2^20 cycles): a flood of SYNs from made-up addresses gets one SYN-ACK each as before,
+; and a few hundred a second on top.
+; tnote: keep the SYN in FR, if it is no longer than 120 bytes (they are 74)
+tnote:  pushad
+        mov ecx, [RXLEN]
+        cmp ecx, 120
+        ja .no
+        movzx eax, byte [TTRY]
+        test eax, eax
+        jnz .ours
+        mov al, 4               ; (the client's own: it may be answered three times more)
+.ours:  dec eax
+        jz .no
+        mov edx, [HKO+12]
+        and edx, [TMMASK]
+        mov edi, [TMT]
+        mov esi, [TNOW]
+        or esi, 1
+        mov [rdi+rdx*4], esi
+        shl edx, 7
+        add edx, [TMF]
+        mov [rdx], al
+        mov [rdx+1], cl
+        lea edi, [rdx+8]
+        xor esi, esi            ; (FR)
+        push 15
+        pop rcx
+        rep movsq
+        mov eax, [rdx+8+P_SEQ]  ; (as it came: `tcp` has turned these two round)
+        bswap eax
+        mov [rdx+8+P_SEQ], eax
+        mov eax, [rdx+8+P_ACK]
+        bswap eax
+        mov [rdx+8+P_ACK], eax
+.no:    popad
+        ret
+
+; tdue: the next 8 places of this processor's: a SYN that has waited long enough? Then it
+; is answered again (one at most). tidle: the same, when there was no frame to tell the
+; time by. (Clobber everything.)
+tidle:  rdtsc
+        shrd eax, edx, 20
+        mov [TNOW], eax
+tdue:   push 8
+        pop rsi
+.next:  mov eax, [abs NCPUM]
+        inc eax
+        imul eax, [THAND]
+        inc dword [THAND]
+        add eax, [CPUN]
+        and eax, [TMMASK]
+        mov edi, [TMT]
+        lea rdi, [rdi+rax*4]
+        mov edx, [TNOW]
+        mov ecx, edx
+        sub ecx, [rdi]          ; how long it has been there, if anything is (signed: one
+        cmp ecx, 512            ; noted this very tick may be a tick ahead)
+        jl .young
+        cmp dword [rdi], 0
+        jne .due
+.young: dec esi
+        jnz .next
+        ret
+.due:   cmp edx, [TLAST]
+        je .no
+        mov [TLAST], edx
+        and dword [rdi], 0
+        count 4
+        shl eax, 7
+        add eax, [TMF]
+        mov cl, [rax]
+        mov [TTRY], cl
+        movzx ecx, byte [rax+1]
+        mov [RXLEN], ecx
+        lea esi, [rax+8]
+        xor edi, edi
+        push 15
+        pop rcx
+        rep movsq
+        xor ebx, ebx
+        movzx ecx, word [rbx+16]
+        xchg cl, ch
+        sub ecx, 20             ; (as `tcp` has it where the checksum has been found right)
+        call tcp.sums
+        mov byte [TTRY], 0
+.no:    ret
 
 ; find: ebp = the slot of the connection the packet in FR belongs to. If it has none: CF, and
 ; ebp = the slot a new one would get, or 0 if there is no room for it.
