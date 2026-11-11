@@ -140,7 +140,7 @@ def make_identity(name):
 
 
 def db(name, data):
-    return f"{name}: db {','.join(str(b) for b in data)}\n{name}_LEN equ $ - {name}\n"
+    return f"global {name}\n{name}: db {','.join(str(b) for b in data)}\n{name}_LEN equ $ - {name}\n"
 
 
 def le(v, n=32):

@@ -56,10 +56,11 @@ TSH     equ SH + 32         ;   the state of the handshake transcript's hash (se
 PADB    equ SH + 64         ;   and the end of a message with its padding (two blocks)
 ST      equ BSS + 0x0CD40   ; ChaCha20 state
 KS      equ BSS + 0x0CD80   ; ChaCha20 key stream block (64-byte aligned)
-PK      equ BSS + 0x0CDC0   ; Poly1305 key block
-XT      equ BSS + 0x0CE00   ; Poly1305 h * r, 17 dwords
-PH      equ BSS + 0x0D300   ; Poly1305 h: 17 limbs of 8 bits (the top one: 2) in dwords
-RR      equ PH + 72         ; R[0..32] (R[-1] = PH + 68 is junk): see poly1305
+PK      equ BSS + 0x0CDC0   ; ChaCha20 block 0: the Poly1305 key (r, then s)
+RK      equ BSS + 0x0CE00   ; AES-128: the eleven round keys of the record at hand,
+NB      equ RK + 176        ;   its counter block (nonce | counter),
+TAGM    equ NB + 16         ;   what its tag is masked with,
+BSWAPM  equ TAGM + 16       ;   and how pshufb reverses 16 bytes (made at boot)
 SLOTS   equ BSS + 0x0D500   ; key schedule values, 8 x 32 bytes, addressed from ebp
 KH      equ BSS + 0x0D600   ; handshake traffic key | 0 counter | iv
 CVB     equ BSS + 0x0D680   ; CertificateVerify content to be signed (+ room for padding)
@@ -97,6 +98,7 @@ TXK     equ NV + 12         ; 1: frames are queued that the device has not been 
 TT      equ NV + 16         ; the table of TLS connections: address (a qword), number of buckets
 PT      equ NV + 32         ; the table of connections to port 80: the same
 TPOS    equ NV + 48         ; how far the transcript has been hashed (see `thash`)
+SUITE   equ NV + 52         ; the handshake's cipher: 0 ChaCha20-Poly1305, 1 AES-128-GCM
 HKS     equ BSS + 0x0F400   ; the eleven round keys of `prf`, made at boot
 HKO     equ HKS + 176       ;   and its output
 KA      equ BSS + 0x0F300   ; application keys as `keys` makes them (2 x 48 bytes + 20 of junk)
@@ -157,6 +159,7 @@ C_FLG   equ 6               ; a byte: F_CLOSED, F_DEFER, which segment size the 
 F_CLOSED equ 1              ;   (bits 2-3: MSSTAB), on port 80 whether a line has just ended (bit 7)
 F_DEFER equ 2               ; F_CLOSED: FINs exchanged, but the client lacks something
 F_DEFER_BIT equ 1           ; F_DEFER: its data is not acknowledged before it has our answer
+F_SYN   equ 16              ; F_SYN: a SYN has come for it since its last ack that fitted
 C_AGE   equ 7               ; when its last packet came (NOW; a byte, so after 256 units of
                             ; silence a connection looks young again for a while)
 C_NXT   equ 8               ; next sequence number we expect from the client
@@ -828,8 +831,10 @@ tcp:
         ;               or not, from one of a connection we don't know;
         ;   bits 0-1:   which of four segment sizes the client takes (MSSTAB).
         inc eax
-        jnz .syn
-        test rbp, rbp
+        jz .nos
+        or byte [rbp+C_FLG], F_SYN ; (for a connection we have: its client may be starting
+        jmp .syn                ; over, see `.odd`)
+.nos:   test rbp, rbp
         jz .deny                ; (no room where this connection would go: say so now)
 .syn:   movzx ecx, byte [rbx+46] ; its options: how much the client takes in one segment
         shr ecx, 4
@@ -952,14 +957,17 @@ tcp:
         jnc .ak1                ; data is acknowledged only now
         inc byte [rbx+P_MORE]
         jmp .ak1
-.odd:   call ckx                ; not an ack for this connection: for a new one from the same
-        jz .make                ; address and port (whose predecessor we never saw end)?
-        jmp .ak
+.odd:   test byte [rbp+C_FLG], F_SYN ; Not an ack for this connection: for a new one from
+        jz .ak                  ; the same address and port, whose predecessor we never saw
+        call ckx                ; end? Only if a SYN has come: a late copy of this
+        jz .make                ; connection's own first ack is a valid cookie too, and
+        jmp .ak                 ; must not start it over.
 .ak0:   inc edx
         test eax, eax
         jnz .ak1
         inc edx
 .ak1:   add [rbp+C_ACK], eax
+        and byte [rbp+C_FLG], ~F_SYN
 .ak:    test byte [rbp+C_FLG], F_CLOSED
         jz .open
         test edx, edx           ; closed, but the client lacks something (our FIN at least):
@@ -1132,11 +1140,10 @@ tcp:
         mov edi, VB
         stc
         icall seal              ; the record as it should be, tag included
-        sub edi, 16
-        add esi, ecx
-        push 16
-        pop rcx
-        repe cmpsb
+        movdqu xmm0, [rdi-16]   ; its tag and the one that came: all 16 bytes are looked at,
+        movdqu xmm1, [rsi+rcx]  ; whatever they are
+        pxor xmm0, xmm1
+        ptest xmm0, xmm0
         popad
         jne .next
         inc dword [rbp+C_ST]
@@ -1640,8 +1647,30 @@ handshake:
         jnc .rnd
         stosq
         loop .rnd
-        mov edi, ebx
         movzx edx, byte [rsi+38] ; session id length
+        lea eax, [rsi+rdx+41]   ; behind it the cipher suites (two bytes each), after their
+        movzx ecx, word [rax-2] ; length, which counts as far as the ClientHello goes
+        xchg cl, ch
+        xor edi, edi            ; Ours: the first of the client's that is 13 03 (ChaCha20-
+        lea r8d, [rsi+rbx-TR]   ; Poly1305: 0) or 13 01 (AES-128-GCM: 1); the first of these
+        sub r8d, eax            ; if it names neither (and then gives up).
+        jbe .cse
+        cmp ecx, r8d
+        jbe .csn
+        mov ecx, r8d
+.csn:   shr ecx, 1
+        jz .cse
+.cs:    cmp word [rax], 0x0313
+        je .cse
+        cmp word [rax], 0x0113
+        je .csa
+        inc eax
+        inc eax
+        loop .cs
+        jmp .cse
+.csa:   inc edi
+.cse:   mov [SUITE], edi
+        mov edi, ebx
         lea ecx, [rdx+39]
         rep movsb               ; ServerHello: as the ClientHello up to its session id,
         lea edi, [rbx+6]
@@ -1654,6 +1683,9 @@ handshake:
         mov esi, SHTAIL
         mov cl, 19
         rep movsb               ; ... + suite, extensions, key share header ...
+        mov eax, [SUITE]
+        add eax, eax
+        sub [rdi-18], al        ; (13 03, or 13 01)
         pop rsi
         lodsd
         call xdh                ; ... + our key share; R_X = the shared secret
@@ -1867,18 +1899,24 @@ stage:
         ret
 %endif
 
-; keys: edi = key(32) | 0(4) | iv(12) from traffic secret ebx (+20 junk bytes: expand writes 32)
+; keys: edi = key | cipher | iv from traffic secret ebx: 32 bytes of key (of which AES-128
+; uses 16), four bytes that say which cipher (`seal`), 12 of iv (+20 junk bytes: expand
+; writes 32)
 keys:
         pushad
         xor edx, edx
         mov esi, L_KEY
-        icall expand
+        mov eax, [SUITE]
+        test eax, eax
+        jz .k
+        mov esi, L_KEY16
+.k:     call expand
         add edi, 36
-        mov [rdi-4], edx        ; block counter 0 (slots near 16 MiB hold SeaBIOS tables)
-        add esi, L_IV - L_KEY
-        icall expand
+        mov [rdi-4], eax        ; (slots near 16 MiB hold SeaBIOS tables: not zero by themselves)
+        mov esi, L_IV
+        call expand
         popad
-        fret
+        ret
 
 ; ----------------------------------------------------------------------------
 ; sha256: edi = SHA-256 of ecx bytes at esi (which are left alone)
@@ -2545,7 +2583,12 @@ rev32:  push 32
 ; ecinit (boot): the three fields, the constant registers and the two tables.
 ; A field is: 2^256 - M | M | -1/M mod 2^64 (0 for 2^255 - 19, which is reduced its own
 ; way and has M = 2^256 - 38, twice the prime) | m - 2, the exponent that inverts.
-ecinit: mov edi, F25519 + F_M
+ecinit: mov edi, BSWAPM         ; (and what GHASH needs: how pshufb reverses 16 bytes)
+        mov al, 15
+.bs:    stosb
+        dec al
+        jns .bs
+        mov edi, F25519 + F_M
         or rax, -1
         push 4
         pop rcx
@@ -2695,95 +2738,151 @@ echost: pushad                  ; (for the tests: C wants its registers back)
         call ecinit
         popad
         ret
+; (for test/bench.c: one operation, or one program, in the field number ecx)
+        global hfmul, hfas, hvm, hinv
+hfield: imul ebp, ecx, FSIZE
+        add ebp, F25519
+        ret
+hfmul:  pushad
+        call hfield
+        call fmul
+        popad
+        ret
+hfas:   pushad
+        call hfield
+        xor ecx, ecx
+        call fas
+        popad
+        ret
+hvm:    pushad
+        call hfield
+        call vm
+        popad
+        ret
+hinv:   pushad
+        call hfield
+        call inv
+        popad
+        ret
 %endif
 
 ; ----------------------------------------------------------------------------
-; chacha: edi = ChaCha20 block of the 16-dword state at esi
-chacha:
-        pushad
-        push rsi
-        push rdi
-        push 16
-        pop rcx
-        rep movsd
-        pop rbp                 ; working state
-        xor ecx, ecx            ; quarter round 0..79
-.qr:    push rcx
-        mov eax, ecx
-        shl al, 2               ; column * 4 (masked below; al only, so no bit 8 sneaks in)
-        and ecx, 4              ; diagonal rounds: shift the column by 4 bytes per row
-        mov ebx, ebp
-        mov dl, 4
-.m:     and al, 12
-        lea esi, [rbx+rax]
-        push rsi
-        add eax, ecx
-        add ebx, 16
-        dec dl
-        jnz .m
-        pop rdi                 ; d
-        pop rdx                 ; c
-        pop rbx                 ; b
-        pop rsi                 ; a
-        mov ecx, 0x07080C10
-.st:    mov eax, [rbx]          ; P += Q; R ^= P; R <<<= n; then (P,Q,R) = (other,R,Q)
-        add [rsi], eax
-        mov eax, [rsi]
-        xor [rdi], eax
-        rol dword [rdi], cl
-        xchg esi, edx
-        xchg ebx, edi
-        shr ecx, 8
-        jnz .st
-        pop rcx
-        inc ecx
-        cmp cl, 80
-        jne .qr
-        pop rsi
-        mov edi, ebp
-        mov cl, 16
-.ad:    lodsd
-        add [rdi], eax
-        scasd
-        loop .ad
-        popad
-        fret
+; chacha: edi = the ChaCha20 block of the 16-dword state at ST (its four rows in xmm0-xmm3:
+; a quarter round does all four columns at once). Clobbers eax, xmm0-xmm4.
+chacha: movdqa xmm0, [ST]
+        movdqa xmm1, [ST+16]
+        movdqa xmm2, [ST+32]
+        movdqa xmm3, [ST+48]
+        mov al, 10
+.r:     call .qr
+        pshufd xmm1, xmm1, 0x39 ; (the diagonals become the columns,
+        pshufd xmm2, xmm2, 0x4E
+        pshufd xmm3, xmm3, 0x93
+        call .qr
+        pshufd xmm1, xmm1, 0x93 ; and columns again)
+        pshufd xmm2, xmm2, 0x4E
+        pshufd xmm3, xmm3, 0x39
+        dec al
+        jnz .r
+        paddd xmm0, [ST]
+        paddd xmm1, [ST+16]
+        paddd xmm2, [ST+32]
+        paddd xmm3, [ST+48]
+        movdqu [rdi], xmm0
+        movdqu [rdi+16], xmm1
+        movdqu [rdi+32], xmm2
+        movdqu [rdi+48], xmm3
+        ret
+.qr:    paddd xmm0, xmm1        ; a += b; d ^= a; d <<<= 16
+        pxor xmm3, xmm0
+        pshuflw xmm3, xmm3, 0xB1
+        pshufhw xmm3, xmm3, 0xB1
+        paddd xmm2, xmm3        ; c += d; b ^= c; b <<<= 12
+        pxor xmm1, xmm2
+        movdqa xmm4, xmm1
+        pslld xmm1, 12
+        psrld xmm4, 20
+        por xmm1, xmm4
+        paddd xmm0, xmm1        ; a += b; d ^= a; d <<<= 8
+        pxor xmm3, xmm0
+        movdqa xmm4, xmm3
+        pslld xmm3, 8
+        psrld xmm4, 24
+        por xmm3, xmm4
+        paddd xmm2, xmm3        ; c += d; b ^= c; b <<<= 7
+        pxor xmm1, xmm2
+        movdqa xmm4, xmm1
+        pslld xmm1, 7
+        psrld xmm4, 25
+        por xmm1, xmm4
+        ret
 
 ; seal: TLS 1.3 record at edi for ecx plaintext bytes at esi (last byte = inner content type),
-; key|0|iv at ebx, sequence number edx. Returns edi = end of record.
+; key|0|iv at rbx, sequence number edx. Returns edi = end of record.
 ; With CF set the bytes at esi are copied instead of encrypted: the record a peer should have
 ; sent for that ciphertext, whose tag the caller compares.
+; The key block says which cipher it is for (`keys`): where ChaCha20 has its block counter,
+; which starts at 0, a 1 means AES-128-GCM. Both ciphers go the same way: a key stream 64
+; bytes at a time, and a tag over header | ciphertext | lengths, lined up in SB.
 seal:
         pushad
         sbb ebp, ebp            ; CF: the "plaintext" is ciphertext already, just make its tag
         push rdi                ; o
         push rcx                ; n
         push rsi                ; m
+        bswap edx               ; (the sequence number goes on the nonce's last four bytes)
+        cmp byte [rbx+32], 0
+        jne .aes
         mov edi, ST             ; ChaCha state: constants | key | 0 counter | iv ^ seq
         mov esi, SIGMA
-        movsd
-        movsd
-        movsd
-        movsd
+        movsq
+        movsq
         mov rsi, rbx
-        push 12
+        push 6
         pop rcx
-        rep movsd
-        bswap edx
+        rep movsq
         xor [rdi-4], edx
-        lea esi, [rdi-64]       ; ST
-        add edi, 64             ; PK = ST + 128
-        icall chacha             ; block 0: Poly1305 key
-        mov edi, SB             ; SB = header, 0 pad | ciphertext, 0 pad | lengths
-        mov al, 0x17
-        stosb
-        mov al, 3
-        stosb
-        stosb
+        mov edi, PK
+        call chacha             ; block 0: Poly1305 key
+        jmp .sb
+.aes:   mov rsi, rbx
+        call aeskey
+        mov edi, NB             ; the counter block: iv ^ seq | counter
+        mov rax, [rbx+36]
+        stosq
+        mov eax, [rbx+44]
+        xor eax, edx
+        stosd
+        mov eax, 0x01000000     ; 1 for the tag, then 2, 3, ... (big-endian)
+        stosd
+        movdqa xmm7, [BSWAPM]
+        pxor xmm0, xmm0
+        call aesblk             ; H = AES(0): what the tag's hash multiplies by. As a number
+        pshufb xmm0, xmm7       ; (bytes reversed) it is kept times x: one bit to the left,
+        mov r8, 0xC200000000000000 ; and the bit that leaves at the top comes back as 0xC2..01
+        movq xmm6, r8
+        movq rax, xmm0
+        pextrq rdx, xmm0, 1
+        add rax, rax
+        adc rdx, rdx
+        sbb rcx, rcx
+        sub rax, rcx
+        and rcx, r8
+        xor rdx, rcx
+        movq xmm5, rax
+        pinsrq xmm5, rdx, 1
+        movdqa xmm0, [NB]
+        call aesblk
+        movdqa [TAGM], xmm0     ; what the hash is masked with
+        mov byte [NB+15], 2
+.sb:    mov edi, SB             ; SB = header, 0 pad | ciphertext, 0 pad | lengths
+        mov eax, 0x030317
+        stosd
         mov ecx, [rsp+8]
         lea eax, [rcx+16]
         xchg al, ah
-        stosw
+        mov [rdi-1], ax
+        inc edi
         add ecx, 42             ; zero a bit more than needed: simpler than rounding
         xor eax, eax
         rep stosb
@@ -2794,15 +2893,27 @@ seal:
         jz .ks
         rep movsb
         jmp .d
-.ks:    push rsi
-        push rdi
-        mov esi, ST
-        inc dword [rsi+48]      ; next counter
-        lea edi, [rsi+64]       ; KS = ST + 64 (64-byte aligned)
+.ks:    push rdi
+        mov edi, KS             ; (64-byte aligned)
         mov edx, edi
-        icall chacha
-        pop rdi
-        pop rsi
+        cmp byte [rbx+32], 0
+        jne .aks
+        inc dword [ST+48]       ; next counter
+        call chacha
+        jmp .kd
+.aks:   movdqa xmm0, [NB]       ; four counter blocks
+        mov eax, [NB+12]
+        bswap eax
+        inc eax
+        bswap eax
+        mov [NB+12], eax
+        call aesblk
+        stosq                   ; (16 bytes on: the block itself comes next)
+        stosq
+        movdqa [rdi-16], xmm0
+        test edi, 63
+        jnz .aks
+.kd:    pop rdi
 .x:     lodsb
         xor al, [rdx]
         inc edx
@@ -2815,110 +2926,170 @@ seal:
 .d:     pop rcx                 ; n
         lea edi, [rcx+SB+16+15]
         and edi, -16            ; SB+16 is 16-aligned
-        mov byte [rdi], 5       ; aad length
-        mov [rdi+8], ecx        ; ciphertext length
-        lea edx, [rdi+16-SB]
-        shr edx, 4              ; Poly1305 blocks
-        pop rdi                 ; o
+        lea ebp, [rdi+16-SB]
+        shr ebp, 4              ; blocks to hash
+        cmp byte [rbx+32], 0
+        jne .alen
+        mov byte [rdi], 5       ; Poly1305: the header's length, the ciphertext's
+        mov [rdi+8], ecx
+        jmp .out
+.alen:  mov byte [rdi+7], 40    ; GCM: the same in bits, big-endian
+        lea eax, [rcx*8]
+        bswap rax
+        mov [rdi+8], rax
+.out:   pop rdi                 ; o
         mov esi, SB
         movsd                   ; record header
         movsb
         add esi, 11
         rep movsb               ; ciphertext
-        mov ebx, PK
-        ; Poly1305 tag of the edx 16-byte blocks at SB, key at PK (r is clamped in place).
-        ; h has 17 limbs of 8 bits (the top one 2, plus a little), in dwords. With R[16 + j] = r[j] and
-        ; R[j - 1] = 320 r[j] (2^136 = 320 mod 2^130 - 5), limb k of h * r = sum_i h[i] * R[16 + k - i].
-        push rdi                ; where the tag goes
-        mov eax, 0x0FFFFFFF
-        and [rbx], eax
-        mov al, 0xFC
-        and [rbx+4], eax
-        and [rbx+8], eax
-        and [rbx+12], eax
-        mov edi, PH
-        push 17
-        pop rcx
-        xor eax, eax
-        rep stosd               ; h = 0
-        mov esi, ebx
-        add edi, 68             ; &R[16]
-        mov cl, 16
-.r:     lodsb                   ; (R[15] = 320 r[16] and R[32] = r[16] are 0: never written)
-        stosd
-        imul ebp, eax, 320
-        mov [rdi-72], ebp
-        loop .r
-        mov ecx, edx            ; blocks
         mov esi, SB
-.blk:   push rcx
-        mov edi, PH             ; h += block + 2^128 (eax < 256 here)
-        mov cl, 16
-.m:     lodsb
-        add [rdi], eax
-        scasd
-        loop .m
-        inc dword [rdi]
-        push rsi
-        mov edi, XT             ; XT = h * r: under 2^30 per limb
-        mov ebx, RR + 64
-        mov cl, 17
-.k:     push rcx
-        mov esi, PH
-        mov edx, ebx
-        xor ebp, ebp
-        mov cl, 17
-.i:     lodsd
-        imul eax, [rdx]
-        add ebp, eax
-        sub edx, 4
-        loop .i
-        xchg eax, ebp
-        stosd
-        add ebx, 4
-        pop rcx
-        loop .k
-        xor ebx, ebx            ; carry XT back into h, then twice more in place: 2^130
-        mov dl, 3               ; wraps as 5 (the 3rd pass only ripples a carry or two)
-        mov esi, XT
-.pass:  mov edi, PH
-        mov cl, 16
-.c:     lodsd
-        add ebx, eax
-        movzx eax, bl
-        sar ebx, 8
-        stosd
-        loop .c
-        lodsd
-        add ebx, eax
-        mov eax, ebx
-        and eax, 3
-        stosd                   ; (leaves eax < 4 for the next block's lodsb)
-        sar ebx, 2
-        lea ebx, [rbx+rbx*4]
-        lea esi, [rdi-68]
-        dec dl
-        jnz .pass
-        pop rsi
-        pop rcx
-        loop .blk
-        pop rdi
-        mov ebx, PK+16
-        mov esi, PH
-        mov cl, 16
-        xor edx, edx
-.t:     lodsd                   ; tag = h + s mod 2^128
-        add edx, eax
-        movzx eax, byte [rbx]
-        inc ebx
-        add edx, eax
-        mov [rdi], dl
-        inc edi
-        shr edx, 8
-        loop .t
-        mov [rsp], edi
+        cmp byte [rbx+32], 0
+        jne .ghash
+        ; Poly1305 tag of the ebp 16-byte blocks at SB, key at PK (r, then s), to rdi.
+        ; h is r8, r9, r10 (two limbs of 64 bits and what is above them); r is r11, r12,
+        ; and r13 = r1 * 5/4 does for r1 where a product leaves 2^130 (which is 5).
+        mov r11, [PK]
+        mov r12, [PK+8]
+        mov rax, 0x0FFFFFFC0FFFFFFF
+        and r11, rax
+        sub rax, 3
+        and r12, rax
+        mov r13, r12
+        shr r13, 2
+        add r13, r12
+        xor r8d, r8d
+        xor r9d, r9d
+        xor r10d, r10d
+.blk:   add r8, [rsi]           ; h += block + 2^128
+        adc r9, [rsi+8]
+        adc r10, 1
+        mov rax, r8             ; h *= r: limb 0 is h0 r0 + h1 r1 5/4,
+        mul r11
+        mov rbx, rax
+        mov rcx, rdx
+        mov rax, r9
+        mul r13
+        add rbx, rax
+        adc rcx, rdx
+        mov rax, r8             ; limb 1 is h0 r1 + h1 r0 + h2 r1 5/4,
+        mul r12
+        mov r14, rax
+        mov r15, rdx
+        mov rax, r9
+        mul r11
+        add r14, rax
+        adc r15, rdx
+        mov rax, r10
+        imul rax, r13
+        add r14, rax
+        adc r15, 0
+        imul r10, r11           ; limb 2 is h2 r0
+        mov r8, rbx
+        add r14, rcx
+        mov r9, r14
+        adc r10, r15
+        mov rax, r10            ; and what is above 2^130 comes back times 5
+        shr rax, 2
+        and r10d, 3
+        lea rax, [rax+rax*4]
+        add r8, rax
+        adc r9, 0
+        adc r10, 0
+        add rsi, 16
+        dec ebp
+        jnz .blk
+        mov rax, r8             ; h mod 2^130 - 5: if h + 5 reaches 2^130, that less 2^130
+        mov rcx, r9
+        add rax, 5
+        adc rcx, 0
+        adc r10, 0
+        shr r10, 2
+        cmovnz r8, rax
+        cmovnz r9, rcx
+        add r8, [PK+16]         ; tag = h + s mod 2^128
+        adc r9, [PK+24]
+        mov [rdi], r8
+        mov [rdi+8], r9
+.tag:   add rdi, 16
+        mov [rsp], rdi
         popad
-        fret
+        ret
+        ; GHASH of the ebp blocks at SB: y = (y ^ block) * H in GF(2^128), for each block.
+        ; As numbers with their bytes reversed, the bits are in reverse too, and the
+        ; product of two such numbers is the reversed product, one bit short, which is why
+        ; xmm5 = H times x. xmm1, xmm3, xmm2 = the 256-bit product's low half, its middle
+        ; (64 bits up), its high half; then twice: the lowest 64 bits, times 0xC2..00 and
+        ; 64 bits further up, are worth the same and take their place (xmm6 = 0xC2..00).
+.ghash: pxor xmm2, xmm2
+.g:     movdqa xmm0, [rsi]
+        pshufb xmm0, xmm7
+        pxor xmm0, xmm2
+        movdqa xmm1, xmm0
+        pclmulqdq xmm1, xmm5, 0x00
+        movdqa xmm2, xmm0
+        pclmulqdq xmm2, xmm5, 0x11
+        movdqa xmm3, xmm0
+        pclmulqdq xmm3, xmm5, 0x10
+        pclmulqdq xmm0, xmm5, 0x01
+        pxor xmm3, xmm0
+        movdqa xmm0, xmm1
+        pclmulqdq xmm0, xmm6, 0x00
+        pshufd xmm1, xmm1, 0x4E
+        pxor xmm1, xmm3
+        pxor xmm1, xmm0
+        movdqa xmm0, xmm1
+        pclmulqdq xmm0, xmm6, 0x00
+        pshufd xmm1, xmm1, 0x4E
+        pxor xmm2, xmm1
+        pxor xmm2, xmm0
+        add rsi, 16
+        dec ebp
+        jnz .g
+        pshufb xmm2, xmm7
+        pxor xmm2, [TAGM]
+        movdqu [rdi], xmm2
+        jmp .tag
+
+; aeskey: the eleven round keys of the AES-128 key at rsi, to RK (clobbers eax, ecx, edi,
+; r8, xmm0-xmm2)
+aeskey: movdqu xmm0, [rsi]
+        mov edi, RK
+        mov al, 1               ; the round constant: 1, and times x in GF(2^8) each round
+        mov cl, 10
+.k:     movdqa [rdi], xmm0
+        add edi, 16
+        aeskeygenassist xmm1, xmm0, 0
+        pshufd xmm1, xmm1, 0xFF ; the last word, substituted and rotated, in all four words,
+        movzx r8d, al
+        movd xmm2, r8d
+        pshufd xmm2, xmm2, 0
+        pxor xmm1, xmm2         ; with the round constant,
+        movdqa xmm2, xmm0       ; on w0, w0 ^ w1, w0 ^ w1 ^ w2, ...
+        pslldq xmm2, 4
+        pxor xmm0, xmm2
+        pslldq xmm2, 4
+        pxor xmm0, xmm2
+        pslldq xmm2, 4
+        pxor xmm0, xmm2
+        pxor xmm0, xmm1
+        add al, al
+        jnc .n
+        xor al, 0x1B
+.n:     dec cl
+        jnz .k
+        movdqa [rdi], xmm0
+        ret
+
+; aesblk: xmm0 = AES of xmm0 under the round keys at RK (clobbers eax)
+aesblk: mov eax, RK
+        pxor xmm0, [rax]
+.r:     add eax, 16
+        aesenc xmm0, [rax]
+        cmp eax, RK + 144
+        jb .r
+        aesenclast xmm0, [rax+16]
+        ret
 
 
 ; ----------------------------------------------------------------------------
@@ -2931,6 +3102,7 @@ L_SATS: db 32, 12, "s ap traffic"
 L_CATS: db 32, 12, "c ap traffic"
 L_FIN:  db 32, 8, "finished"
 L_KEY:  db 32, 3, "key"
+L_KEY16: db 16, 3, "key"
 L_IV:   db 12, 2, "iv"
 TLS13:  db "tls13 "
 SIGMA:  db "expand 32-byte k"

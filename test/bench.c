@@ -10,10 +10,10 @@ typedef unsigned char u8;
 #define ASMCALL(fn, ...) __asm__ volatile("call " #fn : __VA_ARGS__ : : SCRATCH)
 extern u8 E[], K[], REGS[];
 static double now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+t.tv_nsec/1e9;}
-#define TIME(name, n, ...) do { double t = now(); unsigned long long c = __rdtsc(); \
+#define TIME(name, n, ...) do { double t_ = now(); unsigned long long c_ = __rdtsc(); \
     for (i = 0; i < (n); i++) { __VA_ARGS__; } \
-    c = __rdtsc() - c; \
-    printf("%-34s %8.1f us  %9llu cycles\n", name, (now() - t) / (n) * 1e6, c / (n)); } while (0)
+    c_ = __rdtsc() - c_; \
+    printf("%-34s %8.2f us  %9llu cycles\n", name, (now() - t_) / (n) * 1e6, c_ / (n)); } while (0)
 int main(void){
     mmap((void *)0x200000, 0x200000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
     __asm__ volatile("call shaconst" ::: SCRATCH);
@@ -24,5 +24,21 @@ int main(void){
     TIME("ecdsa: sign", 2000, { const u8 *q = z; ASMCALL(sign, "+S"(q)); });
     TIME("sha256 of 64 bytes (2 blocks)", 20000, { u8 *o = h, *mm = m; unsigned n = 64; ASMCALL(sha256, "+D"(o), "+S"(mm), "+c"(n)); });
     TIME("sha256 of 3000 bytes", 2000, { u8 *o = h, *mm = m; unsigned n = 3000; ASMCALL(sha256, "+D"(o), "+S"(mm), "+c"(n)); });
+    /* the pieces: one multiplication, one addition, one ladder step, one inversion */
+    static const char *const fn[] = {"2^255-19", "P-256 p", "P-256 n"};
+    extern u8 STEP25519[], MADDED[], MADD256[];
+    for (int f = 0; f < 3; f++) {
+        char t[64];
+        u8 *a = REGS + 7 * 32, *b = REGS + 8 * 32;
+        sprintf(t, "multiplication, %s", fn[f]);
+        TIME(t, 200000, { u8 *d = a, *x = a, *y = b; int c = f; __asm__ volatile("call hfmul" : "+D"(d), "+S"(x), "+b"(y), "+c"(c) : : SCRATCH); });
+        sprintf(t, "addition, %s", fn[f]);
+        TIME(t, 200000, { u8 *d = a, *x = a, *y = b; int c = f; __asm__ volatile("call hfas" : "+D"(d), "+S"(x), "+b"(y), "+c"(c) : : SCRATCH); });
+        sprintf(t, "inversion, %s", fn[f]);
+        TIME(t, 2000, { u8 *x = a; int c = f; __asm__ volatile("call hinv" : "+S"(x), "+c"(c) : : SCRATCH); });
+    }
+    TIME("ladder step (10 mul, 8 add)", 100000, { u8 *x = STEP25519; int c = 0; __asm__ volatile("call hvm" : "+S"(x), "+c"(c) : : SCRATCH); });
+    TIME("edwards madd (7 mul, 7 add)", 100000, { u8 *x = MADDED; int c = 0; __asm__ volatile("call hvm" : "+S"(x), "+c"(c) : : SCRATCH); });
+    TIME("P-256 madd (11 mul, 7 add)", 100000, { u8 *x = MADD256; int c = 1; __asm__ volatile("call hvm" : "+S"(x), "+c"(c) : : SCRATCH); });
     return 0;
 }

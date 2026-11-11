@@ -63,10 +63,12 @@ int main(void)
     ex(h, m, "\x20\x07" "derived", m + 100);
     hex("expand", h, 32);
     for (i = 0; i < 32; i++) kiv[i] = m[300 + i], kiv[36 + i] = m[400 + i];
-    for (i = 0; i < 3; i++) {
-        u32 n = (u32[]){1, 100, 1500}[i], L = sl(out, m, n, kiv, i * 77);
+    for (i = 0; i < 12; i++) {       /* ChaCha20-Poly1305, then AES-128-GCM (the key block says) */
+        u32 n = (u32[]){1, 100, 1500, 15, 16, 17}[i % 6], L;
         char t[32];
-        sprintf(t, "seal%u_%u", n, i * 77);
+        kiv[32] = i >= 6;
+        L = sl(out, m, n, kiv, i * 77);
+        sprintf(t, "%s%u_%u", i >= 6 ? "gcm" : "seal", n, i * 77);
         hex(t, out, L);
     }
     /* X25519 with our scalar e (unclamped): key share, and the secret with the public key

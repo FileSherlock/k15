@@ -26,6 +26,11 @@ for _ in 1 2; do
   B2=$("${CURL[@]}" "$URL" "${URL}x") || { echo "FAIL: repeat"; exit 1; }
   [[ "$B2" == "$EXPECT"$'\n'"$EXPECT" ]] || { echo "FAIL: keep-alive got '$B2'"; exit 1; }
 done
+# each of the two ciphers, asked for by name (a keep-alive request too)
+for C in TLS_AES_128_GCM_SHA256 TLS_CHACHA20_POLY1305_SHA256; do
+  V=$("${CURL[@]}" -v --tls13-ciphers $C "$URL" "${URL}x" 2>&1) || { echo "FAIL: $C"; exit 1; }
+  [[ "$V" == *"$C"* && "$V" == *"$EXPECT"*"$EXPECT"* ]] || { echo "FAIL: $C not used, or not the page twice"; exit 1; }
+done
 # the same page over plain HTTP on port 80, fresh and keep-alive
 H=$(curl -s --max-time 10 "http://127.0.0.1:$HPORT/" "http://127.0.0.1:$HPORT/x") || { echo "FAIL: curl exit $? (plain HTTP)"; exit 1; }
 [[ "$H" == "$EXPECT"$'\n'"$EXPECT" ]] || { echo "FAIL: plain HTTP got '$H'"; exit 1; }
