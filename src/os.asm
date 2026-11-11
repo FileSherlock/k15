@@ -64,11 +64,12 @@ KST     equ VST + 160       ;   reset knock: 1 after the first port (development
 NV      equ BSS + 0x0F200
 RXLEN   equ NV              ; the length of the frame in FR
 HSNEXT  equ NV + 4          ; handshake buffers given out so far
-NOW     equ NV + 8          ; when the frame came, in units of 2^35 cycles (a byte: see C_AGE)
+NOW     equ NV + 8          ; when the frame came, in units of 2^37 cycles (a byte: see C_AGE)
 TT      equ NV + 12         ; the table of TLS connections: address, number of buckets
 PT      equ NV + 20         ; the table of connections to port 80: the same
-HKS     equ BSS + 0x0F400   ; ChaCha20 state for `prf`: constants, a key made at boot, input
-HKO     equ HKS + 64        ;   and its output block
+TXK     equ NV + 28         ; 1: frames are queued that the device has not been told about
+HKS     equ BSS + 0x0F400   ; the eleven round keys of `prf`, made at boot
+HKO     equ HKS + 176       ;   and its output
 KA      equ BSS + 0x0F300   ; application keys as `keys` makes them (2 x 48 bytes + 20 of junk)
 VQ      equ 0x400000        ; the two rings, 64 KiB apart (enough for queues of 1024)
 RXB     equ 0x500000        ; receive buffers, 2 KiB each (12-byte virtio header + frame)
@@ -99,8 +100,8 @@ CONNS   equ 0x2000000       ; the connection tables, from here to the end of mem
 BUCKET  equ 16              ; slots in a bucket (see `find`)
 TSHARE  equ 3               ; the TLS table gets 1/2^TSHARE of that memory
 %ifndef IDLE
-%define IDLE 32             ; a connection that has been quiet for longer than this (in units of
-%endif                      ; 2^35 cycles: 5 to 9 minutes) may be replaced when a new one finds no room
+%define IDLE 64             ; a connection that has been quiet for longer than this (in units of
+%endif                      ; 2^37 cycles: 40 to 70 minutes) may be replaced when a new one finds no room
 HINT    equ 0x3FC           ; see the cookie in `tcp`
 OBMAX   equ 0x40000         ; room for one answer at OB
 %ifndef HOST
@@ -157,8 +158,11 @@ TSLOT   equ 128
 %define fret iretd
 %endif
 GATED equ 0
-; Development builds (make DEBUG=1) count things in DBG and show six of the counters, four
-; hex digits each, in place of the end of the page on port 80: `count n` adds one to counter n.
+; Development builds (make DEBUG=1) count things in DBG and show six counters, four hex
+; digits each, in place of the end of the page on port 80: `count n` adds one to counter n.
+; 0: frames with a bad length or checksum, 1: cycles per frame handled (an average, made when
+; shown), 2: connections refused for lack of room, 3: segments that came early, 4: resends,
+; 5: RSTs sent.
 DBG     equ BSS + 0x0F500
 %macro count 1
 %ifdef DEBUG
@@ -181,9 +185,9 @@ NGATES  equ %0
 %endrep
 %endmacro
 %if CHAIN_LEN > 1100            ; (tcp_out is only called, rather than fallen into, for a long chain)
-%define GATELIST sha256, hmac, expand, thash, seal, keys, rev32, stage, x25519, inv, chacha, csum, handshake, sigr, tcp
+%define GATELIST sha256, hmac, expand, thash, seal, keys, rev32, stage, x25519, inv, chacha, handshake, sigr
 %else
-%define GATELIST sha256, hmac, expand, thash, seal, keys, rev32, stage, x25519, inv, chacha, csum, handshake, sigr, tcp
+%define GATELIST sha256, hmac, expand, thash, seal, keys, rev32, stage, x25519, inv, chacha, handshake, sigr
 %endif
         gates GATELIST
 
@@ -485,25 +489,25 @@ shaconst:
         mov edx, [Q0+20]
         mov word [edx], 0       ; notify queue 0: there are buffers
 
-        mov esi, SIGMA          ; the key for `prf`
-        mov edi, HKS
-        movsd
-        movsd
-        movsd
-        movsd
-        push 8
+        mov eax, cr4
+        or ah, 2                ; (OSFXSR: the SSE registers may be used)
+        mov cr4, eax
+        mov edi, HKS            ; the round keys for `prf`
+        push 44
         pop ecx
 .hk:    rdrand eax
         jnc .hk
         stosd
         loop .hk
 
-.poll:  pause
-        mov esi, [Q0+8]         ; used ring: anything new?
+.poll:  mov esi, [Q0+8]         ; used ring: anything new?
         mov eax, [Q0+16]
         cmp ax, [esi+2]
-        je .poll
-        inc dword [Q0+16]
+        jne .frame
+        call txkick             ; no: time to tell the device what we have queued for it
+        pause
+        jmp .poll
+.frame: inc dword [Q0+16]
         and eax, [Q0+12]
         mov edx, [esi+4+eax*8]  ; buffer id
         mov ecx, [esi+8+eax*8]  ; bytes written, header included
@@ -527,8 +531,23 @@ shaconst:
         mov edx, [Q0+20]
         mov word [edx], 0
 .nk:    pushad
-        icall tcp
+%ifdef DEBUG
+        rdtsc                   ; (cycles spent on frames, and how many frames)
+        push eax
+        call tcp
+        rdtsc
+        pop edx
+        sub eax, edx
+        add [DBG+24], eax
+        adc dword [DBG+28], 0
+        inc dword [DBG+32]
+%else
+        call tcp
+%endif
         popad
+        test byte [Q0+16], 31   ; (if frames keep coming, every 32 of them)
+        jnz .poll
+        call txkick
         jmp .poll
 
 ; pcird: eax = PCI configuration dword at register eax of the device at ebx (dx = 0xCFC after)
@@ -549,15 +568,17 @@ txbuf:  pushad
 .full:  mov edx, eax
         sub dx, [esi+2]
         cmp dx, [Q1+12]
-        ja .full
-        and eax, [Q1+12]        ; buffer = descriptor = ring position
+        jbe .room
+        call txkick
+        jmp .full
+.room:  and eax, [Q1+12]        ; buffer = descriptor = ring position
         shl eax, 11
         add eax, TXB + 12
         mov [esp+16], eax
         popad
         ret
 
-; txgo: send the frame of ecx bytes that was built where txbuf said
+; txgo: queue the frame of ecx bytes that was built where txbuf said (it goes out with txkick)
 txgo:   pushad
         mov ebx, [Q1+4]
         movzx eax, word [ebx+2]
@@ -568,12 +589,23 @@ txgo:   pushad
         add ecx, 12
         mov [eax+8], ecx        ; length with the header (12 zero bytes: nobody writes there)
         inc word [ebx+2]
-        mov esi, [Q1+8]
-        test byte [esi], 1
-        jnz .nk
-        mov edx, [Q1+20]
-        mov word [edx], 1       ; notify queue 1
-.nk:    popad
+        mov byte [TXK], 1
+        popad
+        ret
+
+; txkick: tell the device that there are frames to send, if there are some it has not been
+; told about and it wants to be told. Telling costs far more than anything else we do for a
+; frame (it leaves the virtual machine), so the polling loop does it when it has handled
+; all that came in, not for every frame.
+txkick: push eax
+        btr dword [TXK], 0
+        jnc .no
+        mov eax, [Q1+8]
+        test byte [eax], 1
+        jnz .no
+        mov eax, [Q1+20]
+        mov word [eax], 1       ; notify queue 1
+.no:    pop eax
         ret
 
 ; ethhdr: at edi (which moves on) the start of a frame to the sender of the one in FR: to its
@@ -638,7 +670,7 @@ tcp:
         rep movsb
         mov cl, 42
         call txgo
-        fret
+        ret
 .ip:    cmp word [ebx+12], 0x0008 ; IPv4, no options, not a fragment, TCP, to us, all of it
         jne .ret                ; in this frame, both checksums right: nothing else gets
         cmp byte [ebx+14], 0x45 ; any further
@@ -661,7 +693,7 @@ tcp:
         lea esi, [ebx+14]
         push 20
         pop ecx
-        icall csum
+        call csum
         pop ecx
         test ax, ax
         jnz .bad
@@ -673,14 +705,12 @@ tcp:
         push ecx
         lea esi, [ebx+22]
         add ecx, 12
-        icall csum
+        call csum
         pop ecx
         test ax, ax
         jz .sums
-        count 1
-        fret
 .bad:   count 0
-.ret:   fret
+.ret:   ret
 .sums:
 %ifdef KNOCK_A                  ; development builds only (make KNOCK=a,b): a packet to port a,
         movzx eax, word [ebx+36] ; then one to port b, resets the machine, so a test server
@@ -718,8 +748,8 @@ tcp:
         mov eax, [ebx+P_ACK]
         bswap eax
         mov [ebx+P_ACK], eax
-        rdtsc                   ; the time, in units of 2^35 cycles (10 to 17 seconds)
-        shr edx, 3
+        rdtsc                   ; the time, in units of 2^37 cycles (40 to 70 seconds)
+        shr edx, 5
         mov [NOW], dl
         mov [ebx+P_MORE], bl
         mov dl, [ebx+P_FL]
@@ -733,7 +763,7 @@ tcp:
         cmp eax, [ebp+C_NXT]
         jne .ret
 .free:  and dword [ebp+C_IP], 0
-        fret
+        ret
 .nrst:  test dl, 2
         jz .nsyn
         test dl, 16
@@ -794,7 +824,7 @@ tcp:
         push 4
         pop ecx
 .seg:   call tcp_seg
-        fret
+        ret
 .deny:  count 2
         mov al, 0x14            ; RST|ACK: connection refused
         mov edi, [ebx+P_SEQ]
@@ -890,7 +920,7 @@ tcp:
         jnz .resend
         test ecx, ecx
         jnz .resend
-        fret
+        ret
 .open:  mov eax, [ebp+C_NXT]
         sub eax, [ebx+P_SEQ]    ; how many of this segment's bytes we already have
         js .early
@@ -929,7 +959,7 @@ tcp:
         je .resend              ; outstanding: a segment of ours is missing
         cmp [ebx+P_MORE], bl
         jne .ack
-        fret
+        ret
 
 .new:   mov edi, OB             ; edi = end of our answer
 .more:  add [ebp+C_NXT], ecx    ; ecx new bytes at esi, in order
@@ -1132,7 +1162,7 @@ tcp:
         call tcp_send
         jmp .free
 .sq:    call tcp_send
-        fret
+        ret
 
         ; The client lacks the end of what we sent, from its ack on: build that again and
         ; send it: the last of our records (as many as OB has room for: whether more is
@@ -1198,7 +1228,7 @@ tcp:
         jecxz .ret0
 .rs:    mov edx, [ebx+P_ACK]
         call tcp_send
-.ret0:  fret
+.ret0:  ret
 .reset: mov al, 4               ; we can't go on with this connection: say so and forget it
         mov edx, [ebp+C_SND]
         xor ecx, ecx
@@ -1211,8 +1241,9 @@ tcp:
 ; A connection is in one of two buckets of BUCKET slots, picked by two words of the keyed
 ; hash of its address and ports (`prf`; clients can't aim at each other's buckets). A new one
 ; goes into the bucket with more free slots. If both are full, it takes the place of the
-; connection in them that has been quiet for the longest, if that is longer than IDLE: such
-; a client has probably gone without saying so. If none has, the new one is refused.
+; connection in them that has been quiet for the longest, if that is longer than IDLE (about
+; an hour): such a client has probably gone without saying so. If none has, the new one is
+; refused.
 find:   pushad
         call prf
         mov esi, PT             ; the table for port 80,
@@ -1284,20 +1315,20 @@ find:   pushad
         jnz .s
         ret
 
-; prf: HKO = a keyed hash of the client's address and ports: a ChaCha20 block under a key
-; made at boot (HKS), with those as its counter. Its words pick the two buckets (0, 1), make
-; the cookie (2: W) and place a segment kept for later (3).
-prf:    pushad
-        mov edi, HKS + 48
-        mov eax, [P_IP]
-        stosd
-        mov eax, [P_PORTS]
-        stosd
-        scasd
-        scasd                   ; edi = HKO
+; prf: HKO = a keyed hash of the client's address and ports (and ours: twelve bytes of the
+; frame): eleven rounds of AES, as the processor has them, with round keys that are simply
+; random, made at boot (HKS). Its four words pick the two buckets (0, 1), make the cookie
+; (2: W) and place a segment kept for later (3). (Clobbers esi and ecx.)
+prf:    movdqu xmm0, [P_IP]     ; the addresses and ports, and four bytes behind them
+        pslldq xmm0, 4          ; that go again
         mov esi, HKS
-        icall chacha
-        popad
+        pxor xmm0, [esi]
+        push 10
+        pop ecx
+.r:     add esi, 16
+        aesenc xmm0, [esi]
+        loop .r
+        movdqa [HKO], xmm0
         ret
 
 ; ckx: eax = 0 (and ZF) if the packet is the first after a SYN-ACK of ours: its ack is the
@@ -1328,6 +1359,10 @@ respond:
         rep movsb
 %ifdef DEBUG
         pushad
+        mov eax, [DBG+24]       ; (counter 1: cycles per frame)
+        mov edx, [DBG+28]
+        div dword [DBG+32]
+        mov [DBG+4], eax
         dec edi                 ; (the page ends with a line end)
         mov esi, DBG + 24
         std
@@ -1496,7 +1531,7 @@ tcp_seg:
         stosd
         lea esi, [ebx+22]
         lea ecx, [ebp+32]
-        icall csum
+        call csum
         mov [ebx+50], ax
         lea ecx, [ebp+40]
         xchg cl, ch
@@ -1505,7 +1540,7 @@ tcp_seg:
         lea esi, [ebx+14]
         push 20
         pop ecx
-        icall csum
+        call csum
         mov [ebx+24], ax
         lea ecx, [ebp+54]
         call txgo
@@ -1524,7 +1559,7 @@ csum:
         adc dx, 0
         not edx
         xchg eax, edx
-        fret
+        ret
 
 ; ----------------------------------------------------------------------------
 ; handshake: ClientHello message at esi (ecx bytes), connection at ebp.
