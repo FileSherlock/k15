@@ -1,41 +1,70 @@
 #!/usr/bin/env python3
 """The elliptic-curve side of the image, as data plus a bit-exact Python model of it.
 
-The asm has one 256-bit modular multiplication (Montgomery, R = 2^288: 9 limbs of 32 bits)
-and a tiny register machine on top: 16 registers of 9 limbs, three operations. The curve
-formulas are programs for that machine, assembled here (2 bytes per operation) and included
-in the image by gen.py. This file also runs them in Python, so `python3 tools/ec.py` checks
-the formulas, the constants and the size bounds below against pyca/cryptography.
+The asm has one 256 x 256 -> 512 bit multiplication (four limbs of 64 bits, mulx/adcx/adox),
+two ways to reduce its result (2^255 - 19 by folding, the other moduli Montgomery's way),
+one add/subtract, and a tiny register machine on top: 16 registers of four limbs, three
+operations. The curve formulas are programs for that machine, assembled here (2 bytes per
+operation) and included in the image by gen.py. This file also runs them in Python, so
+`python3 tools/ec.py` checks the formulas, the constants and the bounds below against
+pyca/cryptography.
 
-Lazy reduction: nothing is ever reduced or compared. With R = 2^288 and m < 2^256,
-  mul(a, b) = a b / R mod m, and is < 2m    whenever a, b < 4096 m
-  add(a, b) = a + b                         (plain 9-limb addition)
-  sub(a, b) = a - b + 256 m                 (needs b <= 256 m; 256 m is the modulus read one
-                                             byte early: a zero byte sits in front of it)
-so there are no data-dependent branches or lengths anywhere. Canonical values only appear
-where a result leaves the machine, through mul(x, 1), which is <= m.
+Values: every register holds a number below 2^256 that stands for its residue: "weakly
+reduced". Nothing is ever compared with a modulus, so there are no data-dependent branches
+or lengths anywhere:
+  add(a, b)  = a + b, then twice: if that left 2^256, take M off again
+  sub(a, b)  = a - b, then twice: if that went below 0, put M back
+  mul(a, b)  = a b mod p               for 2^255 - 19 (M = 2 p = 2^256 - 38: what leaves
+               2^256 comes back times 38)
+             = a b / 2^256 mod M       for the Montgomery fields (p and n of P-256): below
+               2^256 + M before one last conditional subtraction
+(Twice, because a weakly reduced number may be anywhere up to 2^256: the first correction
+can leave it just outside again.) Canonical values only appear where a result leaves the
+machine: `freeze` for 2^255 - 19, mul(x, 1) for the Montgomery fields (which is <= M).
 
-Montgomery form: a stored value s stands for s / R. Products of stored values are then
-stored values again; constants are baked in already multiplied by R. Inputs that arrive raw
-(the client's key share, the hash to sign) are used raw where the formulas are homogeneous
+Montgomery form: a stored value s stands for s / R, R = 2^256. Products of stored values
+are then stored values again; constants are baked in already multiplied by R. Inputs that
+arrive raw (the hash to sign, the nonce) are used raw where the formulas are homogeneous
 enough not to care, see the programs.
+
+Scalar multiplications, the three a handshake needs:
+  - our X25519 public key e B: B is fixed, so a table made at boot does it in 64 additions
+    (one per nibble of e) on the Edwards form of the curve, whose addition law has no
+    exceptions; the result goes back to Montgomery's u = (Z + Y) / (Z - Y)
+  - the shared secret e U: U is the client's, so the Montgomery ladder, 255 steps
+  - r = x(k G) for the signature: G is fixed, a table again (Jacobian coordinates, mixed
+    additions). That addition law does have exceptions (a point plus itself, plus its
+    negative, the point at infinity), so the table holds (d + 1) 16^i G, never infinity,
+    the sum starts from a fixed point 2^255 G, and the nonce has the difference taken off
+    first: no partial sum can then meet the point it is added to, except for a share of
+    2^-240 or so of all nonces (see `sign`).
+Table lookups read all 16 entries of a window and keep one (the asm: with masks).
+One inversion a^(m-2) for all three moduli, the two X25519 results sharing one.
 """
 import os
 import sys
 
-R = 1 << 288
+R = 1 << 256
+W = 1 << 64
 P25519 = (1 << 255) - 19
 P256 = 0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF
 N256 = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
 B256 = 0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B
 GX256 = 0x6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296
 GY256 = 0x4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5
+# edwards25519: -x^2 + y^2 = 1 + d x^2 y^2, base point B (which Montgomery's u = 9 comes from)
+D25519 = -121665 * pow(121666, -1, P25519) % P25519
+BY25519 = 4 * pow(5, -1, P25519) % P25519
+BX25519 = 0x216936D3CD6E53FEC0A4E231FDD6DC5C692CC7609525A7B2C9562D608F25D51A
+# what the nonce loses before its nibbles pick table entries: the starting point's 2^255 and
+# the 1 that every entry has too many (the sum of 16^i)
+KOFF = (1 << 255) + ((1 << 256) - 1) // 15
 
-# registers: GX to ONE are constants copied from the image at boot, the next two are set by
-# boot code (near ONE: short addresses), the rest starts as zero. U, X2 and Z2 come first:
-# the asm reaches r and s with short offsets from pointers it has anyway (the nonce sits
-# right in front of the registers), and register 0 must not be squared (see asm()): U never is.
-REGS = "U X2 Z2 X3 Z3 GX B4 D ONE A24 NINE ZERO T0 T1 T2 T3".split()
+# Registers. E0-E2 are where a table entry lands (and the client's u, and the hash to
+# sign); X-T are the point being worked on (the ladder's X2 Z2 X3 Z3); ZERO to D are
+# constants, set at boot; C is 2 d of edwards25519 while its table is made and R mod p of
+# P-256 after that. E0 comes first because register 0 must not be squared (see asm()).
+REGS = "E0 E1 E2 X Y Z T T0 T1 T2 T3 ZERO ONE A24 D C".split()
 REG = {n: i for i, n in enumerate(REGS)}
 ADD, SUB, MUL = 1, 2, 3
 
@@ -54,101 +83,181 @@ def asm(text):
     return bytes(out) + b"\0"
 
 
-# Both ladders keep two points (X2 : Z2) and (X3 : Z3) whose difference is the base point, and
-# start from infinity = (1 : 0) and the base point = (x : 1).
-#
-# X25519 (RFC 7748). U is the raw u coordinate; A24 is 121665 R. Multiplying by the raw U
-# puts a factor 1/R on Z3, so X3 gets one too (times ONE): a ratio doesn't mind.
+# X25519 (RFC 7748), the ladder: two points (X : Y) and (Z : T) (the RFC's (X2 : Z2) and
+# (X3 : Z3)) whose difference is the client's point u = E0; they start as infinity (1 : 0)
+# and (u : 1). A24 is 121665.
 INIT25519 = asm("""
-    X2 = ONE + ZERO
-    Z2 = ZERO + ZERO
-    X3 = U + ZERO
-    Z3 = ONE + ZERO
+    X = ONE + ZERO
+    Y = ZERO + ZERO
+    Z = E0 + ZERO
+    T = ONE + ZERO
 """)
 STEP25519 = asm("""
-    T0 = X2 + Z2        # A
-    T1 = X2 - Z2        # B
-    T2 = X3 + Z3        # C
-    T3 = X3 - Z3        # D
+    T0 = X + Y          # A
+    T1 = X - Y          # B
+    T2 = Z + T          # C
+    T3 = Z - T          # D
     T3 = T3 * T0        # DA
     T2 = T2 * T1        # CB
-    X3 = T3 + T2
-    X3 = X3 * X3
-    X3 = X3 * ONE
-    Z3 = T3 - T2
-    Z3 = Z3 * Z3
-    Z3 = Z3 * U
+    Z = T3 + T2
+    Z = Z * Z           # X3
+    T = T3 - T2
+    T = T * T
+    T = T * E0          # Z3
     T0 = T0 * T0        # AA
     T1 = T1 * T1        # BB
-    X2 = T0 * T1
+    X = T0 * T1         # X2
     T1 = T0 - T1        # E
-    Z2 = A24 * T1
-    Z2 = Z2 + T0
-    Z2 = Z2 * T1
+    Y = A24 * T1
+    Y = Y + T0
+    Y = Y * T1          # Z2
 """)
-# P-256, x only (Brier and Joye 2002, a = -3). GX is x(G) R, B4 is 4 b R.
-#   add:    X = (X2 X3 + 3 Z2 Z3)^2 - 4b Z2 Z3 (X2 Z3 + X3 Z2),  Z = x(G) (X2 Z3 - X3 Z2)^2
-#   double: X = (X^2 + 3 Z^2)^2 - 8b X Z^3,  Z = 4 Z (X (X^2 - 3 Z^2) + b Z^3)
+# edwards25519, extended coordinates (X : Y : Z : T), x = X/Z, y = Y/Z, T = XY/Z. A table
+# entry is (y + x, y - x, 2 d x y) of an affine point; adding one (Hisil et al. 2008,
+# "madd"; complete: it also doubles and adds the neutral point (1, 1, 0)):
+INITED = asm("""
+    X = ZERO + ZERO
+    Y = ONE + ZERO
+    Z = ONE + ZERO
+    T = ZERO + ZERO
+""")
+MADDED = asm("""
+    T0 = Y - X
+    T0 = T0 * E1        # A
+    T1 = Y + X
+    T1 = T1 * E0        # B
+    T2 = T * E2         # C
+    T3 = Z + Z          # D
+    X = T1 - T0         # E
+    Y = T1 + T0         # H
+    T0 = T3 - T2        # F
+    T1 = T3 + T2        # G
+    T = X * Y
+    Z = T0 * T1
+    X = X * T0
+    Y = T1 * Y
+""")
+# The key share: Montgomery's u = (1 + y) / (1 - y) = (Z + Y) / (Z - Y), kept as that
+# fraction in E1 / E2 until the ladder has run: with the ladder's X / Y (the shared secret),
+# one inversion does for both. XPRE, T1 = 1 / T0, XPOST. (Raw values, to be frozen.)
+KEYED = asm("""
+    E1 = Z + Y
+    E2 = Z - Y
+""")
+XPRE = asm("""
+    T0 = E2 * Y
+""")
+XPOST = asm("""
+    T2 = T1 * Y
+    E1 = E1 * T2        # our public key
+    T2 = T1 * E2
+    X = X * T2          # the shared secret
+""")
+# Making the table (boot): from a point and T1 = 1 / Z to its entry, in T0 T1 T2. C = 2 d.
+TOPRE = asm("""
+    T0 = X * T1         # x
+    T1 = Y * T1         # y
+    T2 = T0 * T1
+    T2 = T2 * C
+    T3 = T1 + T0
+    T1 = T1 - T0
+    T0 = T3 + ZERO
+""")
+# P-256, Jacobian coordinates (X : Y : Z), x = X/Z^2, y = Y/Z^3, everything times R. A table
+# entry is an affine point (x, y); C is R mod p (a 1). Adding one (8 M + 3 S; not for the
+# point itself, its negative or infinity: see the docstring), doubling (a = -3; boot only):
 INIT256 = asm("""
-    X2 = ONE + ZERO
-    Z2 = ZERO + ZERO
-    X3 = GX * ONE
-    Z3 = ONE + ZERO
+    X = E0 + ZERO
+    Y = E1 + ZERO
+    Z = C + ZERO
 """)
-STEP256 = asm("""
-    T0 = X2 * X3
-    T1 = Z2 * Z3
-    T2 = X2 * Z3
-    T3 = X3 * Z2
-    Z3 = T2 - T3
-    Z3 = Z3 * Z3
-    Z3 = Z3 * GX
-    T2 = T2 + T3
+MADD256 = asm("""
+    T0 = Z * Z
+    T1 = T0 * Z
+    T0 = T0 * E0        # U2
+    T1 = T1 * E1        # S2
+    T0 = T0 - X         # H
+    T1 = T1 - Y         # r
+    Z = Z * T0
+    T2 = T0 * T0        # H^2
+    T3 = T2 * T0        # H^3
+    T2 = T2 * X         # X H^2
+    X = T1 * T1
+    X = X - T3
+    X = X - T2
+    X = X - T2
+    T2 = T2 - X
     T2 = T2 * T1
-    T2 = T2 * B4
-    T3 = T1 + T1
-    T3 = T3 + T1
-    T3 = T3 + T0
-    X3 = T3 * T3
-    X3 = X3 - T2
-    T0 = X2 * X2        # XX
-    T1 = Z2 * Z2        # ZZ
-    T2 = T1 + T1
-    T2 = T2 + T1        # 3 ZZ
-    T3 = T0 + T2
-    T3 = T3 * T3        # (XX + 3 ZZ)^2
-    T0 = T0 - T2
-    T0 = T0 * X2        # w = X (XX - 3 ZZ)
-    T1 = T1 * Z2
-    T1 = T1 * B4        # 4b Z^3
-    T2 = T1 * X2
-    T2 = T2 + T2        # 8b X Z^3
-    X2 = T3 - T2
-    T0 = T0 + T0
-    T0 = T0 + T0
-    T0 = T0 + T1        # 4w + 4b Z^3
-    Z2 = T0 * Z2
+    T3 = T3 * Y
+    Y = T2 - T3
 """)
-# After a ladder and inv(Z2) -> T1 (which is R^2 / Z2): X2 = X2 / Z2, canonical.
-FIN = asm("""
-    T0 = T1 * X2
-    X2 = T0 * ONE
+DBL256 = asm("""
+    T0 = Z * Z          # delta
+    T1 = Y * Y          # gamma
+    T2 = X * T1         # beta
+    T3 = X - T0
+    X = X + T0
+    T3 = T3 * X
+    X = T3 + T3
+    T3 = X + T3         # alpha = 3 (X - delta) (X + delta)
+    Z = Y + Z
+    Z = Z * Z
+    Z = Z - T1
+    Z = Z - T0
+    T2 = T2 + T2
+    T2 = T2 + T2        # 4 beta
+    X = T3 * T3
+    X = X - T2
+    X = X - T2
+    T2 = T2 - X
+    T2 = T2 * T3
+    T1 = T1 * T1
+    T1 = T1 + T1
+    T1 = T1 + T1
+    T1 = T1 + T1        # 8 gamma^2
+    Y = T2 - T1
 """)
-# ECDSA, mod n: X2 = r (raw), U = hash (raw), D = d R, T1 = inv(k) = R^2 / k.
-# Z2 = s = (hash + r d) / k, canonical.
+# Making the table (boot): from a point and T1 = 1 / Z to (x, y) in T0 T1.
+TOAFF = asm("""
+    T0 = T1 * T1
+    T2 = T0 * T1
+    T0 = X * T0
+    T1 = Y * T2
+""")
+# After the sum and T1 = 1 / Z: X = r = x, canonical and raw.
+FIN256 = asm("""
+    T0 = T1 * T1
+    T0 = X * T0
+    X = T0 * ONE
+""")
+# ECDSA, mod n: X = r (raw), E0 = hash (raw), D = d R, T1 = R^2 / k (what the inversion
+# makes of a raw k). Y = s = (hash + r d) / k, canonical.
 SIGN = asm("""
-    T0 = X2 * D
-    T0 = T0 + U
+    T0 = X * D
+    T0 = T0 + E0
     T0 = T0 * T1
-    Z2 = T0 * ONE
+    Y = T0 * ONE
 """)
 
-PROGRAMS = {"INIT25519": INIT25519, "STEP25519": STEP25519, "INIT256": INIT256,
-            "STEP256": STEP256, "FIN": FIN, "SIGN": SIGN}
+PROGRAMS = {"INIT25519": INIT25519, "STEP25519": STEP25519, "INITED": INITED, "MADDED": MADDED,
+            "KEYED": KEYED, "XPRE": XPRE, "XPOST": XPOST, "TOPRE": TOPRE, "INIT256": INIT256,
+            "MADD256": MADD256, "DBL256": DBL256, "TOAFF": TOAFF, "FIN256": FIN256, "SIGN": SIGN}
 
 
-def mprime(m):
-    return (-pow(m, -1, 1 << 32)) % (1 << 32)
+class Field:
+    """What the asm knows of a modulus: M (what add and sub correct by, and Montgomery
+    reduces by), -1/M mod 2^64 (0: the field of 2^255 - 19, which folds instead), and the
+    exponent of an inversion."""
+
+    def __init__(self, m, mont):
+        self.m = m                                  # the real modulus
+        self.M = m if mont else 2 * m
+        self.minv = -pow(m, -1, W) % W if mont else 0
+        self.exp = m - 2
+        assert R - (1 << 225) < self.M < R          # (one conditional subtraction after a product)
+
+
+F25519, FP256, FN256 = Field(P25519, False), Field(P256, True), Field(N256, True)
 
 
 class Machine:
@@ -157,108 +266,202 @@ class Machine:
     def __init__(self):
         self.r = [0] * 16
         self.r[REG["ONE"]] = 1
-        self.r[REG["NINE"]] = 9
-        self.r[REG["A24"]] = 121665 * R % P25519
-        assert self.r[REG["A24"]] == 4623270 << 32
-        self.r[REG["GX"]] = GX256 * R % P256
-        self.r[REG["B4"]] = 4 * B256 * R % P256
-        self.m = None
+        self.r[REG["A24"]] = 121665
+        self.f = None
+        self.muls = 0
+
+    def add(self, a, b):
+        s = a + b
+        for _ in range(2):
+            if s >= R:
+                s -= self.f.M
+        assert 0 <= s < R
+        return s
+
+    def sub(self, a, b):
+        s = a - b
+        for _ in range(2):
+            if s < 0:
+                s += self.f.M
+        assert 0 <= s < R
+        return s
 
     def mul(self, a, b):
-        m = self.m
-        assert a < 4096 * m and b < 4096 * m
+        f = self.f
+        assert a < R and b < R
+        self.muls += 1
         t = a * b
-        for _ in range(9):
-            t = (t + (t * mprime(m) % (1 << 32)) * m) >> 32
-        assert t < 2 * m and t == a * b * pow(R, -1, m) % m + (m if t >= m else 0)
+        if not f.minv:
+            t = t % R + 38 * (t >> 256)             # five limbs, the fifth at most 38
+            t = t % R + 38 * (t >> 256)
+            if t >= R:
+                t += 38 - R
+        else:
+            for _ in range(4):
+                t = (t + (t * f.minv % W) * f.M) >> 64
+            assert t < R + f.M
+            if t >= R:
+                t -= f.M
+            assert t % f.m == a * b * pow(R, -1, f.m) % f.m
+        assert t < R
         return t
 
     def run(self, prog):
         r = self.r
         for i in range(0, len(prog) - 1, 2):
             b, a, dst, op = prog[i] & 15, prog[i] >> 4, prog[i + 1] & 15, prog[i + 1] >> 4
-            if op == ADD:
-                v = r[a] + r[b]
-            elif op == SUB:
-                assert r[b] <= 256 * self.m
-                v = r[a] - r[b] + 256 * self.m
-            else:
-                v = self.mul(r[a], r[b])
-            assert 0 <= v < R
-            r[dst] = v
-
-    def ladder(self, k, step):
-        r, x2 = self.r, REG["X2"]
-        for i in reversed(range(256)):
-            bit = k >> i & 1
-            if bit:
-                r[x2:x2 + 4] = r[x2 + 2:x2 + 4] + r[x2:x2 + 2]
-            self.run(step)
-            if bit:
-                r[x2:x2 + 4] = r[x2 + 2:x2 + 4] + r[x2:x2 + 2]
+            r[dst] = (self.add, self.sub, self.mul)[op - 1](r[a], r[b])
 
     def inv(self, x):
         """T1 = x^(m-2) by right-to-left square and multiply (bit 0 of m - 2 is always 1)."""
-        r, e = self.r, self.m - 2
+        r, e = self.r, self.f.exp
+        assert e & 1
         r[REG["T0"]] = r[REG["T1"]] = x
         for i in range(1, 256):
             r[REG["T0"]] = self.mul(r[REG["T0"]], r[REG["T0"]])
             if e >> i & 1:
                 r[REG["T1"]] = self.mul(r[REG["T1"]], r[REG["T0"]])
 
-    def x25519(self, k, u):
-        self.m = P25519
-        self.r[REG["U"]] = u
-        self.run(INIT25519)
-        self.ladder(k, STEP25519)
-        self.inv(self.r[REG["Z2"]])
-        self.run(FIN)
-        return self.r[REG["X2"]]
+    def entry(self, e):
+        self.r[:len(e)] = e
 
-    def sign(self, d, k, z):
-        """(r, s) for hash z and nonce k; r is x(kG) without the reduction mod n."""
-        self.m = P256
+    def comb(self, table, k, madd):
+        """The point in X.. plus the sum over i of table[i][nibble i of k]."""
+        for i in range(64):
+            self.entry(table[i][k >> 4 * i & 15])
+            self.run(madd)
+
+    # --- the tables, as boot makes them ---
+    def table25519(self):
+        r, x = self.r, REG["X"]
+        self.f = F25519
+        r[REG["C"]] = 2 * D25519 % P25519
+        r[x:x + 3] = BX25519, BY25519, 1            # the base point (T is not looked at)
+        table = []
+        for _ in range(64):
+            self.inv(r[REG["Z"]])
+            self.run(TOPRE)
+            self.entry(r[REG["T0"]:REG["T0"] + 3])  # 16^i B, to be added 16 times
+            self.run(INITED)
+            row = []
+            for _ in range(16):
+                self.inv(r[REG["Z"]])
+                self.run(TOPRE)
+                row.append(tuple(r[REG["T0"]:REG["T0"] + 3]))
+                self.run(MADDED)
+            table.append(row)
+        return table
+
+    def table256(self):
+        r = self.r
+        self.f = FP256
+        r[REG["C"]] = R % P256
+        self.entry((GX256 * R % P256, GY256 * R % P256))
         self.run(INIT256)
-        self.ladder(k, STEP256)
-        self.inv(self.r[REG["Z2"]])
-        self.run(FIN)
-        self.m = N256
-        self.r[REG["D"]] = d * R % N256
-        self.r[REG["U"]] = z
+        table = []
+        for _ in range(64):
+            row = []
+            for d in range(16):
+                self.inv(r[REG["Z"]])
+                self.run(TOAFF)
+                row.append(tuple(r[REG["T0"]:REG["T0"] + 2]))
+                if d == 0:
+                    self.entry(row[0])              # 16^i G, to be added 14 times
+                    self.run(DBL256)
+                elif d < 15:
+                    self.run(MADD256)
+            table.append(row)
+        return table
+
+    # --- what a handshake does ---
+    def x25519(self, table, e, u):
+        """(our public key, the shared secret) for our secret e (256 bits, as they come) and
+        the client's public key u."""
+        r = self.r
+        self.f = F25519
+        self.run(INITED)
+        self.comb(table, e, MADDED)
+        self.run(KEYED)
+        r[REG["E0"]] = u & ((1 << 255) - 1)         # (RFC 7748: the top bit is not part of u)
+        self.run(INIT25519)
+        x = REG["X"]
+        for i in reversed(range(256)):
+            bit = e >> i & 1
+            if bit:
+                r[x:x + 4] = r[x + 2:x + 4] + r[x:x + 2]
+            self.run(STEP25519)
+            if bit:
+                r[x:x + 4] = r[x + 2:x + 4] + r[x:x + 2]
+        self.run(XPRE)
+        self.inv(r[REG["T0"]])
+        self.run(XPOST)
+        return r[REG["E1"]] % P25519, r[REG["X"]] % P25519  # (`freeze`)
+
+    def sign(self, table, d, k, z):
+        """(r, s) for hash z and nonce k; r is x(kG) without the reduction mod n."""
+        r = self.r
+        self.f = FN256
+        k2 = self.sub(k, KOFF)                      # (weakly reduced: any number that is k - KOFF mod n)
+        self.f = FP256
+        self.entry(table[63][7])                    # 2^255 G
+        self.run(INIT256)
+        # The sum so far is never the point added to it, nor its negative (MADD256 can't do
+        # those). In multiples of G the sum is 2^255 + a, with a < 16^i 17/15 before window
+        # i; the point added is b = (d + 1) 16^i. Both stay below n except in the last
+        # window, and are told apart by 2^255 in all but that one, where 2^255 + a = b mod n
+        # holds for at most two of the 2^252 values the lower nibbles can take.
+        acc = 1 << 255
+        for i in range(64):
+            b = ((k2 >> 4 * i & 15) + 1) << 4 * i
+            assert (acc - b) % N256 and (acc + b) % N256, "an addition MADD256 can't do"
+            acc += b
+            self.entry(table[i][k2 >> 4 * i & 15])
+            self.run(MADD256)
+        self.inv(r[REG["Z"]])
+        self.run(FIN256)
+        self.f = FN256
+        r[REG["D"]] = d * R % N256
+        r[REG["E0"]] = z
         self.inv(k)
         self.run(SIGN)
-        return self.r[REG["X2"]], self.r[REG["Z2"]]
+        return r[REG["X"]], r[REG["Y"]]
 
 
 def selftest():
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import ec, utils
-    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 
     mach = Machine()
-    for t in range(6):
+    t25519, t256 = mach.table25519(), mach.table256()
+    for row in t25519:
+        assert all(len(e) == 3 for e in row)
+    assert t25519[0][0] == (1, 1, 0)
+    mach.muls = 0
+    for t in range(8):
         # X25519: our scalar is unclamped, so compare shared secrets, both ways round
         peer = X25519PrivateKey.generate()
-        e = int.from_bytes(os.urandom(32), "little") if t else (1 << 256) - 1
-        pub = mach.x25519(e, 9)
-        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
-        theirs = peer.exchange(X25519PublicKey.from_public_bytes(pub.to_bytes(32, "little")))
+        e = int.from_bytes(os.urandom(32), "little") if t > 1 else ((1 << 256) - 1) * t
         u = int.from_bytes(peer.public_key().public_bytes_raw(), "little")
-        if t == 1:
-            u |= 1 << 255  # a client may set the unused top bit; we take u mod p (as curve25519 does not)
-        ours = mach.x25519(e, u)
-        if t != 1:
+        if t == 3:
+            u |= 1 << 255                           # (a top bit that is to be ignored)
+        if t == 4:
+            u = 0                                   # (a point of small order: nothing must break)
+        pub, ours = mach.x25519(t25519, e, u)
+        if t != 4 and e:
+            theirs = peer.exchange(X25519PublicKey.from_public_bytes(pub.to_bytes(32, "little")))
             assert ours.to_bytes(32, "little") == theirs, "x25519"
         # ECDSA
         key = ec.generate_private_key(ec.SECP256R1())
         d = key.private_numbers().private_value
-        k = int.from_bytes(os.urandom(32), "little") if t else (1 << 256) - 1
+        k = int.from_bytes(os.urandom(32), "little") if t > 1 else (1 << 256) - 1 - t
         z = int.from_bytes(os.urandom(32), "big") if t else (1 << 256) - 1
-        r, s = mach.sign(d, k, z)
-        if 0 < r < N256 and 0 < s < N256:
-            key.public_key().verify(utils.encode_dss_signature(r, s), z.to_bytes(32, "big"),
-                                    ec.ECDSA(utils.Prehashed(hashes.SHA256())))
-    print("ec.py: programs ok;", ", ".join(f"{n} {len(p)}" for n, p in PROGRAMS.items()), "bytes")
+        r, s = mach.sign(t256, d, k, z)
+        assert 0 < r < N256 and 0 < s < N256
+        key.public_key().verify(utils.encode_dss_signature(r, s), z.to_bytes(32, "big"),
+                                ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+    print("ec.py: programs ok;", ", ".join(f"{n} {len(p)}" for n, p in PROGRAMS.items()), "bytes;",
+          mach.muls // 8, "multiplications per handshake")
 
 
 if __name__ == "__main__":

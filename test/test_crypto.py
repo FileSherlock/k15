@@ -39,19 +39,26 @@ for tag, want in exp.items():
     bad += not ok
     print(("ok  " if ok else "FAIL"), tag)
 
-# X25519: our scalar is unclamped, so check that the peer derives the same secret from our share
-ok = sk.exchange(X25519PublicKey.from_public_bytes(got["xpub"])) == got["xshared"]
-bad += not ok
-print(("ok  " if ok else "FAIL"), "x25519")
+# X25519: our scalar is unclamped, so check that the peer (whose private key is all zeros,
+# clamped) derives the same secret from our share
+for i in range(4):
+    pub, shared = got[f"xpub{i}"], got[f"xshared{i}"]
+    if i == 2:      # our scalar 0: nothing times anything (u of the neutral point is 0 here)
+        ok = pub == bytes(32) and shared == bytes(32)
+    else:
+        ok = sk.exchange(X25519PublicKey.from_public_bytes(pub)) == shared
+    bad += not ok
+    print(("ok  " if ok else "FAIL"), f"x25519_{i}")
 
-# ECDSA: (r, s) must verify under the certificate's key, and be plain 32-byte DER INTEGERs
+# ECDSA: (r, s) must verify under the certificate's key
 pub = x509.load_pem_x509_certificates(open(os.path.join(os.environ.get("CERT", "cert"), "server.pem"), "rb").read())[0].public_key()
-for i in range(3):
-    z, r, s = (int.from_bytes(got[f"sig{i}"][j:j + 32], "little") for j in (0, 32, 64))
+for i in range(6):
+    sig = got[f"sig{i}"]
+    z, r, s = sig[:32], int.from_bytes(sig[32:64], "little"), int.from_bytes(sig[64:], "little")
     try:
-        pub.verify(utils.encode_dss_signature(r, s), z.to_bytes(32, "big"), ec.ECDSA(utils.Prehashed(hashes.SHA256())))
-        ok = 1 << 248 <= r < 1 << 255
-    except InvalidSignature:
+        pub.verify(utils.encode_dss_signature(r, s), z, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+        ok = True
+    except (InvalidSignature, ValueError):
         ok = False
     bad += not ok
     print(("ok  " if ok else "FAIL"), f"ecdsa{i}")
