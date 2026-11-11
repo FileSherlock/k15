@@ -64,9 +64,6 @@ KST     equ 0x8F08          ; reset knock: 1 after the first port (development b
 NOIDT   equ 0x8F10          ; ten zero bytes: an IDT with nothing in it (`reset`)
 APMEM   equ 0x900000        ; for each other processor 32 KiB: four page tables, its page 0,
 APBSS   equ 0xA00000        ; and 2 MiB: its BSS
-RING    equ BSS + 0x140000  ; Frames for this processor (the first one writes them there,
-RHEAD   equ RING - 16       ;   in this processor's own BSS): 256 of 2 KiB, length first; how
-RTAIL   equ RING - 8        ;   many have been written, and how many read
 TR      equ BSS + 0x20000   ; handshake transcript
 VB      equ BSS + 0x30000   ; what a client record should look like (for its tag)
 SB      equ BSS + 0x40000   ; seal scratch: Poly1305 input
@@ -139,6 +136,10 @@ THAND   equ NV + 104        ;   how far this processor has got round them (`tdue
 TNOW    equ NV + 108        ;   the time, in units of 2^20 cycles,
 TLAST   equ NV + 112        ;   when a SYN was last answered again,
 TTRY    equ NV + 116        ;   and how often the SYN in hand may be yet (0: it is the client's)
+RBASE   equ NV + 120        ; the processors' rings of frames (`.drain`): where the first one is,
+RSTEP   equ NV + 124        ;   how far apart they are,
+RMASK   equ NV + 128        ;   how many frames one holds, less 1,
+MYRING  equ NV + 132        ;   and where this processor's is
 HKS     equ BSS + 0x0F400   ; the eleven round keys of `prf`, made at boot
 HKO     equ HKS + 176       ;   and its output
 KA      equ BSS + 0x0F300   ; application keys as `keys` makes them (2 x 48 bytes + 20 of junk)
@@ -156,8 +157,9 @@ OO_DATA equ 16
 TABV    equ 0x1000000       ; The table space: from 16 MiB up (see the top of this file). Boot
                             ; divides it: n handshake buffers, n places of 2 KiB for early
                             ; segments (n a power of two: about 1/32 and 1/64 of it), 4 n
-                            ; SYNs of late (`tnote`), then the two connection tables: the
-                            ; one for TLS, the one for port 80.
+                            ; SYNs of late (`tnote`), a ring of frames for each processor
+                            ; (`.drain`), then the two connection tables: the one for TLS,
+                            ; the one for port 80.
 HSP     equ TABV            ; Handshake buffers (see `hsnew`): each holds
 %assign HS_SHIFT 12
 %rep 4
@@ -383,6 +385,18 @@ BITS 64
         add eax, ecx
         mov [TMT], eax
         shr ecx, 5
+        add eax, ecx
+        mov [RBASE], eax        ; a ring of frames for each processor: n frames, 4,096 at
+        mov [MYRING], eax       ; most, and 2 KiB in front for how far it is
+        mov ecx, [HSMASK]
+        cmp ecx, 4095
+        jbe .rn
+        mov ecx, 4095
+.rn:    mov [RMASK], ecx
+        add ecx, 2
+        shl ecx, 11
+        mov [RSTEP], ecx
+        shl ecx, 2              ; (MAXCPU of them)
         add eax, ecx            ; rax = where the tables start
         lea rbx, [rbx+TABV]
         sub rbx, rax            ; what they have:
@@ -731,11 +745,10 @@ shaconst:
         cmp edx, LIFE * 28      ; side of a new image turns out not to work (2^32 cycles
         ja reset                ; are 2 s at 2.1 GHz)
 %endif
-        mov esi, [Q0+8]         ; used ring: anything new?
-        mov eax, [Q0+Q_SEEN]
-        cmp ax, [rsi+2]
-        jne .frame
-        call txkick             ; no: time to tell the device what we have queued for it,
+        call drain
+.work:  call ring1              ; then one frame of our own, if there is one
+        jnz .poll
+        call txkick             ; none: time to tell the device what we have queued for it,
         call tidle
         cmp dword [POOLN], 0    ; and to get on with the next signatures if there are none
         jne .idle
@@ -743,7 +756,44 @@ shaconst:
         jmp .poll
 .idle:  pause
         jmp .poll
-.frame: inc dword [Q0+Q_SEEN]
+
+; ring1: the next frame in this processor's ring goes through `tcp`; ZF if there is none.
+; (Clobbers everything.)
+ring1:  mov ebx, [MYRING]
+        mov eax, [rbx+64]
+        cmp eax, [rbx]
+        je .none
+        and eax, [RMASK]
+        inc eax
+        shl eax, 11
+        lea esi, [rbx+rax]
+        lodsd
+        mov ecx, eax
+        mov [RXLEN], ecx
+        xor edi, edi            ; FR
+        rep movsb
+        inc dword [rbx+64]
+        test byte [rbx+64], 31  ; (if frames keep coming, the device is told of ours every
+        jnz .go                 ; 32 of them)
+        call txkick
+.go:    call tcpd
+        call tdue
+        or al, 1
+.none:  ret
+
+; drain (the first processor's): everything the device has goes into our own rings, each
+; frame into the ring of the processor whose connection it is. That takes a few hundred
+; cycles a frame, and it is done before every frame handled and at intervals during what
+; takes long (`bdrain`), so the device's ring (256 on the server) only has to hold what
+; comes in some tens of microseconds, and a burst waits in ours (thousands of frames)
+; instead of being lost. A connection is one processor's: which, the hash of its addresses
+; and ports says (the bits that also pick the place of an early segment: those are then
+; one processor's too). Clobbers rax, rcx, rdx, rbx, rsi, rdi, xmm0.
+drain:  mov esi, [Q0+8]         ; used ring: anything new?
+        mov eax, [Q0+Q_SEEN]
+        cmp ax, [rsi+2]
+        je .done
+        inc dword [Q0+Q_SEEN]
         and eax, [Q0+12]
         mov edx, [rsi+4+rax*8]  ; buffer id
         mov ecx, [rsi+8+rax*8]  ; bytes written, header included
@@ -753,40 +803,34 @@ shaconst:
         add esi, RXB + 12
         sub ecx, 12
         and ecx, 2047
-        xor edi, edi            ; FR
-        xor ebp, ebp            ; (1: not for us)
-        mov eax, [abs NCPUM]    ; Whose is it? A connection is one processor's: which, the
-        test eax, eax           ; hash of its addresses and ports says (the bits that also
-        jz .ours                ; pick the place of an early segment: those are then one
-        push rsi                ; processor's too)
+        xor eax, eax
+        cmp [abs NCPUM], eax
+        je .put
+        push rsi
         push rcx
         call prf
         pop rcx
         pop rsi
-        mov eax, [HKO+12]
+        pextrd eax, xmm0, 3
         and eax, [abs NCPUM]
-        jz .ours
-        inc ebp
-        shl eax, 21
-        add eax, APBSS - 0x200000 ; that one's BSS, where its ring is
-        mov ebx, eax
-        mov edi, [rbx+RHEAD-BSS]
+.put:   imul eax, [RSTEP]
+        add eax, [RBASE]        ; that processor's ring: how many frames have been written,
+        mov ebx, eax            ; at +64 how many read, then the frames (2 KiB each, length
+        mov edi, [rbx]          ; first)
         mov eax, edi
-        sub eax, [rbx+RTAIL-BSS]
-        cmp eax, 256
-        jae .give               ; (full: the frame is lost)
+        sub eax, [rbx+64]
+        cmp eax, [RMASK]
+        ja .give                ; (full: the frame is lost)
         cmp ecx, 2044
         ja .give                ; (and so is one that would not fit its place there)
-        movzx edi, dil
+        and edi, [RMASK]
+        inc edi
         shl edi, 11
-        lea edi, [rbx+rdi+RING-BSS]
+        add edi, ebx
         mov eax, ecx
         stosd
         rep movsb
-        inc dword [rbx+RHEAD-BSS]
-        jmp .give
-.ours:  mov [RXLEN], ecx
-        rep movsb
+        inc dword [rbx]
 .give:  mov esi, [Q0+4]         ; give the buffer back
         movzx eax, word [rsi+2]
         and eax, [Q0+12]
@@ -794,17 +838,20 @@ shaconst:
         inc word [rsi+2]
         mov esi, [Q0+8]
         test byte [rsi], 1      ; the device says when it doesn't need to be told
-        jnz .nk
+        jnz drain
         mov rdx, [Q0+Q_NOTE]
         mov word [rdx], 0
-.nk:    test ebp, ebp
-        jnz .more
-        call tcpd
-.more:  call tdue
-        test byte [Q0+Q_SEEN], 31 ; (if frames keep coming, every 32 of them)
-        jnz .poll
-        call txkick
-        jmp .poll
+        jmp drain
+.done:  ret
+
+; bdrain: the same, from the middle of long work, on whichever processor: keeps the eight
+; old registers
+bdrain: cmp dword [CPUN], 0
+        jne .no
+        pushad
+        call drain
+        popad
+.no:    ret
 
 ; Another processor starts here, in real mode (at TRAMP, where this was copied): it takes
 ; a number, and with it the page tables made for it, goes straight to long mode, and
@@ -847,25 +894,13 @@ apstart: mov esp, STACK
         mov ds, eax
         mov es, eax
         mov ss, eax
-.poll:  mov eax, [RTAIL]
-        cmp eax, [RHEAD]
-        je .idle
-        movzx eax, al
-        shl eax, 11
-        lea esi, [rax+RING]
-        lodsd
-        mov ecx, eax
-        mov [RXLEN], ecx
-        xor edi, edi
-        rep movsb
-        inc dword [RTAIL]
-        call tcpd
-        call tdue
-        test byte [RTAIL], 31
+        mov eax, [CPUN]
+        imul eax, [RSTEP]
+        add eax, [RBASE]
+        mov [MYRING], eax
+.poll:  call ring1
         jnz .poll
         call txkick
-        jmp .poll
-.idle:  call txkick
         call tidle
         cmp dword [POOLN], 0
         jne .rest
@@ -1711,6 +1746,7 @@ tdue:   push 8
 find:   pushad
         xor esi, esi
         call prf
+        movdqa [HKO], xmm0
         mov esi, PT             ; the table for port 80,
         push PSLOT
         pop rcx
@@ -1784,8 +1820,8 @@ find:   pushad
         jnz .s
         ret
 
-; prf: HKO = a keyed hash of the client's address and ports (and ours: twelve bytes of the
-; frame at rsi): eleven rounds of AES, as the processor has them, with round keys that are simply
+; prf: xmm0 = a keyed hash of the client's address and ports (and ours: twelve bytes of the
+; frame at rsi; `find` keeps it in HKO): eleven rounds of AES, as the processor has them, with round keys that are simply
 ; random, made at boot (HKS). Its four words pick the two buckets (0, 1), make the cookie
 ; (2: W) and place a segment kept for later (3). (Clobbers esi and ecx.)
 prf:    movdqu xmm0, [rsi+P_IP-FR]  ; the addresses and ports, and four bytes behind them
@@ -1797,7 +1833,6 @@ prf:    movdqu xmm0, [rsi+P_IP-FR]  ; the addresses and ports, and four bytes be
 .r:     add esi, 16
         aesenc xmm0, [rsi]
         loop .r
-        movdqa [HKO], xmm0
         ret
 
 ; ckx: eax = 0 (and ZF) if the packet is the first after a SYN-ACK of ours: its ack is the
@@ -2622,7 +2657,10 @@ xdh:    pushad
         call vm                 ; (leaves rsi at STEP25519)
         xor edx, edx            ; The ladder, from the top bit down. The two points change
         mov ecx, 255            ; places when a bit differs from the one before it.
-.l:     push rsi
+.l:     test cl, 63
+        jnz .step
+        call bdrain             ; (four times on the way: see `drain`)
+.step:  push rsi
         xor eax, eax
         bt [E], ecx
         adc eax, eax
@@ -2713,6 +2751,7 @@ sign:   pushad
         test eax, eax
         jnz .have
         call stock
+        call bdrain
         jmp .more
 .have:  dec eax
         mov [POOLN], eax
@@ -3351,6 +3390,7 @@ ecinit: mov edi, BSWAPM         ; (and what GHASH needs: how pshufb reverses 16 
         ret
 
 %ifdef HOST
+bdrain: ret                     ; (the tests have no device)
 echost: pushad                  ; (for the tests: C wants its registers back)
         call ecinit
         popad
