@@ -23,7 +23,7 @@ static u32 sl(u8 *o, const u8 *m, u32 n, const u8 *kiv, u32 seq)
     return e - o;
 }
 
-extern u8 E[], K[], REGS[];
+extern u8 E[], REGS[];
 enum { R_X = 3 * 32, R_Y = 4 * 32 }; /* as in tools/ec.py */
 /* our key share for the secret E to pub, the secret shared with the owner of u to shared */
 static void xdh_(u8 *pub, u8 *shared, const u8 *u)
@@ -90,19 +90,62 @@ int main(void)
             hex(t, shared, 32);
         }
     }
-    /* ECDSA: (r, s) for a hash and the nonce K */
-    for (i = 0; i < 6; i++) {
+    /* ECDSA: (r, s) for a hash. The nonces are made 64 at a time (`stock`); for some of
+     * these the first one used is ours: all ones, 1, and one that shares most of its
+     * nibbles with what the table lookup takes off (so that many digits are 0 or 15). */
+    for (i = 0; i < 70; i++) {
+        extern u8 HK[], HKSET[];
+        extern unsigned POOLN;
         u32 j;
         char t[32];
         static u8 z[32];
         const u8 *zp = z;
-        for (j = 0; j < 32; j++) K[j] = m[600 + 40 * i + j], z[j] = m[900 + 40 * i + j];
-        if (i == 2) memset(K, 0xff, 32), memset(z, 0xff, 32);
-        if (i == 3) memset(K, 0, 32), K[0] = 1, memset(z, 0, 32);
+        for (j = 0; j < 32; j++) z[j] = m[900 + (40 * i + j) % 1000];
+        if (i == 2) memset(z, 0xff, 32);
+        if (i == 3) memset(z, 0, 32);
+        if (i >= 1 && i <= 4) {
+            for (j = 0; j < 32; j++) HK[j] = i == 1 ? m[600 + j] : i == 2 ? 0xff : i == 3 ? !j : 0x11;
+            if (i == 4) HK[31] = 0x91, HK[0] = 0x12;
+            HKSET[0] = 1, POOLN = 0;
+        } else HKSET[0] = 0;
         ASMCALL(sign, "+S"(zp));
         sprintf(t, "sig%u", i);
         memcpy(tmp, z, 32), memcpy(tmp + 32, REGS + R_X, 32), memcpy(tmp + 64, REGS + R_Y, 32);
         hex(t, tmp, 96); /* hash (big-endian) | r | s (little-endian) */
+    }
+    /* The field arithmetic on its own, for each of the three fields: every pair of some
+     * numbers that sit on the edges (0, the modulus and what is near it, 2^256 - 1, ...) and
+     * some that don't; test_crypto.py has the model's answers (tools/ec.py). */
+    {
+        extern u8 F25519[];
+        typedef unsigned long long u64;
+        static u64 v[24][4], r[4];
+        for (int f = 0; f < 3; f++) {
+            const u64 *nm = (const u64 *)(F25519 + 104 * f), *mm = nm + 4;
+            int n = 0, j, k;
+            #define SET(a, b, c, d) (v[n][0] = (a), v[n][1] = (b), v[n][2] = (c), v[n][3] = (d), n++)
+            SET(0, 0, 0, 0); SET(1, 0, 0, 0); SET(2, 0, 0, 0);
+            SET(~0ull, ~0ull, ~0ull, ~0ull); SET(~0ull - 1, ~0ull, ~0ull, ~0ull);
+            SET(mm[0], mm[1], mm[2], mm[3]); SET(mm[0] - 1, mm[1], mm[2], mm[3]); SET(mm[0] + 1, mm[1], mm[2], mm[3]);
+            SET(nm[0], nm[1], nm[2], nm[3]); SET(nm[0] - 1, nm[1], nm[2], nm[3]); SET(nm[0] + 1, nm[1], nm[2], nm[3]);
+            SET(0, 0, 0, 1ull << 63); SET(~0ull, ~0ull, ~0ull, ~0ull >> 1); SET(~0ull, 0, 0, 0); SET(0, 0, 0, 1);
+            SET(~0ull, ~0ull, ~0ull, mm[3]); SET(0, 0, 0, mm[3]);
+            for (j = 0; j < 5; j++, n++) memcpy(v[n], m + 100 + 40 * j + 7 * f, 32);
+            for (j = 0; j < n; j++)
+                for (k = 0; k < n; k++) {
+                    static const char *const op[] = {"hfas", "hfsub", "hfmul"};
+                    for (int o = 0; o < 3; o++) {
+                        u8 *d = (u8 *)r, *x = (u8 *)v[j], *y = (u8 *)v[k];
+                        int c = f;
+                        if (o == 0) __asm__ volatile("call hfas" : "+D"(d), "+S"(x), "+b"(y), "+c"(c) : : SCRATCH);
+                        if (o == 1) __asm__ volatile("call hfsub" : "+D"(d), "+S"(x), "+b"(y), "+c"(c) : : SCRATCH);
+                        if (o == 2) __asm__ volatile("call hfmul" : "+D"(d), "+S"(x), "+b"(y), "+c"(c) : : SCRATCH);
+                        printf("f%d_%s_%d_%d ", f, op[o] + 2, j, k);
+                        for (int b = 0; b < 32; b++) printf("%02x", ((u8 *)r)[b]);
+                        printf("\n");
+                    }
+                }
+        }
     }
     return 0;
 }

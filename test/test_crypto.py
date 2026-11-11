@@ -42,6 +42,28 @@ for tag, want in exp.items():
     bad += not ok
     print(("ok  " if ok else "FAIL"), tag)
 
+# the field arithmetic against the model in tools/ec.py: the same numbers as test_asm.c
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+import ec as curve  # noqa: E402
+mach = curve.Machine()
+fbad = 0
+for f, field in enumerate((curve.F25519, curve.FP256, curve.FN256)):
+    mach.f = field
+    R, M = curve.R, field.M
+    NM = R - M
+    vals = [0, 1, 2, R - 1, R - 2, M, M - 1, (M + 1) % R if (M & (2**64 - 1)) != 2**64 - 1 else M - (2**64 - 1), NM, NM - 1, NM + 1,
+            1 << 255, (1 << 255) - 1, (1 << 64) - 1, 1 << 192, ((M >> 192) << 192) | ((1 << 192) - 1), (M >> 192) << 192]
+    vals += [int.from_bytes(m[100 + 40 * j + 7 * f:132 + 40 * j + 7 * f], "little") for j in range(5)]
+    for j, x in enumerate(vals):
+        for k, y in enumerate(vals):
+            for name, fn in (("as", mach.add), ("sub", mach.sub), ("mul", mach.mul)):
+                if got.get(f"f{f}_{name}_{j}_{k}") != fn(x, y).to_bytes(32, "little"):
+                    fbad += 1
+                    if fbad < 5:
+                        print("FAIL", f"f{f}_{name}_{j}_{k}", hex(x), hex(y))
+bad += fbad
+print(("ok  " if not fbad else "FAIL"), "field arithmetic as the model has it (3 fields, 22 x 22 numbers, 3 operations)")
+
 # X25519: our scalar is unclamped, so check that the peer (whose private key is all zeros,
 # clamped) derives the same secret from our share
 for i in range(4):
@@ -55,14 +77,21 @@ for i in range(4):
 
 # ECDSA: (r, s) must verify under the certificate's key
 pub = x509.load_pem_x509_certificates(open(os.path.join(os.environ.get("CERT", "cert"), "server.pem"), "rb").read())[0].public_key()
-for i in range(6):
+rs = set()
+for i in range(70):
     sig = got[f"sig{i}"]
     z, r, s = sig[:32], int.from_bytes(sig[32:64], "little"), int.from_bytes(sig[64:], "little")
     try:
         pub.verify(utils.encode_dss_signature(r, s), z, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
-        ok = True
+        ok = r not in rs            # (and no nonce twice)
+        rs.add(r)
     except (InvalidSignature, ValueError):
         ok = False
     bad += not ok
-    print(("ok  " if ok else "FAIL"), f"ecdsa{i}")
+    if not ok or i < 6:
+        print(("ok  " if ok else "FAIL"), f"ecdsa{i}")
+# the one whose nonce we chose: r = x(k G) for k = 1 is x(G)
+ok = int.from_bytes(got["sig3"][32:64], "little") == curve.GX256
+bad += not ok
+print(("ok  " if ok else "FAIL"), "ecdsa: 70 signatures, 70 nonces; r of the nonce 1 is x(G)")
 sys.exit(1 if bad else 0)

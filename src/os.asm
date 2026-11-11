@@ -69,9 +69,14 @@ HT      equ KT + 0x104      ; SHA-256 initial hash (computed at boot), 8 dwords 
 REGS    equ BSS + 0x0E400   ; the curve machine's 16 registers of four limbs (not in the image's
                             ; page: TCG takes a slow path for every write to a page with code)
 E       equ REGS + 0x200    ; our X25519 secret (32 bytes), then
-K       equ E + 32          ; the ECDSA nonce (32 bytes),
-KD      equ K + 32          ; what of it the table is asked for (see `sign`),
-KOFFV   equ KD + 32         ; and the difference between them (made at boot)
+KD      equ E + 64          ; an ECDSA nonce as the table is asked for it (see `stock`),
+KOFFV   equ KD + 32         ; and what it has lost on the way there (made at boot)
+NPOOL   equ 64              ; ECDSA nonces are made so many at a time (`stock`):
+POOLR   equ BSS + 0x10000   ;   r = x(k G) of each,
+POOLK   equ POOLR + NPOOL * 32 ; R^2 / k,
+POOLZ   equ POOLK + NPOOL * 32 ; and while they are made: Z of k G,
+POOLP   equ POOLZ + NPOOL * 32 ; and the partial products of an inversion (`binv`)
+XP      equ BSS + 0x12000   ; the curve programs as `vm` runs them (unpacked at boot)
 F25519  equ REGS + 0x300    ; the three fields (see `ecinit`): 2^255 - 19,
 FP256   equ F25519 + FSIZE  ;   p of P-256
 FN256   equ FP256 + FSIZE   ;   and its n. A field is 2^256 - M, then
@@ -101,6 +106,8 @@ TT      equ NV + 16         ; the table of TLS connections: address (a qword), n
 PT      equ NV + 32         ; the table of connections to port 80: the same
 TPOS    equ NV + 48         ; how far the transcript has been hashed (see `thash`)
 SUITE   equ NV + 52         ; the handshake's cipher: 0 ChaCha20-Poly1305, 1 AES-128-GCM
+POOLN   equ NV + 64         ; how many of the nonces made are left
+POOLFILL equ NV + 68        ; how far the next ones are (32 for each k G there is)
 HKS     equ BSS + 0x0F400   ; the eleven round keys of `prf`, made at boot
 HKO     equ HKS + 176       ;   and its output
 KA      equ BSS + 0x0F300   ; application keys as `keys` makes them (2 x 48 bytes + 20 of junk)
@@ -220,7 +227,7 @@ DBG     equ BSS + 0x0F500
 BITS 64
         section .text
         global sha256, hmac, expand, seal, shaconst, echost, xdh, sign
-        global E, K, REGS
+        global E, REGS
 %else
         org 0x100000
 BITS 32
@@ -588,8 +595,12 @@ shaconst:
         mov eax, [Q0+Q_SEEN]
         cmp ax, [rsi+2]
         jne .frame
-        call txkick             ; no: time to tell the device what we have queued for it
-        pause
+        call txkick             ; no: time to tell the device what we have queued for it,
+        cmp dword [POOLN], 0    ; and to get on with the next signatures if there are none
+        jne .idle
+        call stock
+        jmp .poll
+.idle:  pause
         jmp .poll
 .frame: inc dword [Q0+Q_SEEN]
         and eax, [Q0+12]
@@ -1685,8 +1696,8 @@ handshake:
         rep movsd
         mov dword [TPOS], TR
         pop rsi
-        mov edi, E              ; fresh secrets: X25519 scalar and ECDSA nonce
-        mov cl, 8
+        mov edi, E              ; a fresh secret: our X25519 scalar
+        mov cl, 4
 .rnd:   rdrand rax
         jnc .rnd
         stosq
@@ -2206,15 +2217,15 @@ xdh:    pushad
         mov ebp, F25519
         push rdi
         push rsi
-        mov esi, INITED
+        mov esi, X_INITED
         call vm
         mov esi, TABE
         push 96
         pop rcx
-        mov edx, MADDED
+        mov edx, X_MADDED
         mov ebx, E
         call comb
-        mov esi, KEYED
+        mov esi, X_KEYED
         call vm
         pop rsi
         mov edi, R_E0
@@ -2222,7 +2233,7 @@ xdh:    pushad
         pop rcx
         rep movsq               ; the client's u,
         and byte [rdi-1], 0x7F  ; which has 255 bits (RFC 7748)
-        mov esi, INIT25519
+        mov esi, X_INIT25519
         call vm                 ; (leaves rsi at STEP25519)
         xor edx, edx            ; The ladder, from the top bit down. The two points change
         mov ecx, 255            ; places when a bit differs from the one before it.
@@ -2242,7 +2253,7 @@ xdh:    pushad
         dec ecx
         jns .l
         call cswap
-        mov esi, XPRE
+        mov esi, X_XPRE
         call vm
         push rsi                ; (XPOST follows XPRE)
         mov esi, R_T0
@@ -2308,45 +2319,178 @@ put4:    mov [rdi], r8
         add rdi, 32
         ret
 
-; sign: an ECDSA signature of the 32-byte hash at rsi under our key, with the nonce K (fresh,
-; random, whatever number it is): r = x(K G) to R_X, s = (hash + r d) / K to R_Y, both canonical.
-; K G is 64 additions from the table TABP, which holds (j + 1) 16^i G: starting from 2^255 G
-; (an entry itself), for the nibbles of K - 2^255 - 0x1111...1 (ec.py says why).
+; sign: an ECDSA signature of the 32-byte hash at rsi under our key: r to R_X, s = (hash +
+; r d) / k to R_Y, both canonical. The half that needs no hash, r = x(k G) and 1 / k for a
+; fresh random nonce k, is taken from a stock that `stock` makes: each is used once.
 sign:   pushad
         push rsi
-        mov ebp, FN256
-        mov edi, KD
-        mov esi, K
-        mov ebx, KOFFV
-        push 1
+.more:  mov eax, [POOLN]
+        test eax, eax
+        jnz .have
+        call stock
+        jmp .more
+.have:  dec eax
+        mov [POOLN], eax
+        shl eax, 5
+        lea esi, [rax+POOLR]
+        mov edi, R_X
+        push 4
         pop rcx
-        call fas
-        mov ebp, FP256
-        mov esi, TABP + (63 * 16 + 7) * 64
-        mov edi, R_E0
-        mov cl, 8
         rep movsq
-        mov esi, INIT256
-        call vm
-        mov esi, TABP
-        push 64
-        pop rcx
-        mov edx, MADD256
-        mov ebx, KD
-        call comb
-        mov esi, R_Z
-        call inv
-        mov esi, FIN256
-        call vm
+        lea esi, [rax+POOLK]
+        mov edi, R_T1
+        mov cl, 4
+        rep movsq
         mov ebp, FN256
         pop rsi
         mov edi, R_E0
         call rev32              ; the hash as a number
-        mov esi, K
-        call inv
-        mov esi, SIGN
+        mov esi, X_SIGN
         call vm
         popad
+        ret
+
+; stock: one step towards the next NPOOL nonces k with their r = x(k G) (POOLR) and R^2 / k
+; (POOLK): either one more k and its k G, or, when all are there, the divisions: two for
+; all of them (`binv`). The polling loop does a step whenever it has nothing else to do and
+; the stock is empty, `sign` as many as it takes. Clobbers everything.
+; k G is 64 additions from the table TABP, which holds (j + 1) 16^i G: starting from 2^255 G
+; (an entry itself), for the nibbles of k - 2^255 - 0x1111...1 (ec.py says why). k is 256
+; random bits, whatever number that is.
+stock:  mov ebx, [POOLFILL]
+        cmp ebx, NPOOL * 32
+        je .all
+        lea edi, [rbx+POOLK]
+        push 4
+        pop rcx
+.rnd:   rdrand rax
+        jnc .rnd
+        stosq
+        loop .rnd
+%ifdef HOST
+        cmp ebx, (NPOOL - 1) * 32 ; (the tests choose the nonce that is used first)
+        jne .k
+        cmp byte [HKSET], 0
+        je .k
+        mov esi, HK
+        lea edi, [rbx+POOLK]
+        mov cl, 4
+        rep movsq
+.k:
+%endif
+        add dword [POOLFILL], 32
+        push rbx
+        mov ebp, FN256
+        lea esi, [rbx+POOLK]
+        mov edi, KD
+        mov ebx, KOFFV
+        inc ecx
+        call fas
+        mov ebp, FP256
+        mov esi, TABP + (63 * 16 + 7) * 64
+        mov edi, R_E0
+        push 8
+        pop rcx
+        rep movsq
+        mov esi, X_INIT256
+        call vm
+        mov esi, TABP
+        push 64
+        pop rcx
+        mov edx, X_MADD256
+        mov ebx, KD
+        call comb
+        pop rbx
+        lea edi, [rbx+POOLR]    ; X and Z of k G: r = X / Z^2 is still to come
+        mov esi, R_X
+        push 4
+        pop rcx
+        rep movsq
+        lea edi, [rbx+POOLZ]
+        mov esi, R_Z
+        mov cl, 4
+        rep movsq
+        ret
+.all:   mov ebp, FP256
+        mov ebx, POOLZ
+        call binv
+        xor ebx, ebx
+.r:     push rbx
+        lea esi, [rbx+POOLZ]
+        mov edi, R_T1
+        push 4
+        pop rcx
+        rep movsq
+        lea esi, [rbx+POOLR]
+        mov edi, R_X
+        mov cl, 4
+        rep movsq
+        mov esi, X_FIN256
+        call vm
+        pop rbx
+        lea edi, [rbx+POOLR]
+        mov esi, R_X
+        push 4
+        pop rcx
+        rep movsq
+        add ebx, 32
+        cmp ebx, NPOOL * 32
+        jb .r
+        mov ebp, FN256
+        mov ebx, POOLK
+        call binv
+        mov dword [POOLN], NPOOL
+        and dword [POOLFILL], 0
+        ret
+
+; binv: each of the NPOOL numbers at rbx (four limbs) becomes what `inv` makes of it in the
+; field at rbp, with one `inv` for all: of their product (Montgomery's trick). POOLP gets
+; the products of the first 1, 2, 3, ... of them; then, from the last one down, the
+; inverse of the product so far times the product of those before is that one's inverse,
+; and times the number itself the inverse of the product before. Clobbers everything.
+binv:   mov esi, ebx
+        mov edi, POOLP
+        push 4
+        pop rcx
+        rep movsq
+        mov ebx, esi
+.f:     lea rsi, [rdi-32]
+        call fmul
+        add ebx, 32
+        add edi, 32
+        cmp edi, POOLP + NPOOL * 32
+        jb .f
+        lea esi, [rdi-32]
+        push rbx
+        call inv
+        pop rbx
+        mov edx, POOLP + (NPOOL - 1) * 32
+.b:     sub ebx, 32
+        sub edx, 32
+        push rbx
+        push rdx
+        mov ebx, edx
+        mov edi, R_T0
+        mov esi, R_T1
+        call fmul
+        mov rbx, [rsp+8]
+        mov edi, R_T1
+        mov esi, edi
+        call fmul
+        mov edi, ebx
+        mov esi, R_T0
+        push 4
+        pop rcx
+        rep movsq
+        pop rdx
+        pop rbx
+        cmp edx, POOLP
+        ja .b
+        lea edi, [rbx-32]
+        mov esi, R_T1
+        push 4
+        pop rcx
+        rep movsq
         ret
 
 ; comb: to the point in X.. are added, for i = 0 .. 63, entry number (nibble i of the 32 bytes
@@ -2410,74 +2554,82 @@ select: mov edi, REGS
         jnz .e
         ret
 
-; vm: run the program at rsi (2 bytes per operation: a << 4 | b, op << 4 | dst; a zero byte
-; ends it) in the field at rbp. Returns rsi = after the program; clobbers all else but rbp.
-vm:     lodsb
-        movzx ebx, al
-        test ebx, ebx
+; vm: run the program at rsi in the field at rbp. Returns rsi = after the program; clobbers
+; all else but rbp. In the image a program is 2 bytes per operation (a << 4 | b, op << 4 |
+; dst; a zero byte ends it: tools/ec.py); what runs is what boot made of that (`ecinit`,
+; from XP on, X_name for each): the three registers' addresses and the operation less 1,
+; a dword each, and a zero dword to end it.
+vm:     mov edi, [rsi]
+        test edi, edi
         jz .end
-        lodsb
-        movzx edi, al
+        mov ebx, [rsi+8]
+        mov ecx, [rsi+12]       ; 0 add, 1 subtract, 2 multiply
         push rsi
-        mov esi, ebx
-        shr esi, 4              ; a
-        and ebx, 15             ; b
-        mov ecx, edi
-        shr ecx, 4              ; the operation: 1 add, 2 subtract, 3 multiply
-        and edi, 15             ; dst
-        shl esi, 5
-        shl ebx, 5
-        shl edi, 5
-        add esi, REGS
-        add ebx, REGS
-        add edi, REGS
-        dec ecx
-        cmp cl, 2
+        mov esi, [rsi+4]
+        cmp ecx, 2
         je .mul
         call fas
         jmp .next
 .mul:   call fmul
 .next:  pop rsi
+        add rsi, 16
         jmp vm
-.end:   ret
+.end:   add rsi, 4
+        ret
 
 ; fas: the four limbs at rdi = those at rsi + those at rbx if ecx = 0, minus them if ecx = 1,
-; in the field at rbp: weakly reduced, as its operands are. (Clobbers rax, rdx, r8-r15.)
-; a - b is a + ~b + 1. The result has left [0, 2^256) if adding carried, or subtracting did
-; not; then M is put back, or taken off (which is adding 2^256 - M), and once more if
-; that was not enough (ec.py: it can take two).
-fas:    mov r12d, ecx
-        neg r12
-        mov r8, [rbx]
-        mov r9, [rbx+8]
-        mov r10, [rbx+16]
-        mov r11, [rbx+24]
-        xor r8, r12
-        xor r9, r12
-        xor r10, r12
-        xor r11, r12
-        bt ecx, 0
-        adc r8, [rsi]
-        adc r9, [rsi+8]
-        adc r10, [rsi+16]
-        adc r11, [rsi+24]
-        setc al                 ; out of range: the carry is not what the operation was
-        xor al, cl
-        mov edx, ecx
-        shl edx, 5
-        add rdx, rbp            ; 2^256 - M to add, or M
-        call .fix
-        call .fix
-        push rdi
-        call put4
-        pop rdi
-        ret
-.fix:   movzx eax, al
-        neg rax
-        call addk
-        setc r12b               ; and still out of range if that carry is not either
-        xor r12b, cl
-        and al, r12b
+; in the field at rbp: weakly reduced, as its operands are. (Clobbers rax, rcx, rdx, rsi,
+; r8-r15.) If the sum left [0, 2^256) (a carry adding, a borrow subtracting), M is taken
+; off, which is adding 2^256 - M, or put back; and once more if that was not enough,
+; which shows in the carry of that correction (ec.py: it can take two). Both corrected
+; values are made whatever the case, and one of the three is kept.
+fas:    mov r8, [rsi]
+        mov r9, [rsi+8]
+        mov r10, [rsi+16]
+        mov r11, [rsi+24]
+        mov rdx, rbp            ; (2^256 - M, to add)
+        test ecx, ecx
+        jnz .sub
+        add r8, [rbx]
+        adc r9, [rbx+8]
+        adc r10, [rbx+16]
+        adc r11, [rbx+24]
+        jmp .fix
+.sub:   sub r8, [rbx]
+        sbb r9, [rbx+8]
+        sbb r10, [rbx+16]
+        sbb r11, [rbx+24]
+        lea rdx, [rbp+F_M]
+.fix:   sbb eax, eax            ; -1: out of range
+        mov r12, r8
+        mov r13, r9
+        mov r14, r10
+        mov r15, r11
+        add r12, [rdx]
+        adc r13, [rdx+8]
+        adc r14, [rdx+16]
+        adc r15, [rdx+24]
+        sbb esi, esi            ; that correction's carry: adding, it says "still too much",
+        neg ecx                 ; subtracting, "enough"
+        xor esi, ecx
+        test eax, eax
+        cmovnz r8, r12
+        cmovnz r9, r13
+        cmovnz r10, r14
+        cmovnz r11, r15
+        add r12, [rdx]
+        adc r13, [rdx+8]
+        adc r14, [rdx+16]
+        adc r15, [rdx+24]
+        and eax, esi
+        cmovnz r8, r12
+        cmovnz r9, r13
+        cmovnz r10, r14
+        cmovnz r11, r15
+        mov [rdi], r8
+        mov [rdi+8], r9
+        mov [rdi+16], r10
+        mov [rdi+24], r11
         ret
 
 ; addk: r8-r11 += the four limbs at rdx if rax = -1, not if rax = 0; CF = the carry
@@ -2499,93 +2651,99 @@ addk:   mov r12, [rdx]
 ; fmul: the four limbs at rdi = those at rsi times those at rbx in the field at rbp: mod
 ; 2^255 - 19, or divided by 2^256 mod M for the Montgomery fields; below 2^256 either way.
 ; (Clobbers rax, rcx, rdx, rsi, r8-r15.)
+; ROW: %5:%4:%3:%2:%1 = %4:%3:%2:%1 + rdx * the four limbs at rsi, with two chains of
+; carries at once (adcx, adox); %5 is not looked at before. (Clobbers rax, rcx.)
+%macro ROW 5
+        xor %5, %5
+        mulx rcx, rax, [rsi]
+        adcx %1, rax
+        adox %2, rcx
+        mulx rcx, rax, [rsi+8]
+        adcx %2, rax
+        adox %3, rcx
+        mulx rcx, rax, [rsi+16]
+        adcx %3, rax
+        adox %4, rcx
+        mulx rcx, rax, [rsi+24]
+        adcx %4, rax
+        adox %5, rcx
+        adc %5, 0
+%endmacro
 fmul:   mov r13, rsi
         mov rsi, rbx
-        sub rsp, 64             ; the product, eight limbs: its low half here, the high one
-        xor r8d, r8d            ; in r8-r11
-        xor r9d, r9d
-        xor r10d, r10d
-        xor r11d, r11d
-        xor r14d, r14d
-.m:     mov rdx, [r13+r14*8]
-        call row
-        mov [rsp+r14*8], r8
-        call shift
-        mov r11, r12
-        inc r14d
-        cmp r14b, 4
-        jb .m
-        push rdi
-        lea rdi, [rsp+40]
-        mov rsi, rdi
-        call put4                ; the high half goes there too, and the low one into r8-r11
-        pop rdi
-        mov r8, [rsp]
-        mov r9, [rsp+8]
-        mov r10, [rsp+16]
-        mov r11, [rsp+24]
+        mov rdx, [r13]          ; the product, eight limbs, a row for each limb of the one
+        mulx r9, r8, [rsi]      ; factor: r8 r9 r10 r11 | r12 r14 r15 r13
+        mulx r10, rax, [rsi+8]
+        add r9, rax
+        mulx r11, rax, [rsi+16]
+        adc r10, rax
+        mulx r12, rax, [rsi+24]
+        adc r11, rax
+        adc r12, 0
+        mov rdx, [r13+8]
+        ROW r9, r10, r11, r12, r14
+        mov rdx, [r13+16]
+        ROW r10, r11, r12, r14, r15
+        mov rdx, [r13+24]
+        ROW r11, r12, r14, r15, r13
         mov rdx, [rbp+F_INV]
         test rdx, rdx
         jnz .mont
         mov dl, 38              ; 2^255 - 19: what is above 2^256 counts 38 times,
-        call row
-        imul r12, r12, 38       ; and so does what that brought above it,
-        add r8, r12
-        adc r9, 0
-        adc r10, 0
-        adc r11, 0
+        xor eax, eax
+        mulx rcx, rax, r12
+        adcx r8, rax
+        adox r9, rcx
+        mulx rcx, rax, r14
+        adcx r9, rax
+        adox r10, rcx
+        mulx rcx, rax, r15
+        adcx r10, rax
+        adox r11, rcx
+        mulx rcx, rax, r13
+        adcx r11, rax
+        mov eax, 0
+        adox rcx, rax
+        adcx rcx, rax
+        imul ecx, ecx, 38       ; and so does what that brought above it,
+        add r8, rcx
+        adc r9, rax
+        adc r10, rax
+        adc r11, rax
         sbb eax, eax            ; and the last carry (to a number that is small now)
         and eax, 38
         add r8, rax
         jmp .done
-.mont:  lea rsi, [rbp+F_M]      ; Montgomery: four times, add the multiple of M that makes
-        xor r14d, r14d          ; the lowest limb zero, and drop that limb
-        xor r15d, r15d          ; (the carry out of the top)
+.mont:  push r13                ; Montgomery: four times, add the multiple of M that makes
+        push r15                ; the lowest limb zero, and drop that limb (the high half
+        push r14                ; comes in from the stack, a limb at a time)
+        push r12
+        lea rsi, [rbp+F_M]
+        xor r14d, r14d          ; (the carry out of the top)
+        mov r15b, 4
 .r:     mov rdx, r8
         imul rdx, [rbp+F_INV]
-        call row
-        call shift
+        ROW r8, r9, r10, r11, r12
+        mov r8, r9
+        mov r9, r10
+        mov r10, r11
+        pop r11
         xor eax, eax
-        add r12, r15
+        add r12, r14
         adc eax, eax
-        add r12, [rsp+32+r14*8] ; (the next limb of the high half comes in)
+        add r11, r12
         adc eax, 0
-        mov r11, r12
-        mov r15d, eax
-        inc r14d
-        cmp r14b, 4
-        jb .r
-        mov rax, r15            ; below 2^256 + M: if it left 2^256, take M off
+        mov r14d, eax
+        dec r15b
+        jnz .r
+        mov rax, r14            ; below 2^256 + M: if it left 2^256, take M off
         neg rax
         mov rdx, rbp
         call addk
-.done:  add rsp, 64
-        push rdi
-        call put4
-        pop rdi
-        ret
-
-; shift: r8, r9, r10 = r9, r10, r11
-shift:  mov r8, r9
-        mov r9, r10
-        mov r10, r11
-        ret
-
-; row: r8-r12 = r8-r11 + rdx * the four limbs at rsi (clobbers rax, rcx)
-row:    xor r12d, r12d
-        mulx rcx, rax, [rsi]
-        adcx r8, rax
-        adox r9, rcx
-        mulx rcx, rax, [rsi+8]
-        adcx r9, rax
-        adox r10, rcx
-        mulx rcx, rax, [rsi+16]
-        adcx r10, rax
-        adox r11, rcx
-        mulx rcx, rax, [rsi+24]
-        adcx r11, rax
-        adox r12, rcx
-        adc r12, 0
+.done:  mov [rdi], r8
+        mov [rdi+8], r9
+        mov [rdi+16], r10
+        mov [rdi+24], r11
         ret
 
 ; inv: T1 = (the four limbs at rsi) ^ (m - 2) in the field at rbp: the inverse, or for a
@@ -2632,6 +2790,30 @@ ecinit: mov edi, BSWAPM         ; (and what GHASH needs: how pshufb reverses 16 
 .bs:    stosb
         dec al
         jns .bs
+        mov esi, INIT25519      ; the programs, unpacked for `vm`: they follow each other
+        mov edi, XP             ; in the image
+        mov dl, NPROG
+.op:    lodsb
+        movzx ebx, al
+        test ebx, ebx
+        jz .pe
+        lodsb
+        movzx ecx, al
+        call .reg               ; dst,
+        mov eax, ebx
+        shr eax, 4
+        call .reg               ; a,
+        xchg eax, ebx
+        call .reg               ; b,
+        xchg eax, ecx
+        shr eax, 4
+        dec eax
+        stosd                   ; and what to do with them
+        jmp .op
+.pe:    xchg eax, ebx
+        stosd
+        dec dl
+        jnz .op
         mov edi, F25519 + F_M
         or rax, -1
         push 4
@@ -2698,11 +2880,11 @@ ecinit: mov edi, BSWAPM         ; (and what GHASH needs: how pshufb reverses 16 
         mov edi, R_E0
         call .epre
         pop rdi
-        mov esi, INITED
+        mov esi, X_INITED
         call .vm
         mov bh, 16
 .eent:  call .epre
-        mov esi, MADDED
+        mov esi, X_MADDED
         call .vm
         dec bh
         jnz .eent
@@ -2721,12 +2903,12 @@ ecinit: mov edi, BSWAPM         ; (and what GHASH needs: how pshufb reverses 16 
         mov edi, R_E0
         mov cl, 8
         rep movsq
-        mov esi, INIT256
+        mov esi, X_INIT256
         call vm
         mov edi, TABP
         mov bl, 64
 .prow:  mov bh, 16
-.pent:  mov esi, TOAFF
+.pent:  mov esi, X_TOAFF
         call .conv
         mov esi, R_T0
         cmp bh, 16
@@ -2741,10 +2923,10 @@ ecinit: mov edi, BSWAPM         ; (and what GHASH needs: how pshufb reverses 16 
 .pcp:   push 8
         pop rcx
         rep movsq
-        mov esi, DBL256
+        mov esi, X_DBL256
         cmp bh, 16
         je .pgo
-        mov esi, MADD256
+        mov esi, X_MADD256
         cmp bh, 1
         je .pno
 .pgo:   call .vm
@@ -2754,12 +2936,18 @@ ecinit: mov edi, BSWAPM         ; (and what GHASH needs: how pshufb reverses 16 
         jnz .prow
         ret
 ; (the point in X.. as a table entry of edwards25519 to rdi, which moves on)
-.epre:  mov esi, TOPRE
+.epre:  mov esi, X_TOPRE
         call .conv
         mov esi, R_T0
         push 12
         pop rcx
         rep movsq
+        ret
+; (a register's address, for its number in the low four bits of eax, to edi, which moves on)
+.reg:   and eax, 15
+        shl eax, 5
+        add eax, REGS
+        stosd
         ret
 ; (T1 = 1 / Z, then the program at rsi; keeps rdi and rbx, as .vm does)
 .conv:  push rsi
@@ -2783,7 +2971,13 @@ echost: pushad                  ; (for the tests: C wants its registers back)
         popad
         ret
 ; (for test/bench.c: one operation, or one program, in the field number ecx)
-        global hfmul, hfas, hvm, hinv
+        global hfmul, hfas, hfsub, hvm, hinv, F25519, HK, HKSET, POOLN, hstock
+HK      equ BSS + 0x18000       ; (a nonce for the first signature after the next `stock`)
+HKSET   equ HK + 32
+hstock: pushad
+        call stock
+        popad
+        ret
 hfield: imul ebp, ecx, FSIZE
         add ebp, F25519
         ret
@@ -2795,6 +2989,13 @@ hfmul:  pushad
 hfas:   pushad
         call hfield
         xor ecx, ecx
+        call fas
+        popad
+        ret
+hfsub:  pushad
+        call hfield
+        push 1
+        pop rcx
         call fas
         popad
         ret

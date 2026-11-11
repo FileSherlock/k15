@@ -9,7 +9,8 @@
 // With a barrier directory, workers wait until all have opened before the final fetch, and hold
 // their connections until all have finished it, so every connection is open at the same time.
 // Env: PLAIN (set: plain HTTP to port 80, no TLS), INFLIGHT (handshakes/fetches at once,
-// default 4), TIMEOUT (seconds, default 60), SUITES (the TLS 1.3 cipher suites to offer, e.g.
+// default 4), TIMEOUT (seconds, default 60), NOMARK (set: no fetches before all are open:
+// open_s is then the time the handshakes took), SUITES (the TLS 1.3 cipher suites to offer, e.g.
 // TLS_AES_128_GCM_SHA256; default: OpenSSL's, of which the server takes ChaCha20-Poly1305),
 // DST (ip:port), B (build directory: B/name is the name the certificate must carry, B/ca.pem
 // the CA to trust; an empty ca.pem means the system's roots, for a real certificate).
@@ -274,7 +275,7 @@ int main(int argc, char **argv) {
     ep = epoll_create1(0);
 
     double t0 = mono();
-    int next = 0, mark = 64;
+    int next = 0, mark = getenv("NOMARK") ? 1 << 30 : 64;
     while (next < N || inflight) {
         while (inflight < INFLIGHT && next < N) start(next++);
         pump();
@@ -293,7 +294,7 @@ int main(int argc, char **argv) {
     if (dir) barrier(dir, "verified", id, workers);
     struct rusage u;
     getrusage(RUSAGE_SELF, &u);
-    printf("RESULT worker %s attempted %d open %d served %d hs_err %d get_err %d died_idle %d open_s %.0f rss_kib %ld\n",
+    printf("RESULT worker %s attempted %d open %d served %d hs_err %d get_err %d died_idle %d open_s %.1f rss_kib %ld\n",
            id, N, before, served, hs_err, get_err, closed_err, opened_at, u.ru_maxrss);
     fflush(stdout);
     _exit(0);
