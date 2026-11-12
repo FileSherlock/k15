@@ -32,11 +32,22 @@ taken off its machine contract and put on a Hetzner cloud server. Decided with t
   the history of k3 (the project's first name, a private repository that stays) with
   every name in it made k15, the tool `./k15` included, and the commits' address
   GitHub's noreply one. 15kb.org is deployed from here.
+- (2026-11-13) the user settled two things that had been left open, and said to stop
+  there. The cipher: of our two, a client that names AES-128-GCM gets it, unless
+  ChaCha20-Poly1305 is the first suite of TLS 1.3 it names (what OpenSSL calls
+  PRIORITIZE_CHACHA). OpenSSL's own order, AES-256, ChaCha20, AES-128, goes by the
+  length of the key, not by what the client is fast at, and we seal three times as
+  fast under AES-128-GCM: wrk and curl get 0.92 GB/s of a large file with it, not 0.47.
+  Such a client's records are under a key of 128 bits where they were under one of
+  256; it is the cipher every browser gets from us. And no SACK: 1.5 MiB in 0.37 s
+  over 20 ms and in 1.8 s over 100 ms is fast enough for a static site, and keeping a
+  client's SACK blocks in a borrowed handshake buffer would tie what a lossy client
+  costs to what a flood of ClientHellos leaves of those buffers.
 - security as in k2 (below) holds for everything behind TLS. Port 80 has none of it: it
   says one public thing to everyone (where the site is, or its front page).
 
 ## Where it stands
-The image is one assembly file's worth of system, 14,245 bytes, and behind it the site
+The image is one assembly file's worth of system, 14,277 bytes, and behind it the site
 (`tools/pack.py`): every file as the HTTP response it is sent as (and, where that is
 shorter, as the same compressed with gzip and brotli, and for each of these the 304
 that says "you have it"). Works, locally and on
@@ -45,7 +56,8 @@ length, all the RAM the machine has (also above 4 GiB), all its processors (up t
 modern virtio-net, ARP, a TCP that copes with loss, reordering, small segments and
 made-up clients, two hashed connection tables sized from the machine's memory (20 bytes
 per connection on port 80, 128 per TLS connection), TLS 1.3 with a verified certificate
-(ChaCha20-Poly1305 and AES-128-GCM; a client whose key share is for another curve is
+(ChaCha20-Poly1305 and AES-128-GCM: of a client's two the second, unless the first is
+its first; a client whose key share is for another curve is
 asked for x25519, one that can't be served is told why in an alert), and behind it HTTP
 as a static site needs it: GET and HEAD by path,
 files of any size sent a record to a segment with nothing buffered (and, where the card
@@ -86,20 +98,22 @@ after the other within an hour and a half):
 | files | k15 tonight | k15 of the afternoon, tonight | nginx + OpenSSL 3.5, tonight |
 |---|---|---|---|
 | a page of 167 bytes, requests a second | 108,700 | 110,300 | 33,900 |
-| a file of 14 KB, as wrk asks (k15: ChaCha20; nginx: AES-256-GCM) | 30,400 a second, 411 MB/s | 13,700, 185 MB/s | 26,700, 362 MB/s |
-| the same with AES-128-GCM (what browsers put first) | 35,300 a second, 478 MB/s | 14,900 | 23,900 |
-| a file of 1.5 MiB, as wrk asks | 307 a second, 466 MB/s | 114, 177 MB/s | 611, 0.90 GB/s |
-| the same with AES-128-GCM | 624 a second, 0.92 GB/s | 108, 167 MB/s | 667, 0.98 GB/s |
+| a file of 14 KB, as wrk asks (nginx gives it AES-256-GCM; k15 AES-128-GCM since 2026-11-13, measured then; the image of the afternoon ChaCha20-Poly1305) | 32,600 a second, 440 MB/s | 13,700, 185 MB/s | 26,700, 362 MB/s |
+| the same for a client that puts ChaCha20-Poly1305 first (what wrk got until 2026-11-13) | 30,400 a second, 411 MB/s | | |
+| the same with AES-128-GCM alone | 35,300 a second, 478 MB/s | 14,900 | 23,900 |
+| a file of 1.5 MiB, as wrk asks | 624 a second, 0.92 GB/s | 114, 177 MB/s | 611, 0.90 GB/s |
+| the same for a client that puts ChaCha20-Poly1305 first | 307 a second, 466 MB/s | | |
+| the same with AES-128-GCM alone | 624 a second, 0.92 GB/s | 108, 167 MB/s | 667, 0.98 GB/s |
 | the same, 8 connections / 1 connection | 772 / 145 - 160 MB/s | 157 / 64 MB/s | 1,010 / 392 MB/s |
 
 - Small things k15 does three times as fast as nginx, files of 14 KB a quarter to a half
-  faster (they went half as fast), large files nearly as fast when the client asks as
-  a browser does, and half as fast under ChaCha20-Poly1305. Until tonight a segment
+  faster (they went half as fast), large files as fast (0.92 GB/s where nginx did 0.90 to
+  0.98), or half as fast for a client that puts ChaCha20-Poly1305 first. Until tonight a segment
   was a frame, and the server's network path carries about 130,000 frames a second each
   way: 166 MB/s. Now a frame is up to 45 records, which the card cuts into segments
   (TSO), and a record is sealed in a third of the cycles under AES-128-GCM and two
   thirds under ChaCha20 (`seal` xored its key stream on a byte at a time). What limits
-  large files now is sealing them: see "Next".
+  large files now is sealing them: see "Later".
 - nginx was a third faster tonight than in the afternoon (742 MB/s then). The same
   server is not the same machine from hour to hour.
 - Only new TLS connections are bounded by k15's processors (460,000 cycles of both
@@ -122,14 +136,14 @@ after the other within an hour and a half):
   from Let's Encrypt for both names that `./k15 renew --force` got (65 s from the
   command to a verified fetch, the server away for about a minute of it), HSTS for a
   year, `--persist`. curl with the system's roots, Chrome and Firefox with their own,
-  `tlsprobe.sh` and `sitecheck.py` pass against it. The image is 24,645 bytes (since
-  late on 2026-11-12, packed here as k15, the page with its link to the repository):
-  17,441 of system, of which 3,400 are the chain as Let's Encrypt sends it (four
-  certificates), 7,204 of site: the page three times (1,763 bytes as it is, 962 with
-  gzip, 717 with brotli, which is what a browser gets: one segment), the ETags and the
-  answers that say "not modified". (`--no-compress` would make it 21,920; the images
-  before, 24,376 and 20,114 bytes, are kept in `../k3`: `build-15kb.org` and
-  `build-15kb.org-old`.)
+  `tlsprobe.sh` and `sitecheck.py` pass against it. The image is 24,614 bytes (since
+  2026-11-13, with the cipher that is ours to choose): 17,473 of system, of which
+  3,400 are the chain as Let's Encrypt sends it (four certificates), 7,141 of site:
+  the page three times (1,738 bytes as it is, 943 with gzip, 698 with brotli, which is
+  what a browser gets: one segment), the ETags and the answers that say "not
+  modified". (`--no-compress` would make it 21,927; the image before, 24,645 bytes,
+  is kept in `build-15kb.org-prev`, those before that, 24,376 and 20,114 bytes, in
+  `../k3`: `build-15kb.org` and `build-15kb.org-old`.)
 - **SSL Labs gives it an A** (2026-11-12; results kept off its boards): trusted in all
   five stores it looks at, no chain issues, TLS 1.3 only, forward secrecy, HSTS "with
   long duration", every client it plays served or told why not in an alert, and no
@@ -155,7 +169,7 @@ after the other within an hour and a half):
 | TLS connections held over tap, 256 MiB VM (the night's image) | 144,000 of 144,000, each verified and fetched |
 | plain connections held over tap, 2 GiB VM (32-bit image, k15's first week) | 83,983,904 of 84,000,000 tried, each fetched twice |
 | connections opened and fetched per second over tap | ~80,000-100,000 (QEMU's packet path is the limit, not the guest) |
-| `tools/suite.sh`: 54 runs (loss 3%, MTU 300 and 600, reordering, both ciphers, a two-segment flight, HelloRetryRequest, sequence numbers that go round, a site of 80 files with and without TSO, a bottleneck, W^X, a million raw connections) | all pass on 1 and 2 processors; on 4, all but `raw1m_20k` when the host is that busy (3 of 3 alone) |
+| `tools/suite.sh`: 55 runs (loss 3%, MTU 300 and 600, reordering, both ciphers, a two-segment flight, HelloRetryRequest, sequence numbers that go round, a site of 80 files with and without TSO, a bottleneck, W^X, a million raw connections) | all pass on 1 and 2 processors; on 4, all but `raw1m_20k` when the host is that busy (3 of 3 alone) |
 | the lossy runs many times over (2026-11-12, and again that night after the last change: 16 x 2,000 handshakes each of seven kinds, the site test 44 times) | none failed (the end of "Workflow" has the list) |
 | emulated (KVM=0) | boots in 7 s (the tables for the curves), `measure.sh` passes |
 
@@ -186,6 +200,9 @@ besides, because the measurements asked for it: `seal` three times as fast under
 AES-128-GCM; several losses in one window mended a round trip each, not a timer each;
 a window that grows past 64 KB only slowly; small frames held back while acks are
 still to come.
+On 2026-11-13, by the user's word (Goal): which of our two ciphers a client gets is
+ours to say (AES-128-GCM, unless it puts ChaCha20-Poly1305 first), and SACK is off
+the plan.
 
 **Next, in the order of what they are worth:**
 - **Post-quantum key exchange (X25519MLKEM768).** Not for a grade (it is not what keeps
@@ -208,30 +225,6 @@ still to come.
   only: macOS before 13, iOS before 16, Android before 14 (what uses the system's
   store there; Chrome and Firefox bring their own), Debian before 12, Java before
   2024's updates. All of them speak TLS 1.3. Kept at four until the user says so.
-- **The ciphers.** Sealing is what large files wait for now (0.92 GB/s with
-  AES-128-GCM where nginx does 0.98; 0.47 with ChaCha20-Poly1305, which is what
-  OpenSSL's tools get from us). Under AES-128-GCM a record of 1,418 bytes takes 3,900
-  cycles: the counter blocks one after the other (four abreast should halve that part),
-  GHASH a block at a time (four at a time with H to H^4 should halve that). Under
-  ChaCha20-Poly1305 it takes 11,800, of which some 9,600 must be the 24 blocks of
-  ChaCha20, made one at a time: two or four abreast want AVX2 (every processor that
-  has BMI2 and ADX has it; XCR0 is to be set on each at boot), and would bring that
-  row to nginx's.
-  Whether a client that names both ciphers should get AES-128-GCM whatever its order
-  is the user's to say (it is TLS policy: today the client's first of our two wins).
-- **SACK**, to let the window open fast. Windows are scaled, but past 64 KB one grows by
-  a segment per 64 KiB acknowledged, and not at all once the connection has lost
-  anything: a window that doubles up to 367 KB brought 1.5 MiB over 100 ms in 1.1 s
-  (now 1.8, before 2.9), and through a path narrower than that it lost 91 segments at
-  once, each of which comes back a round trip after the one before when the client's
-  ack is all there is to go by. What a client's SACK blocks say would have to be kept
-  (a client lists its last three or four stretches, not the hole at its ack; and Linux
-  sends such acks once a millisecond, not once a segment, so "the newest stretch is
-  one segment long" is no signal: both tried). A slot has no room: a handshake buffer
-  borrowed for the time of a recovery would do (a bit per segment on its way).
-- **Pacing**, or what stands in for it. Through a queue of ten packets a large file
-  takes 34 s where the link would do it in 3 (39 s before tonight): what an ack lets go
-  goes at once.
 - **The handshake further.** Where its 430,000 cycles go: the ladder for the client's
   share 142,000, k G for the signature 86,000, our own share 31,000, the inversion
   20,000, SHA-256 about 60,000, the rest records and TCP. OpenSSL's assembly does the
@@ -242,8 +235,13 @@ the processors there are, Unikraft and F-Stack next to k15 (bench/README.md
 says what that takes), a retransmission timer that knows the round trip (it is 2^29
 cycles whatever the path: 0.26 s on the server, 0.14 s on a machine of 3.9 GHz, where
 a path of 150 ms there and back then gets every segment twice), zstd beside brotli
-(Python has it since 3.14; Safari does not take it). Not planned: session tickets
-(see Goal).
+(Python has it since 3.14; Safari does not take it). The ciphers further: a record of 1,418 bytes
+takes 3,900 cycles under AES-128-GCM (the counter blocks four abreast and GHASH four
+at a time should each halve their part) and 11,800 under ChaCha20-Poly1305, which
+only a client that puts it first gets now (some 9,600 of them 24 blocks of ChaCha20
+made one at a time: two or four abreast want AVX2). Pacing, or what stands in for it:
+through a queue of ten packets a large file takes 34 s where the link would do it in
+3. Not planned: session tickets and SACK (see Goal).
 
 ## What "secure" means here
 A standard validating client gets server authentication, confidentiality, integrity and
@@ -307,7 +305,7 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   for its owner's eyes only (umask 077), and /boot/k15.bin on the server for root's.
 - `make` assembles `src/os.asm` into `build/os.bin` (loaded at 1 MiB) and `build/disk.img`
   (`src/boot.asm` + the image; what the tests boot), with the site of `www/` in it.
-  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 14,245,
+  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 14,277,
   about: boot, page tables, driver and the other processors 2,650, network 4,250 with
   the timers, requests and the forms of a file 700, TLS handshake and key schedule
   1,600, SHA-256 450, curves 3,000 with their programs and constants, the two ciphers
@@ -341,7 +339,7 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   none (a browser may not believe it there). OUT/site.json says what each path must
   return (for the tests), OUT/page80.bin what port 80 says.
 - `tools/suite.sh [JOBS] [name...]`: everything below, a few at a time, one line each
-  (54 runs, six minutes). `SMP=1` or `SMP=4` in front for other machines than the
+  (55 runs, six minutes). `SMP=1` or `SMP=4` in front for other machines than the
   default of 2 processors. Its verdict is strict: one failed connection is a FAIL. Under
   a loaded host a run that overflows rings on purpose (`raw1m_20k`) can time out a few
   hundred of a million (on 4 processors it does every time the suite runs five at once):
@@ -361,7 +359,9 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   3 KB, of over 4 KB, two at once, a client that closes its side, clients that go away.
   Over tap the card cuts our frames (TSO), through QEMU's own network it does not:
   `NOTSO=1` in front builds an image that never asks it to (the suite's
-  `site_notso_loss3`).
+  `site_notso_loss3`). `SUITES=TLS_CHACHA20_POLY1305_SHA256` in front makes the
+  checker's clients offer that alone (by themselves they get AES-128-GCM): half of the
+  suite's site runs do.
   `ONLY=text` runs the checks with that in their name. `HOST=a.b.c.d PORT=443
   B=build-hz python3 tools/sitecheck.py quick` is the same against the server.
 - Test images (make variables, each for its test): `ISNTOP=n ISNBITS=b` forces the top b
@@ -382,7 +382,8 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   `tools/bnecktest.sh` is two such paths with times they must keep (the suite's
   `bneck`).
 - `./measure.sh` builds, boots the disk image in QEMU, fetches with curl (chain and name
-  verified, fresh connections + keep-alive, each of the two ciphers by name, a client
+  verified, fresh connections + keep-alive, each of the two ciphers by name and in every order a client can
+  name them in, a client
   whose key share is for P-256, port 80, an unknown path, HEAD, and a check that curl
   refuses without our CA) and runs `tools/abuse.py` (forged, replayed, truncated records
   and bad ClientHellos, also in place of the second one after a HelloRetryRequest, must
@@ -401,7 +402,7 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   Ethernet segment: ARP, a Linux TCP as the peer, random ISNs. In front of `unshare`:
   `LOSS=1` drops 1% of the packets in each direction, `MTU=n` sets the tap's MTU,
   `TIMEOUT=10` makes a hung connection fail fast instead of after 60 s, `SUITES=
-  TLS_AES_128_GCM_SHA256` picks the cipher (OpenSSL's own order gets ChaCha20-Poly1305),
+  TLS_CHACHA20_POLY1305_SHA256` picks the cipher (OpenSSL's own order gets AES-128-GCM),
   `NOMARK=1` leaves out the fetches on the way (then `open_s` is the handshakes alone:
   the rate), `PLAIN=1 INFLIGHT=64` runs the same over plain HTTP to port 80, `SMP=n` and
   `MEM=n` shape the VM (default 2 processors, 256 MiB), `KEX=P-256:X25519` makes the
@@ -1007,8 +1008,9 @@ messages, application data); or, the other way round (carry set), decrypts what 
 client's record held and puts behind it the tag that record should have had, which
 `record` compares before it looks at anything. The key block of a direction is 32 bytes
 of key and 12 of iv; which cipher, `CIPH` says (0 ChaCha20-Poly1305, else AES-128-GCM:
-from `SUITE` in the handshake, which is the first of the client's suites that is one of
-ours, and from the connection's flag after it).
+from `SUITE` in the handshake, which is AES-128-GCM if the client names it, unless
+ChaCha20-Poly1305 is the first suite of TLS 1.3 it names; and from the connection's
+flag after it).
 - ChaCha20: the state's four rows in xmm registers, a quarter round on all four columns
   at once (SSE2). Poly1305: 64-bit limbs, `mul`.
 - AES-128-GCM: the key schedule is made again for every record (`aeskey`: 176 bytes would
@@ -1022,14 +1024,17 @@ ours, and from the connection's flag after it).
 - What a record costs (`make bench`, Ryzen 7 3800X): 1,418 bytes of a file 3,900 cycles
   under AES-128-GCM and 11,800 under ChaCha20-Poly1305; 180 bytes 940 and 2,200. (This
   file said "some 8,000" for a full one until it was measured: 11,600 and 17,900.)
-  Since the card cuts our frames, this is what large files wait for: see "Next".
+  Since the card cuts our frames, this is what large files wait for: see "Later".
 
 ## Shortcuts that remain
 From k2, where they saved bytes, and from the first version that served files. Ask before
 removing the ones about TLS.
 - TLS 1.3 only, two suites: TLS_CHACHA20_POLY1305_SHA256 and TLS_AES_128_GCM_SHA256,
   X25519, ecdsa_secp256r1_sha256; who has none of these is told so (an alert) and
-  nothing else. Of the ClientHello the cipher suites, the versions, the groups and the
+  nothing else. Which of the two suites is ours to say: AES-128-GCM for a client
+  that names it, unless the first suite of TLS 1.3 in its list (13 xx: the made-up
+  suite a browser puts in front is none, nor are those of TLS 1.2) is
+  ChaCha20-Poly1305: then that. Of the ClientHello the cipher suites, the versions, the groups and the
   x25519 key share are looked at (`handshake` walks the extensions; every length on the
   way is bounded by the ClientHello's end, and what is looked at inside an extension by
   that extension's): no name (SNI: a client gets the one site whatever it calls us,
@@ -1322,6 +1327,11 @@ segment a frame, no window scaling, no compression, no conditional requests.
   source and half of another says nothing (twice in one night).
 - A recycled cloud address has the last server's host key in `known_hosts`: give ssh a
   known-hosts file of its own for a load generator (`-o UserKnownHostsFile=`).
+- A client's order of cipher suites is not always what it is fast at. OpenSSL's goes by
+  the length of the key (AES-256, ChaCha20, AES-128), so wrk, curl and all that is built
+  on it got ChaCha20-Poly1305 from us, the one we are slow at, and the benchmark
+  anybody would run said half of what a browser gets. A client without AES in its
+  processor puts ChaCha20 first: that order is the one to believe.
 
 ## Tried and rejected
 - Compressed EC point in the leaf: Firefox says SEC_ERROR_UNSUPPORTED_EC_POINT_FORM.
@@ -1375,9 +1385,13 @@ segment a frame, no window scaling, no compression, no conditional requests.
   once): lost in heaps on the server's own path. 64 KB at most.
 - 16 buffers of 64 KiB a processor for the frames the card cuts (4 MiB): 8 do (2 MiB).
   One or two make a frame wait for the device (`BIGSH`), which is the test.
-- Choosing the cipher for the client (AES-128-GCM whenever it names it): ours seals
-  three times as fast under it. Not done: it is the client's order, and the user's
-  policy to change.
+- Taking the order of a client's suites for its wish (until 2026-11-13: the first of
+  ours in its list). OpenSSL's order goes by the length of the key, so its tools got
+  the cipher we are slow at. Ours to say now: Goal.
+- SACK with a client's blocks kept in a handshake buffer borrowed for the recovery:
+  not to be built (the user, 2026-11-13). What a lossy client costs would hang on what
+  a flood of ClientHellos leaves of those buffers, and a static site is fast enough
+  without.
 
 ## Workflow
 `./measure.sh` after every change (ten seconds; also once each with `DEBUG=1`, `KNOCK=`
@@ -1426,3 +1440,5 @@ The lossy runs of 2026-11-12, after the last change to the code:
   is 536 bytes: those runs take three minutes each); the suite on 1, 2 and 4
   processors; and `measure.sh` with `KNOCK=` and `LIFE=` images (with `DEBUG=1` it
   fails where it always has: at the page on port 80, which shows the counters).
+- on 2026-11-13, after the cipher rule (`handshake` alone was touched): `measure.sh`
+  with its new checks and the suite, 55 of 55. Not the lossy runs many times over.

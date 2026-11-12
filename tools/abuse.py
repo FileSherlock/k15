@@ -271,6 +271,42 @@ def main():
             other[q:q + 2] = b"\x13\x02"
     good &= check("one that names none of our cipher suites is told \"handshake failure\"",
                   said(record(other)) == HANDSHAKE_FAILURE)
+
+    # Which of our two a client gets: AES-128-GCM (13 01) if it names it, unless ChaCha20-
+    # Poly1305 (13 03) is the first suite of TLS 1.3 (13 xx) it names. What else stands
+    # in its list (a made-up suite in front, as browsers put one: GREASE; suites of TLS
+    # 1.2) is not its first.
+    def chosen(suites):
+        """The cipher suite in the ServerHello for this machine's ClientHello with these suites."""
+        p = 38 + 1 + hello[38]
+        body = hello[:p] + len(suites).to_bytes(2, "big") + suites + hello[p + 2 + int.from_bytes(hello[p:p + 2], "big"):]
+        body = body[:1] + (len(body) - 4).to_bytes(3, "big") + body[4:]
+        s = socket.create_connection((HOST, PORT), timeout=5)
+        got = b""
+        try:
+            s.sendall(record(body))
+            while len(got) < 5 + 4 + 2 + 32 + 1 + hello[38] + 2:
+                more = s.recv(4096)
+                if not more:
+                    break
+                got += more
+        except OSError:
+            pass
+        s.close()
+        at = 5 + 4 + 2 + 32 + 1 + hello[38]
+        return got[at:at + 2].hex() if got[:1] == b"\x16" and got[5:6] == b"\x02" else got[:7].hex()
+
+    for name, suites, want in (
+            ("OpenSSL's order (AES-256, ChaCha20, AES-128)", "130213031301", "1301"),
+            ("a browser's (a made-up suite, AES-128, AES-256, ChaCha20)", "0a0a130113021303", "1301"),
+            ("ChaCha20 first", "13031301", "1303"),
+            ("a made-up suite, then ChaCha20, then AES-128", "3a3a130313021301", "1303"),
+            ("suites of TLS 1.2 and a made-up one, then ChaCha20, then AES-128", "c02bcca9fafa13031301", "1303"),
+            ("another suite of TLS 1.3 first, then ChaCha20, then AES-128", "130413031301", "1301"),
+            ("AES-256 and ChaCha20, no AES-128", "13021303", "1303"),
+            ("AES-128 last of many", "c02bc02fcca9cca8130213041305009c1301", "1301")):
+        good &= check(f"a client that names {name} gets {'AES-128-GCM' if want == '1301' else 'ChaCha20-Poly1305'}",
+                      chosen(bytes.fromhex(suites)) == want)
     groupless = bytearray(shareless[5:])        # x25519 is not among its groups either
     p = 38
     p += 1 + hello[p]

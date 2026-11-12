@@ -210,7 +210,8 @@ The image of the afternoon sent a segment a frame, and the path to it carries ab
 build-hzn/www -n IP -i IP -c cert-hz --plain80`. From the same generator, the same night,
 one server after the other (`bench/files.sh`: wrk, 8 s a row, 64 connections that stay
 unless it says otherwise). wrk's OpenSSL puts AES-256-GCM first, then ChaCha20-Poly1305,
-then AES-128-GCM: nginx takes the first, k15 has no AES-256 and takes the second.
+then AES-128-GCM: nginx takes the first, k15 has no AES-256 and took the second
+that night (since 2026-11-13 it takes the third: "Which cipher", below).
 Browsers put AES-128-GCM first: the rows that say so were asked that way.
 
 | | this image (22:02) | the afternoon's image (20:40) | nginx + OpenSSL 3.5 (20:50) |
@@ -253,6 +254,26 @@ The rows of `bench/run.sh`, this image and the afternoon's in turn (22:10; 10 s 
 (A full run of this image at 22:07: 7,150, 7,479 and 7,939 new TLS connections a
 second, 95,916 and 113,255 requests on kept ones; plain: 39,713, 45,439 and 43,930
 new connections, 101,612 and 108,237 requests.)
+
+**Which cipher (2026-11-13).** Until here a client that named both of our ciphers got
+the one it named first, and OpenSSL names ChaCha20-Poly1305 before AES-128-GCM (its
+order goes by the length of the key: AES-256, ChaCha20, AES-128). So wrk, curl and all
+that is built on OpenSSL got the cipher k15 seals at a third of the speed. Now such a
+client gets AES-128-GCM, unless ChaCha20-Poly1305 is the first suite of TLS 1.3 it
+names: a client without AES in its processor puts it there. 14,277 bytes of system.
+The same rows again, wrk as it is (00:16; nginx was not measured again):
+
+| wrk, with OpenSSL's own order | with the rule | before it (above) |
+|---|---|---|
+| 14,000 bytes | 32,561 a second, 440 MB/s | 30,393, 411 MB/s |
+| 1.5 MiB | 624 a second, 0.92 GB/s | 307, 466 MB/s |
+| the same, 8 connections | 527 a second, 792 MB/s | 292, 439 MB/s |
+
+(In the same run with AES-128-GCM alone: 35,830 a second of 14 KB; 632 a second, 0.93
+GB/s, of 1.5 MiB; 469 a second, 705 MB/s, on 8 connections and 94, 142 MB/s, on one;
+the page 106,864 and 107,301 a second. `bench/run.sh`'s first rows: 7,640, 8,060 and
+8,372 new TLS connections a second, 7,251 with two key shares, 104,382 and 115,463
+requests on kept ones.)
 
 **Over a distance.** With windows scaled, more than 64 KB can be on their way. How much
 more is the question: a window that doubles every round trip up to 367 KB brought 1.5

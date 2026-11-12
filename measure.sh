@@ -31,6 +31,19 @@ for C in TLS_AES_128_GCM_SHA256 TLS_CHACHA20_POLY1305_SHA256; do
   V=$("${CURL[@]}" -v --tls13-ciphers $C "$URL" "${URL}index.html" 2>&1) || { echo "FAIL: $C"; exit 1; }
   [[ "$V" == *"$C"* && "$V" == *"$EXPECT"*"$EXPECT"* ]] || { echo "FAIL: $C not used, or not the page twice"; exit 1; }
 done
+# Of a client's two, AES-128-GCM is ours wherever it stands (we seal three times as fast
+# under it), unless ChaCha20-Poly1305 is the first suite of TLS 1.3 the client names; and
+# ChaCha20-Poly1305 if AES-128-GCM is not among them
+while read -r OFFER WANT; do
+  V=$("${CURL[@]}" -v --tls13-ciphers "$OFFER" "$URL" 2>&1) || { echo "FAIL: a client that offers $OFFER"; exit 1; }
+  [[ "$V" == *"SSL connection using TLSv1.3 / $WANT /"* ]] || { echo "FAIL: a client that offers $OFFER did not get $WANT"; exit 1; }
+done <<'ORDERS'
+TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256 TLS_AES_128_GCM_SHA256
+TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256 TLS_CHACHA20_POLY1305_SHA256
+TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256 TLS_CHACHA20_POLY1305_SHA256
+TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256 TLS_AES_128_GCM_SHA256
+TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256 TLS_CHACHA20_POLY1305_SHA256
+ORDERS
 # a client whose key share is for another curve is asked for one for ours, and gets it
 for C in TLS_AES_128_GCM_SHA256 TLS_CHACHA20_POLY1305_SHA256; do
   V=$("${CURL[@]}" -v --curves secp256r1:x25519 --tls13-ciphers $C "$URL" 2>&1) || { echo "FAIL: no HelloRetryRequest ($C)"; exit 1; }

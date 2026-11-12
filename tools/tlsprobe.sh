@@ -35,6 +35,15 @@ ask ok "TLS 1.3, TLS_AES_128_GCM_SHA256" -tls1_3 -ciphersuites TLS_AES_128_GCM_S
 ask ok "TLS 1.3, TLS_CHACHA20_POLY1305_SHA256" -tls1_3 -ciphersuites TLS_CHACHA20_POLY1305_SHA256
 ask "handshake failure" "TLS 1.3, TLS_AES_256_GCM_SHA384 alone" -tls1_3 -ciphersuites TLS_AES_256_GCM_SHA384
 ask ok "TLS 1.3, TLS_AES_256_GCM_SHA384 and ours" -tls1_3 -ciphersuites TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256
+takes() {  # the cipher suite that must come of it, a label, s_client's options
+  local want=$1 label=$2 got
+  shift 2
+  got=$(timeout 10 openssl s_client -connect "$T" ${CA:+-CAfile "$CA"} -tls1_3 "$@" </dev/null 2>&1 | sed -n 's/^New, TLSv1.3, Cipher is //p')
+  if [[ $got == "$want" ]]; then echo "ok   $label: $got"; else echo "FAIL $label: ${got:-no handshake} (expected: $want)"; bad=1; fi
+}
+takes TLS_AES_128_GCM_SHA256 "TLS 1.3, the suites in OpenSSL's order"
+takes TLS_CHACHA20_POLY1305_SHA256 "TLS 1.3, ChaCha20-Poly1305 before AES-128-GCM" -ciphersuites TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256
+takes TLS_AES_128_GCM_SHA256 "TLS 1.3, AES-128-GCM before ChaCha20-Poly1305" -ciphersuites TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256
 for g in P-256 P-384 P-521 X448 ffdhe2048 X25519MLKEM768; do
   ask "handshake failure" "TLS 1.3, group $g alone" -tls1_3 -groups $g
   ask ok "TLS 1.3, a share for $g, x25519 offered too" -tls1_3 -groups $g:X25519

@@ -3088,24 +3088,32 @@ handshake:
         lea r8d, [rsi+rcx]      ; length, which counts as far as the ClientHello goes
         movzx ecx, word [rax-2]
         xchg cl, ch
-        or edi, -1              ; Ours: the first of the client's that is 13 03 (ChaCha20-
-        sub r8d, eax            ; Poly1305: 0) or 13 01 (AES-128-GCM: 1); -1 if it names
-        jbe .cse                ; neither
-        cmp ecx, r8d
-        jbe .csn
-        mov ecx, r8d
-.csn:   shr ecx, 1
-        jz .cse
-.cs:    cmp word [rax], 0x0313
-        je .cs0
-        cmp word [rax], 0x0113
+        or edi, -1              ; Ours of the client's: 13 01 (AES-128-GCM: 1) if it names
+        sub r8d, eax            ; that, which we seal three times as fast; but 13 03
+        jbe .cse                ; (ChaCha20-Poly1305: 0) if that is the first suite of
+        cmp ecx, r8d            ; TLS 1.3 (13 xx) it names at all: a client puts it there
+        jbe .csn                ; when AES is slow for it. And ChaCha20-Poly1305 if it has
+        mov ecx, r8d            ; no AES-128-GCM. Less than 0 if it names neither (-1:
+.csn:   shr ecx, 1              ; nothing of TLS 1.3 has gone by yet; -2: something has).
+        jz .cse                 ; What stands in front of a client's suites to see whether
+.cs:    mov dx, [rax]           ; we pass over what we don't know (GREASE) is no 13 xx.
+        cmp dl, 0x13
+        jne .csx
+        cmp dh, 1
         je .cs1
-        inc eax
+        cmp dh, 3
+        je .cs3
+        and edi, -2             ; (another suite of TLS 1.3)
+.csx:   inc eax
         inc eax
         loop .cs
         jmp .cse
-.cs1:   inc edi
-.cs0:   inc edi
+.cs3:   inc edi                 ; (ChaCha20-Poly1305 with nothing of TLS 1.3 before it:
+        jz .cse                 ; that is it. Else it is ours unless AES-128-GCM follows)
+        xor edi, edi
+        jmp .csx
+.cs1:   push 1
+        pop rdi
 .cse:   mov [SUITE], edi
         pop rcx
         mov edi, TR             ; The transcript. If this is the ClientHello we asked for

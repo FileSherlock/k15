@@ -25,7 +25,7 @@ For a site that is meant to stay (`--reset`: how the server gets back into its L
 
 What you get, and what you don't:
 
-- **Small.** The system is 14,245 bytes. The image is that plus your files, each stored
+- **Small.** The system is 14,277 bytes. The image is that plus your files, each stored
   as the response it is sent as (and, where that makes it shorter, once more compressed
   with gzip and with brotli, for clients that take that).
 - **Nothing to break into.** No kernel, no shell, no file system, no user accounts, no
@@ -48,13 +48,13 @@ What you get, and what you don't:
   small pages a second on connections that stay, against nginx's 34,000; files of 14 KB
   at 30,000 to 35,000 a second, against 24,000 to 27,000. [bench/README.md](bench/README.md)
   has the comparison, how it was made, and what it does not say.
-- **Large files about as fast as nginx, or half as fast**, by the cipher the client
-  asks for: 0.92 GB/s with AES-128-GCM, which browsers put first, where nginx did 0.98
-  the same night; 0.47 GB/s with ChaCha20-Poly1305, which OpenSSL's tools get from k15,
-  where nginx gives them AES-256-GCM at 0.90. (It was 0.17 GB/s until the card was
-  given 45 records to a frame to cut up, and sealing a record got faster.) Over a
-  distance a window may grow past 64 KB, but only slowly: without SACK, what is lost
-  in a large window comes back a segment a round trip.
+- **Large files about as fast as nginx**: 0.92 GB/s where nginx did 0.90 to 0.98 the
+  same night. That is under AES-128-GCM, which a client gets if it names it at all,
+  unless it puts ChaCha20-Poly1305 first (then 0.47 GB/s: ChaCha20 is made a block at
+  a time here). (It was 0.17 GB/s until the card was given 45 records to a frame to
+  cut up, and sealing a record got faster.) Over a distance a window may grow past
+  64 KB, but only slowly: without SACK, what is lost in a large window comes back a
+  segment a round trip.
 - **Clunky on purpose.** Content and certificate are part of the image: a change is a new
   image and a reboot of a few seconds. Nothing renews by itself: `./k15 renew` is there to
   be run from cron, does nothing until the certificate has a month left, and then makes
@@ -78,7 +78,7 @@ everything measured so far.
 make                 # -> build/os.bin and build/disk.img with the site of www/ (the first build makes cert/)
 ./measure.sh         # boot it in QEMU, fetch with curl (certificate verified), play the hostile client
 make test            # the crypto against pyca/cryptography and the model in tools/ec.py
-tools/suite.sh       # all 54 regression runs: loss, reordering, scale, browsers, a site of 80 files
+tools/suite.sh       # all 55 regression runs: loss, reordering, scale, browsers, a site of 80 files
 tools/sitetest.sh    # that site alone: every path, every kind of client
 unshare -Urn ./tap.sh ./taprunc.sh 2000 1024 4   # 8,000 connections from 4 source IPs
 gcc -O2 -o build/rawc tools/rawc.c

@@ -18,8 +18,12 @@ WANT=" $* "
 LOGS=${LOGS:-$(mktemp -d /tmp/k15-suite.XXXXXX)}
 mkdir -p "$LOGS"
 
+# (A client that names both of our ciphers gets AES-128-GCM unless ChaCha20-Poly1305 is its
+# first: OpenSSL's own order gets AES-128-GCM. So each run says which it wants.)
 AES=SUITES=TLS_AES_128_GCM_SHA256
-TLS='unshare -Urn ./tap.sh ./taprunc.sh 500 1024 4'
+CHA=SUITES=TLS_CHACHA20_POLY1305_SHA256
+RUN='unshare -Urn ./tap.sh ./taprunc.sh 500 1024 4'
+TLS="$CHA $RUN"
 declare -A T
 T[measure]='./measure.sh'
 T[measure_tcg]='KVM=0 PORT=8453 ./measure.sh'
@@ -28,10 +32,12 @@ T[tls]="$TLS"
 T[tls_loss3]="LOSS=3 $TLS"
 T[tls_mtu300_loss3]="MTU=300 LOSS=3 $TLS"
 T[tls_reorder]="REORDER=25 $TLS"
-T[aes]="$AES $TLS"
-T[aes_loss3]="$AES LOSS=3 $TLS"
-T[aes_mtu300_loss3]="$AES MTU=300 LOSS=3 $TLS"
-T[aes_reorder]="$AES REORDER=25 $TLS"
+T[aes]="$AES $RUN"
+T[aes_loss3]="$AES LOSS=3 $RUN"
+T[aes_mtu300_loss3]="$AES MTU=300 LOSS=3 $RUN"
+T[aes_reorder]="$AES REORDER=25 $RUN"
+# the suites as OpenSSL has them by itself (AES-256-GCM, ChaCha20-Poly1305, AES-128-GCM)
+T[tls_own_order]="$RUN"
 T[plain]='PLAIN=1 INFLIGHT=64 unshare -Urn ./tap.sh ./taprunc.sh 4000 1024 4'
 T[plain_loss3]='PLAIN=1 INFLIGHT=64 LOSS=3 unshare -Urn ./tap.sh ./taprunc.sh 4000 1024 4'
 T[plain_mtu300_loss3]='PLAIN=1 INFLIGHT=64 MTU=300 LOSS=3 unshare -Urn ./tap.sh ./taprunc.sh 2000 1024 4'
@@ -52,7 +58,7 @@ T[real_reorder]="B=build-real REORDER=25 $TLS"
 # clients that have to be asked for an x25519 key share (HelloRetryRequest)
 T[hrr]="KEX=P-256:X25519 $TLS"
 T[hrr_loss3]="KEX=P-256:X25519 LOSS=3 $TLS"
-T[hrr_mtu300_loss3]="KEX=P-256:X25519 $AES MTU=300 LOSS=3 $TLS"
+T[hrr_mtu300_loss3]="KEX=P-256:X25519 $AES MTU=300 LOSS=3 $RUN"
 T[hrr_reorder]="KEX=P-256:X25519 REORDER=25 $TLS"
 T[real_hrr_loss3]="KEX=P-256:X25519 B=build-real LOSS=3 $TLS"
 # an image as for a real site: a DNS name, port 80 redirects, HSTS
@@ -63,15 +69,15 @@ T[raw_redirect]='B=build-redir unshare -Urn ./tap.sh build/rawc 200000'
 # 2^31 or 2^32 (make ISNTOP=n), so one in 500 crosses it in our flight (hence the many
 # connections), and every fetch of the large file does; and two that begin within 32 KiB
 # (those not with loss: see tools/sitetest.sh)
-T[tls_isn31]="B=build-isn31 unshare -Urn ./tap.sh ./taprunc.sh 8000 1024 4"
+T[tls_isn31]="B=build-isn31 $CHA unshare -Urn ./tap.sh ./taprunc.sh 8000 1024 4"
 T[tls_isn32]="B=build-isn32 $AES unshare -Urn ./tap.sh ./taprunc.sh 8000 1024 4"
 T[tls_isn31_loss3]="B=build-isn31 LOSS=3 $TLS"
 T[plain_isn32_loss3]='B=build-isn32 PLAIN=1 INFLIGHT=64 LOSS=3 unshare -Urn ./tap.sh ./taprunc.sh 4000 1024 4'
 T[real_isn31_loss3]="B=build-real-isn31 LOSS=3 $TLS"
 T[real_isn32_reorder]="B=build-real-isn32 REORDER=25 $TLS"
 T[site_wrap31]='B=build-wrap31 ISNTOP=0x7FFF8000 ISNBITS=17 unshare -Urn tools/sitetest.sh tap'
-T[site_wrap32]='B=build-wrap32 ISNTOP=0xFFFF8000 ISNBITS=17 unshare -Urn tools/sitetest.sh tap'
-T[site_wrap31_loss3]='LOSS=3 B=build-wrapl31 ISNTOP=0x7FF00000 unshare -Urn tools/sitetest.sh tap quick'
+T[site_wrap32]="$CHA B=build-wrap32 ISNTOP=0xFFFF8000 ISNBITS=17 unshare -Urn tools/sitetest.sh tap"
+T[site_wrap31_loss3]="$CHA LOSS=3 B=build-wrapl31 ISNTOP=0x7FF00000 unshare -Urn tools/sitetest.sh tap quick"
 T[site_wrap32_loss3]='LOSS=3 B=build-wrapl32 ISNTOP=0xFFF00000 unshare -Urn tools/sitetest.sh tap quick'
 # a connection's key is not used for more records than it should be (here: 2^10)
 T[site_keylife]='B=build-keylife KEYLIFE=10 ONLY=sealed unshare -Urn tools/sitetest.sh tap'
@@ -81,17 +87,17 @@ T[k15]='PORT=8513 tools/k15test.sh'
 T[wx]='tools/wxtest.sh'
 # a site of many files, one of them large (tools/sitetest.sh): every path, every kind of client
 T[site]='tools/sitetest.sh'
-T[site_tap]='unshare -Urn tools/sitetest.sh tap'
+T[site_tap]="$CHA unshare -Urn tools/sitetest.sh tap"
 T[site_loss3]='LOSS=3 unshare -Urn tools/sitetest.sh tap'
-T[site_mtu600_loss3]='MTU=600 LOSS=3 unshare -Urn tools/sitetest.sh tap quick'
+T[site_mtu600_loss3]="$CHA MTU=600 LOSS=3 unshare -Urn tools/sitetest.sh tap quick"
 T[site_reorder]='REORDER=25 unshare -Urn tools/sitetest.sh tap'
 # the same where the card does not cut frames into segments for us (as through QEMU's own
 # network, but over tap, with loss): a segment a frame
-T[site_notso_loss3]='NOTSO=1 B=build-site-notso LOSS=3 unshare -Urn tools/sitetest.sh tap quick'
+T[site_notso_loss3]="$CHA NOTSO=1 B=build-site-notso LOSS=3 unshare -Urn tools/sitetest.sh tap quick"
 # a large file through a path narrower than the window: no slower than a window of 64 KB was
 T[bneck]='tools/bnecktest.sh'
 ORDER="measure measure_tcg browsers tls tls_loss3 tls_mtu300_loss3 tls_reorder aes aes_loss3
-  aes_mtu300_loss3 aes_reorder twice twice_reorder plain plain_loss3 plain_mtu300_loss3
+  aes_mtu300_loss3 aes_reorder tls_own_order twice twice_reorder plain plain_loss3 plain_mtu300_loss3
   plain_reorder raw1m raw1m_20k raw_4g tls_4g churn churn_idle real_measure real_loss3
   real_mtu300_loss3 real_reorder hrr hrr_loss3 hrr_mtu300_loss3
   hrr_reorder real_hrr_loss3 redirect raw_redirect tls_isn31 tls_isn32 tls_isn31_loss3
