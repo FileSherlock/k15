@@ -1,6 +1,7 @@
 # k3
 
-**https://15kb.org/ is served by it.**
+**https://15kb.org/ is served by it** (SSL Labs: A; what is missing for the A+ is
+post-quantum key exchange).
 
 k3 turns a folder of static files into a bootable x86-64 HTTPS server: 13 KB of system
 with the files behind it, in one image. There is no operating system underneath, because
@@ -11,6 +12,14 @@ much of HTTP as a static site needs, in one assembly file.
 ./k3 pack site/ -n example.org -i 203.0.113.7    # -> build-example.org/os.bin and disk.img
 ./k3 run build-example.org                       # try it in QEMU: https://127.0.0.1:8443/
 ./k3 deploy 203.0.113.7 build-example.org        # onto a server that runs Linux with GRUB
+```
+
+For a site that is meant to stay (`--reset`: how the server gets back into its Linux):
+
+```bash
+./k3 pack site/ -n example.org --san www.example.org --hsts 31536000 -i 203.0.113.7
+./k3 renew 203.0.113.7 build-example.org --force --reset 'hcloud server reset NAME'   # Let's Encrypt
+./k3 deploy 203.0.113.7 build-example.org --persist --reset 'hcloud server reset NAME'
 ```
 
 What you get, and what you don't:

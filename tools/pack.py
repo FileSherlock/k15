@@ -27,6 +27,9 @@ default) or redirect (with a redirect to https://NAME/, NAME from OUT_DIR/name);
 CACHE = seconds a browser may keep a file (default 600, empty: no such header);
 HSTS = seconds for Strict-Transport-Security (default: no such header);
 HEADERS = further header lines for every file, separated by newlines or by ";;".
+The page for unknown paths has every header a file has but Cache-Control; the answers
+without a body (a folder's redirect, the "no" to other methods) have the HSTS one. Port
+80 has none of them: a browser may not believe that header there.
 """
 import hashlib
 import json
@@ -73,6 +76,8 @@ def main(site, out):
         common.append(b"Strict-Transport-Security: max-age=%d" % int(hsts))
     common.append(b"X-Content-Type-Options: nosniff")
     common += [line.strip().encode() for line in env("HEADERS", "").replace(";;", "\n").split("\n") if line.strip()]
+    kept = [h for h in common[1:] if not h.startswith(b"Cache-Control:")]      # for the page that says 404
+    strict = [h for h in common if h.startswith(b"Strict-Transport-Security:")]  # for answers without a body
 
     def response(status, headers, body):
         head = b"\r\n".join([b"HTTP/1.1 " + status] + headers + [b"Content-Length: %d" % len(body)]) + b"\r\n\r\n"
@@ -115,11 +120,11 @@ def main(site, out):
             folder = url[:-len("index.html")]               # "/" or "/a/b/"
             paths[folder.encode()] = n
             if folder != "/":
-                head, _ = response(b"301 Moved Permanently", [b"Server: k3", b"Location: " + folder.encode()], b"")
+                head, _ = response(b"301 Moved Permanently", [b"Server: k3", b"Location: " + folder.encode()] + strict, b"")
                 paths.setdefault(folder[:-1].encode(), add(head, b""))
     ctype, body = not_found or ("text/plain; charset=utf-8", b"404 Not Found\n")
-    a404 = add(*response(b"404 Not Found", [b"Server: k3", b"Content-Type: " + ctype.encode()], body))
-    head, _ = response(b"405 Method Not Allowed", [b"Server: k3", b"Allow: GET, HEAD", b"Connection: close"], b"")
+    a404 = add(*response(b"404 Not Found", [b"Server: k3", b"Content-Type: " + ctype.encode()] + kept, body))
+    head, _ = response(b"405 Method Not Allowed", [b"Server: k3", b"Allow: GET, HEAD", b"Connection: close"] + strict, b"")
     a405 = add(head, b"", 1)
 
     # port 80: one response for every request

@@ -53,14 +53,21 @@ $(B)/disk.img: src/boot.asm $(B)/os.bin tools/mkdisk.py
 	python3 tools/mkdisk.py $(B)/boot.bin $(B)/os.bin $@
 	@chmod go= $@
 
-# cert/ is made on the first build (a private CA and a leaf) or holds a real certificate
+# cert/ is made on the first build (a private CA and a leaf) or holds a real certificate.
+# NAME: the name a generated certificate is for, and the one of a certificate's names
+# that port 80 sends everybody to (default: the certificate's first). SAN='a b': further
+# names for a generated certificate. $(B)/names.conf changes when they do.
 GEN := $(B)/gen.inc $(B)/ec.inc $(B)/regs.inc $(B)/conf.inc
 ID := $(CERT)/server.key $(CERT)/server.pem
 $(ID) &:
 	@mkdir -p $(B)
 	CERT=$(CERT) python3 tools/gen.py $(B)
 
-$(GEN) &: tools/gen.py tools/ec.py $(ID)
+$(B)/names.conf: FORCE
+	@mkdir -p $(B)
+	@echo '$(NAME) $(SAN)' > $@.$$$$; if cmp -s $@.$$$$ $@; then rm $@.$$$$; else mv $@.$$$$ $@; fi
+
+$(GEN) &: tools/gen.py tools/ec.py $(ID) $(B)/names.conf
 	@mkdir -p $(B)
 	CERT=$(CERT) python3 tools/gen.py $(B)
 

@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # k3: a folder of static files becomes a bootable HTTPS server, and gets onto a machine.
 #
-#   k3 pack SITE [-n NAME] [-i IP] [-c CERTDIR] [-o OUT] [--plain80] [--hsts SECONDS]
-#                [--cache SECONDS] [--header 'Name: value']
+#   k3 pack SITE [-n NAME] [--san NAME]... [-i IP] [-c CERTDIR] [-o OUT] [--plain80]
+#                [--hsts SECONDS] [--cache SECONDS] [--header 'Name: value']
 #       OUT/os.bin (the image: what a multiboot loader such as GRUB starts) and OUT/disk.img
 #       (the same behind a boot sector: what a BIOS starts from a disk). NAME is what the
 #       certificate is for and what port 80 redirects to (a DNS name or an IP address;
 #       default 127.0.0.1), IP the address the server answers on (default 10.0.2.15, QEMU's).
+#       --san: a further name the certificate is to be good for (www.NAME, say). The server
+#       does not look at the name it is asked for: every name that points at it and is in
+#       its certificate gets the same site.
 #       CERTDIR holds server.key (ECDSA P-256) and server.pem (the chain); if it has
 #       neither, a certificate for NAME under a private CA is made there (OUT/ca.pem is
 #       then what clients must trust). OUT defaults to build-NAME, CERTDIR to cert-NAME.
@@ -23,7 +26,7 @@
 #       --reset says how to reset the server (say 'hcloud server reset NAME').
 #   k3 renew HOST [OUT] --reset 'COMMAND' [--days N] [--force] [--dry-run] [--email ADDRESS]
 #                [--staging]
-#       A new certificate from Let's Encrypt for the name OUT was packed for (which must
+#       A new certificate from Let's Encrypt for the names OUT was packed for (which must
 #       point at the server), if the one in its CERTDIR ends within N days (30); else
 #       nothing happens, and nothing is touched: so this can run from cron every day.
 #       --force gets one whatever the old one says (the first time, when the old one is
@@ -51,11 +54,22 @@ abs() {
   printf '%s\n' "$p"
 }
 
-# build SITE NAME IP CERT OUT P80 HSTS CACHE HEADERS: make the image, and note how
+# lacks CERT NAME...: of these names, the ones the certificate in CERT is not good for
+lacks() {
+  local c=$1 n how
+  shift
+  for n in "$@"; do
+    how=-checkhost
+    [[ $n =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ || $n == *:* ]] && how=-checkip
+    openssl x509 $how "$n" -noout -in "$c/server.pem" 2>/dev/null | grep -q "does match" || printf '%s ' "$n"
+  done
+}
+
+# build SITE NAME IP CERT OUT P80 HSTS CACHE HEADERS SANS: make the image, and note how
 build() {
-  make -s B="$5" SITE="$1" CERT="$4" NAME="$2" IP="$3" P80="$6" HSTS="$7" CACHE="$8" HEADERS="$9" >/dev/null
-  printf 'site=%q\nname=%q\nip=%q\ncert=%q\np80=%q\nhsts=%q\ncache=%q\nheaders=%q\n' \
-    "$1" "$2" "$3" "$4" "$6" "$7" "$8" "$9" > "$5/pack.conf"
+  make -s B="$5" SITE="$1" CERT="$4" NAME="$2" SAN="${10}" IP="$3" P80="$6" HSTS="$7" CACHE="$8" HEADERS="$9" >/dev/null
+  printf 'site=%q\nname=%q\nip=%q\ncert=%q\np80=%q\nhsts=%q\ncache=%q\nheaders=%q\nsans=%q\n' \
+    "$1" "$2" "$3" "$4" "$6" "$7" "$8" "$9" "${10}" > "$5/pack.conf"
   chmod -R go= "$5" "$4"
   local total site_bytes name
   total=$(stat -c %s "$5/os.bin")
@@ -65,10 +79,21 @@ build() {
   if [[ -s $5/ca.pem ]]; then
     echo "its certificate is under a private CA: clients need $5/ca.pem (curl --cacert $5/ca.pem)"
   fi
+  # shellcheck disable=SC2086
+  local no
+  no=$(lacks "$4" "$2" ${10})
+  if [[ -n $no ]]; then
+    echo "k3: the certificate in $4 is not for: $no" >&2
+    if [[ -s $5/ca.pem ]]; then
+      echo "    (it is the private CA's: take $4 away and pack again for a new one)" >&2
+    else
+      echo "    (k3 renew --force gets one for all of: $2 ${10})" >&2
+    fi
+  fi
 }
 
 pack() {
-  local site=${1:-} name=127.0.0.1 ip=10.0.2.15 cert= out= p80=redirect hsts= cache=600 headers=
+  local site=${1:-} name=127.0.0.1 ip=10.0.2.15 cert= out= p80=redirect hsts= cache=600 headers= sans=
   [[ -n $site ]] || die "pack: which folder?"
   site=$(abs "$site")
   [[ -d $site ]] || die "pack: no such folder: '$site'"
@@ -78,12 +103,13 @@ pack() {
       -n) name=$2; shift 2;; -i) ip=$2; shift 2;; -c) cert=$2; shift 2;; -o) out=$2; shift 2;;
       --plain80) p80=page; shift;; --hsts) hsts=$2; shift 2;; --cache) cache=$2; shift 2;;
       --header) headers+="$2;;"; shift 2;;
+      --san) [[ $2 == *[[:space:],]* || -z $2 ]] && die "pack: --san takes one name"; sans+="${sans:+ }$2"; shift 2;;
       *) die "pack: what is '$1'?";;
     esac
   done
   out=$(abs "${out:-build-$name}")
   cert=$(abs "${cert:-cert-$name}")
-  build "$site" "$name" "$ip" "$cert" "$out" "$p80" "$hsts" "$cache" "$headers"
+  build "$site" "$name" "$ip" "$cert" "$out" "$p80" "$hsts" "$cache" "$headers" "$sans"
 }
 
 run() {
@@ -186,6 +212,16 @@ EOF
     sleep 2
     if curl -s --max-time 4 "${ca[@]}" --connect-to "$name:443:$host:443" -o /dev/null "https://$name/"; then
       echo "k3 is up: https://$name/ (a verified fetch from $host)"
+      # its other names, if it was packed with any
+      local sans= n
+      [[ -f $out/pack.conf ]] && sans=$(source "$out/pack.conf" && echo "${sans:-}")
+      for n in $sans; do
+        if curl -s --max-time 4 "${ca[@]}" --connect-to "$n:443:$host:443" -o /dev/null "https://$n/"; then
+          echo "          https://$n/ too"
+        else
+          echo "k3: but not as https://$n/: the certificate is not for that name" >&2
+        fi
+      done
       return 0
     fi
   done
@@ -223,18 +259,26 @@ renew() {
   done
   out=$(abs "${out:-build}")
   [[ -f $out/pack.conf ]] || die "renew: $out/pack.conf is not there (k3 pack makes it: how the image is to be packed again)"
-  local site name ip cert p80 hsts cache headers
+  local site name ip cert p80 hsts cache headers sans=
   # shellcheck disable=SC1091
   source "$out/pack.conf"
   # Is it time? If not, this was all: nothing is reset, nobody is asked for anything.
+  # (Also when the certificate lacks a name it was packed for: that is said, not acted
+  # on, or a name that does not point here would cost a reset a day.)
   if [[ -z $force && -f $cert/server.pem ]] && openssl x509 -checkend $((days * 86400)) -noout -in "$cert/server.pem" >/dev/null; then
+    local no
+    # shellcheck disable=SC2086
+    no=$(lacks "$cert" "$name" $sans)
     echo "the certificate for $name is good until $(openssl x509 -enddate -noout -in "$cert/server.pem" | cut -d= -f2): nothing to do (--force gets a new one all the same)"
+    [[ -z $no ]] || echo "k3: but it is not for: $no(--force gets one that is)" >&2
     return 0
   fi
   # A new key (the kind the image signs with: ECDSA on P-256) and a request for a
   # certificate for it. Both are made here: only the request goes to the server.
-  local new san="DNS:$name"
-  [[ $name =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ || $name == *:* ]] && san="IP:$name"
+  local new san= n
+  for n in $name $sans; do
+    if [[ $n =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ || $n == *:* ]]; then san+="${san:+,}IP:$n"; else san+="${san:+,}DNS:$n"; fi
+  done
   mkdir -p "$cert"
   new=$(mktemp -d "$cert/.new.XXXXXX")
   drop() { rm -f "$new/server.key" "$new/csr.pem" "$new/server.pem"; rmdir "$new"; }
@@ -270,7 +314,7 @@ renew() {
   mv "$new/server.pem" "$cert/server.pem"
   rm -f "$cert/ca.pem"            # (a public chain: nothing for clients to add)
   drop
-  build "$site" "$name" "$ip" "$cert" "$out" "$p80" "$hsts" "$cache" "$headers"
+  build "$site" "$name" "$ip" "$cert" "$out" "$p80" "$hsts" "$cache" "$headers" "$sans"
   start "$host" "$out" keep
 }
 

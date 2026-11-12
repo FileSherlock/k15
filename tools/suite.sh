@@ -123,7 +123,7 @@ verdict() {  # name, exit code -> one line
        note="$note; $(grep -o '[0-9]* reset, [0-9]* timed out' "$f" | tr '\n' ';')";;
     churn*) [[ $rc == 0 ]] && v=ok; note=$(tail -1 "$f");;
     wx) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 6 ok; $(grep -m1 '^FAIL' "$f")";;
-    k3) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 10 ok; $(grep -m1 '^FAIL' "$f")";;
+    k3) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 20 ok; $(grep -m1 '^FAIL' "$f")";;
     site*) [[ $rc == 0 ]] && grep -q '^all ok' "$f" && v=ok; note="$(grep -c '^ok' "$f") checks ok; $(grep -m2 '^FAIL' "$f" | cut -c1-90 | tr '\n' ';')";;
     *) note=$(grep '^SCORE' "$f"); [[ $note == SCORE* && $note != "SCORE 0.0"* ]] && ! grep -q FAILED "$f" && v=ok
        note="${note#*= }; $(grep -c FAILED "$f") failed; $(grep -m1 -o 'open_s [0-9.]*' "$f")";;

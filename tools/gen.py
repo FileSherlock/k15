@@ -10,12 +10,14 @@ The server's identity comes from cert/ (or the directory $CERT names):
   cert/ca.pem       the root to trust in tests, if it is not a public one
 If they are missing, a private CA (cert/ca.pem: there is no CA key, see make_identity) and
 the smallest leaf we found that curl, Chrome and Firefox accept are made, for NAME (default
-127.0.0.1; an IP address or a DNS name). To serve with a real certificate instead, drop its two files into cert/.
+127.0.0.1; an IP address or a DNS name) and the further names of SAN (blanks between
+them). To serve with a real certificate instead, drop its two files into cert/.
 Nothing here ever renews: the certificate is baked into the image.
 
 Outputs: build/gen.inc (TLS blobs), build/ec.inc (curve programs), build/regs.inc
 (curve constants and the private key: the image is a secret), build/ca.pem (what clients must trust; empty if the
-chain is a real one) and build/name (the host name to test with).
+chain is a real one) and build/name (the host name to test with, and what port 80 sends
+everybody to: NAME if the certificate is for it, else the first name the certificate has).
 """
 import ipaddress
 import os
@@ -80,8 +82,23 @@ EC_P256 = tlv(0x30, tlv(0x06, bytes.fromhex("2a8648ce3d0201")) + tlv(0x06, bytes
 VALIDITY = tlv(0x30, tlv(0x17, b"260101000000Z") + tlv(0x17, b"491231000000Z"))
 
 
-def make_identity(name):
-    """A leaf certificate for `name` and the CA that signed it: cert/server.key, .pem, ca.pem.
+def general_name(name):
+    try:
+        return tlv(0x87, ipaddress.ip_address(name).packed)
+    except ValueError:
+        return tlv(0x82, name.encode())
+
+
+def covers(pattern, name):
+    """Is a certificate's name (maybe *.something) good for this one?"""
+    pattern, name = pattern.lower().rstrip("."), name.lower().rstrip(".")
+    if pattern.startswith("*."):
+        return "." in name and name.split(".", 1)[1] == pattern[2:]
+    return pattern == name
+
+
+def make_identity(names):
+    """A leaf certificate for `names` and the CA that signed it: cert/server.key, .pem, ca.pem.
 
     The leaf is the smallest X.509 we found that curl, Chrome and Firefox accept under a
     trusted CA: v3 (the subjectAltName needs it), empty subject, one extension, and an 8-byte
@@ -101,10 +118,7 @@ def make_identity(name):
     point = key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.CompressedPoint
                                           if "compressed" in opt else serialization.PublicFormat.UncompressedPoint)
     spki = tlv(0x30, EC_P256 + tlv(0x03, b"\x00" + point))
-    try:
-        gn = tlv(0x87, ipaddress.ip_address(name).packed)
-    except ValueError:
-        gn = tlv(0x82, name.encode())
+    gn = b"".join(general_name(n) for n in names)
     # critical, as RFC 5280 wants with an empty subject (Chrome: INVALID otherwise)
     san = tlv(0x30, tlv(0x06, b"\x55\x1d\x11") + (b"" if "noncritical" in opt else tlv(0x01, b"\xff"))
               + tlv(0x04, tlv(0x30, gn)))
@@ -154,7 +168,7 @@ def le(v, n=32):
 
 def main(out):
     if not (os.path.exists(f"{CERT}/server.key") and os.path.exists(f"{CERT}/server.pem")):
-        make_identity(os.environ.get("NAME", "127.0.0.1"))
+        make_identity([os.environ.get("NAME") or "127.0.0.1"] + os.environ.get("SAN", "").split())
     key = serialization.load_pem_private_key(open(f"{CERT}/server.key", "rb").read(), None)
     chain = x509.load_pem_x509_certificates(open(f"{CERT}/server.pem", "rb").read())
     if not isinstance(key, ec.EllipticCurvePrivateKey) or key.curve.name != "secp256r1":
@@ -169,7 +183,11 @@ def main(out):
     put(f"{out}/ca.pem", open(f"{CERT}/ca.pem", "rb").read() if private else b"")
     san = chain[0].extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     names = [str(n.value) for n in san]
-    put(f"{out}/name", (names[0] if names else "").encode())
+    # (a certificate from elsewhere has its names in an order of its own: Let's Encrypt's
+    # are sorted. The one that was asked for is the one, if it is among them.)
+    asked = os.environ.get("NAME", "")
+    first = asked if asked and any(covers(n, asked) for n in names) else names[0] if names else ""
+    put(f"{out}/name", first.encode())
 
     # EncryptedExtensions (empty) + Certificate message, as one constant blob
     ee = bytes([8, 0, 0, 2, 0, 0])

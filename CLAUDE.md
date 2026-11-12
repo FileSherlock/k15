@@ -89,12 +89,19 @@ were run in turn):
   the server (57 paths, every kind of client it plays); 1.5 MiB take 0.3 s; Chrome and
   Firefox load the test site's page with its stylesheet and picture, our CA trusted in
   throwaway profiles. `./k3 deploy --persist` survived a reset: back by itself in 90 s.
-- **https://15kb.org/ is k3** (since the evening of 2026-11-12): the folder `site/` (the
-  project's own page), a certificate from Let's Encrypt that `./k3 renew --force` got
-  (69 s from the command to a verified fetch, the server away for about a minute of
-  it), `--persist`. curl with the system's roots, Chrome with its own, `tlsprobe.sh`
-  and `sitecheck.py` pass against it. The image is 19,841 bytes: 16,552 of system, of
-  which 3,400 are the chain as Let's Encrypt sends it (four certificates), 3,289 of site.
+- **https://15kb.org/ is k3** (since the evening of 2026-11-12), and so is
+  https://www.15kb.org/: the folder `site/` (the project's own page), a certificate
+  from Let's Encrypt for both names that `./k3 renew --force` got (65 s from the
+  command to a verified fetch, the server away for about a minute of it), HSTS for a
+  year, `--persist`. curl with the system's roots, Chrome and Firefox with their own,
+  `tlsprobe.sh` and `sitecheck.py` pass against it. The image is 20,114 bytes: 16,567
+  of system, of which 3,400 are the chain as Let's Encrypt sends it (four
+  certificates), 3,547 of site.
+- **SSL Labs gives it an A** (2026-11-12; results kept off its boards): trusted in all
+  five stores it looks at, no chain issues, TLS 1.3 only, forward secrecy, HSTS "with
+  long duration", every client it plays served or told why not in an alert. One
+  warning: "This server does not support PQC (Post-Quantum Cryptography) key
+  exchange." Its rating guide gives the A+ to "no warnings": it takes X25519MLKEM768.
 
 | measured here (Ryzen 7 3800X, KVM) | |
 |---|---|
@@ -123,16 +130,38 @@ made here now and only a request travels; the image is root's alone); `renew` pa
 with settings of its own (it packs as the image was packed: OUT/pack.conf); and a client
 without TLS 1.3, without our cipher suites or without x25519 got a ServerHello it had
 not asked for (it gets an alert and the connection's end).
+A third review (the evening, of the live site) found three: no HSTS (packed without
+`--hsts`: it has a year now, and the page for unknown paths, a folder's redirect and
+the "no" to other methods carry that header too, which they never had); that leaf and
+intermediate alone, as the note here had it, verify nowhere (below: the chain); and
+that `www` takes nothing in the image, only a second name in the certificate (`--san`).
+Its fourth, that HSTS makes the A an A+, did not hold: see "Where it stands".
 
 **Next, in the order of what they are worth:**
-- **What is left of the proof.** The name is 15kb.org and the project's page is served
-  by itself. Still to do: SSL Labs (the user's to start: it publishes), `./k3 renew
-  2.28.113.14 build-15kb.org --reset 'hcloud server reset k3'` in the user's cron (the
-  certificate ends on 2027-02-10; renew does nothing before 2027-01-11), `www.15kb.org`
-  (it points at the server and port 80 sends it on, but the certificate has one name:
-  https://www.15kb.org/ is refused by clients; an image has one name), and a shorter
-  chain: Let's Encrypt sends four certificates (3.4 KB, a flight of three segments) where
-  leaf and intermediate would do for clients that know the new root.
+- **Post-quantum key exchange (X25519MLKEM768).** What stands between the A and the A+
+  at SSL Labs, and more than a grade: every browser offers that share first today, we
+  take their second one (x25519), so what is recorded now is as safe as that curve
+  stays. Security goes up with it, never down: the secret is both halves' together.
+  On our side it is ML-KEM-768's encapsulation against the client's key (FIPS 203:
+  Keccak, the transform, sampling, packing; no key of ours, no decapsulation), 1,088
+  bytes of ciphertext in front of our 32 in the ServerHello (a flight a segment
+  longer; with today's chain a handshake buffer of 8 KiB), and a HelloRetryRequest
+  only when a client has neither share. It costs bytes and cycles a handshake: both
+  to be measured, the model first, as with the curves.
+- **What is left of the proof.** `./k3 renew 2.28.113.14 build-15kb.org --reset 'hcloud
+  server reset k3'` in the user's cron (the certificate ends on 2027-02-10; renew does
+  nothing before 2027-01-12), and a link from the page to the repository once that is
+  public (it is private on GitHub, and this branch is not pushed).
+- **The chain** is the user's to shorten or not. Let's Encrypt sends four certificates
+  (3,391 bytes: the leaf; YE1 or YE2; Root YE signed by ISRG Root X2; ISRG Root X2
+  signed by ISRG Root X1). Leaf and intermediate alone verify nowhere: Root YE is in no
+  trust store yet (`openssl verify` here, Ubuntu 26.04: "unable to get local issuer").
+  Without the fourth (1,140 bytes less in the image and in every handshake: a flight
+  of two segments, not three) a client must have ISRG Root X2 itself, and by Let's
+  Encrypt's own list (letsencrypt.org/docs/certificate-compatibility) these have X1
+  only: macOS before 13, iOS before 16, Android before 14 (what uses the system's
+  store there; Chrome and Firefox bring their own), Debian before 12, Java before
+  2024's updates. All of them speak TLS 1.3. Kept at four until the user says so.
 - **Segmentation offload** (the card offers CSUM and TSO). Large files go at a quarter
   of nginx's speed because a frame is a segment; with TSO a frame is up to 45 records
   (the device cuts where we would have: a record is a segment). Needs transmit buffers
@@ -188,9 +217,13 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
 
 ## Commands
 - `./k3` is the tool for somebody who has a site and a server:
-  `./k3 pack FOLDER [-n NAME] [-i IP] [-c CERTDIR] [-o OUT] [--plain80] [--hsts SECONDS]
-  [--cache SECONDS] [--header 'Name: value']` makes OUT/os.bin and OUT/disk.img (port 80
-  redirects to https://NAME/ unless `--plain80`); `./k3 run [OUT]` boots it in QEMU
+  `./k3 pack FOLDER [-n NAME] [--san NAME]... [-i IP] [-c CERTDIR] [-o OUT] [--plain80]
+  [--hsts SECONDS] [--cache SECONDS] [--header 'Name: value']` makes OUT/os.bin and
+  OUT/disk.img (port 80 redirects to https://NAME/ unless `--plain80`; `--san` is a
+  further name for the certificate, `www.NAME` say: the server does not look at the
+  name it is asked for, so every name that points at it and is in its certificate gets
+  the site; pack says which of the names the certificate in CERTDIR is not for, and
+  renew asks for all of them); `./k3 run [OUT]` boots it in QEMU
   (https://127.0.0.1:8443/, http://127.0.0.1:9443/); `./k3 deploy HOST [OUT] [--persist]
   [--reset 'COMMAND']` puts it on a server that runs Linux with GRUB and starts it (see
   "Running it on the server"); `./k3 renew HOST [OUT] --reset 'COMMAND' [--days N]
@@ -215,16 +248,19 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   certificate 230, and 320 of padding in front of the routines a handshake spends its
   time in: see HOT in "How the curve code works".) `make B=dir CERT=dir NAME=n
   IP=a.b.c.d SITE=folder P80=redirect HSTS=seconds KNOCK=a,b` builds another image: its
-  identity, the name in a generated certificate, the address it answers on, what it
-  serves, what port 80 does, and (development only) the two ports that reset it. The
-  scripts take `B` from the environment. Only the address, the site and its settings are
-  tracked: after changing another setting, `make -B`.
+  identity, the name in a generated certificate (`SAN='a b'`: its further names), the
+  address it answers on, what it serves, what port 80 does, and (development only) the
+  two ports that reset it. The scripts take `B` from the environment. Only the address,
+  the names, the site and its settings are tracked: after changing another setting,
+  `make -B`.
 - `tools/pack.py FOLDER OUT` (what `make` runs): every file becomes its response (status
   line, headers, body), found through a hash table of paths. A folder's `index.html` is
   served at the folder's name with a slash, the name without it redirects there,
   `404.html` is what unknown paths get, files and folders whose names begin with a dot
-  are left out (but `.well-known`). OUT/site.json says what each path must return (for
-  the tests), OUT/page80.bin what port 80 says.
+  are left out (but `.well-known`). The page for unknown paths has every header a file
+  has but Cache-Control; a folder's redirect and the 405 have the HSTS one; port 80 has
+  none (a browser may not believe it there). OUT/site.json says what each path must
+  return (for the tests), OUT/page80.bin what port 80 says.
 - `tools/suite.sh [JOBS] [name...]`: everything below, a few at a time, one line each
   (52 runs, three minutes). `SMP=1` or `SMP=4` in front for other machines than the
   default of 2 processors. Its verdict is strict: one failed connection is a FAIL. Under
@@ -420,6 +456,11 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
 - A browser against the server: `tools/nssdb.py DIR/.pki/nssdb build-hz/ca.pem`, then
   `HOME=DIR google-chrome --headless=new --no-sandbox --user-data-dir=DIR/c --dump-dom
   https://2.28.113.14/`; `tools/ffcheck.py https://2.28.113.14/ build-hz/ca.pem "Hello"`.
+  Against a real name with a real certificate: Chrome as it is, and `REALDNS=1
+  tools/ffcheck.py https://15kb.org/ EMPTYFILE "served by"` (no CA to add; without
+  REALDNS it looks every name up as 127.0.0.1, where the tests' servers are).
+- SSL Labs: https://www.ssllabs.com/ssltest/analyze.html?d=15kb.org&hideResults=on&latest
+  in a browser (a minute; `hideResults` keeps it off the boards of recent results).
 
 ## The certificate (`tools/gen.py`, `cert/`)
 - `cert/server.key` (ECDSA P-256) and `cert/server.pem` (leaf, then intermediates) are the
@@ -428,11 +469,15 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
   before). To use a certificate from elsewhere, put those two files there (and no
   `ca.pem`); `tools/mkchain.py DIR` makes a realistic test chain.
 - If they are missing, gen.py makes a 210-byte leaf for `NAME` (default 127.0.0.1; an IP
-  address or a DNS name) and its CA, `cert/ca.pem`. There is no CA key: the leaf's signature
+  address or a DNS name; and for the names of `SAN`, 2 bytes and its length each) and
+  its CA, `cert/ca.pem`. There is no CA key: the leaf's signature
   is chosen first (r = 5, s = 1) and the CA's public key is solved from the verification
   equation. Nobody knows that key's private half, so trusting this CA is harmless.
 - gen.py also writes `build/ca.pem` (what tests trust; empty for a real chain) and
-  `build/name` (the name tests ask for; they always connect to 127.0.0.1 or the tap).
+  `build/name` (the name tests ask for; they always connect to 127.0.0.1 or the tap;
+  and where port 80 sends everybody): `NAME` if the certificate is for it, else the
+  certificate's first name. Let's Encrypt sorts a certificate's names: without that
+  rule `www.example.org` beside `example.org` would be fine and `api.` would win.
 - A chain over ~1.1 KB makes the handshake reply longer than one TCP segment
   (`tools/mkchain.py cert-real`, `make B=build-real CERT=cert-real`: a flight of 1,909
   bytes; run the loss and reorder tests with it after touching `.resend` or `tcp_send`).
@@ -817,7 +862,9 @@ removing the ones about TLS.
   nothing else. Of the ClientHello the cipher suites, the versions, the groups and the
   x25519 key share are looked at (`handshake` walks the extensions; every length on the
   way is bounded by the ClientHello's end, and what is looked at inside an extension by
-  that extension's): no name (SNI), no ALPN (we speak HTTP/1.1 whatever the client
+  that extension's): no name (SNI: a client gets the one site whatever it calls us,
+  and its certificate says which names that is good for), no ALPN (we speak HTTP/1.1
+  whatever the client
   offers), no signature algorithms (ours is ecdsa_secp256r1_sha256, which every TLS 1.3
   client must have).
 - The client's Finished is not checked as such: it carries handshake keys, fails the tag
@@ -1037,6 +1084,21 @@ line feeds in the response, memory that is written and executed.
 - A ClientHello's extensions come in any order (Chrome shuffles them), and the short ones
   can be the last: a walk that wants 36 bytes behind every header, as the search for the
   key share did, would not see a `supported_versions` at the end.
+- What goes up is looked at header by header, every kind of answer: 15kb.org went up
+  without HSTS because pack was not told `--hsts` (status and Location had been looked
+  at, the list of headers not), and the answers that are no file (404, a folder's
+  redirect, 405) had never carried one header about security: nobody had read a 404's
+  headers until the day they mattered. `curl -sSI` on each kind, and tools/k3test.sh
+  does it now.
+- Which certificates a chain can do without is a question about other people's trust
+  stores, not this machine's. `openssl verify -untrusted FIRST-N-CERTS LEAF` says what
+  verifies here (leaf and intermediate did not: the new root is in no store), and here
+  three of the four did, because this machine has ISRG Root X2; an iPhone of 2021 has
+  not. Let's Encrypt's compatibility page lists who has which root.
+- A grade is what the grader says today. SSL Labs' rating guide (last changed in May
+  2025) does not know post-quantum key exchange; its test of November 2026 warns about
+  a server without it, and with a warning there is no A+. The same for a review's
+  "this gets you an A+": run the test.
 
 ## Tried and rejected
 - Compressed EC point in the leaf: Firefox says SEC_ERROR_UNSUPPORTED_EC_POINT_FORM.

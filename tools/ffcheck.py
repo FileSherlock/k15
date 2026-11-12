@@ -7,8 +7,8 @@ trusted root first (tools/nssdb.py; what Settings > Certificates > Import does).
 no certificate exceptions, so
 the page only loads if Firefox accepts the chain and the name. Prints the error page's code
 otherwise. Exit 0 only if EXPECTED-TEXT shows up. A name that is not an IP address is
-resolved to 127.0.0.1. Unlike --screenshot, this never leaves Firefox hanging on an error
-page.
+resolved to 127.0.0.1 (the tests' servers are there), unless REALDNS=1 says the name is
+a real one. Unlike --screenshot, this never leaves Firefox hanging on an error page.
 
 If Firefox is a snap, its binary is started directly: the snap launcher needs privileges
 that sandboxes (and some desktop apps' terminals) don't pass on, and a Firefox started
@@ -38,7 +38,7 @@ with open(os.path.join(prof, "user.js"), "w") as f:
     f.write(f'user_pref("marionette.port", {mport});\n'
             'user_pref("browser.shell.checkDefaultBrowser", false);\n'
             'user_pref("datareporting.policy.dataSubmissionEnabled", false);\n'
-            + ("" if host.replace(".", "").isdigit() else f'user_pref("network.dns.localDomains", "{host}");\n'))
+            + ("" if host.replace(".", "").isdigit() or os.environ.get("REALDNS") else f'user_pref("network.dns.localDomains", "{host}");\n'))
 
 ff = subprocess.Popen([firefox, "--headless", "--marionette", "-no-remote", "-profile", prof],
                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
