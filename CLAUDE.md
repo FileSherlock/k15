@@ -10,7 +10,7 @@ taken off its machine contract and put on a Hetzner cloud server. Decided with t
   AES-GCM), all the cores and all the RAM, and timers for the tail. **Security can never
   be lowered, only raised.** The measure is still something like connections divided by
   the size of the binary, so a feature has to pay for its bytes. The image is one assembly
-  file (10,561 bytes): don't golf it, don't bloat it.
+  file (11,094 bytes): don't golf it, don't bloat it.
 - security as in k2 (below) still holds for everything behind TLS
 
 ## Where it stands
@@ -22,13 +22,38 @@ segments and made-up clients, two hashed connection tables sized from the machin
 certificate on 443 (ChaCha20-Poly1305 and AES-128-GCM), the same page over plain HTTP on
 80, keep-alive requests on both.
 
-On the server (2026-11-11, late, from the user's machine, RTT 11 ms; a `DEBUG=1 LIFE=8`
-image): both processors answer (the debug page says which); a handshake costs 375,000 to
-383,000 cycles there when the nonces were made while idle, which at 2.1 GHz is 5,500 a
-second and processor, about 4,500 under full load; a verified HTTPS fetch with curl takes
-35 ms (49 before), a keep-alive request 10 ms (one round trip), both ciphers; 600 TLS
-connections opened with 8 in flight in 1.8 s, all held and fetched; the knock resets it.
-What it does under real load is still to be measured, from a load generator.
+On the server under load (2026-11-12, from a load generator 0.4 ms away; method and all
+the numbers in `bench/README.md`), next to nginx and Caddy with the same page, key and
+certificate:
+
+| on the server (2 vCPUs) | k3 | nginx + BoringSSL | nginx + OpenSSL 3.5 | Caddy |
+|---|---|---|---|---|
+| new TLS connections a second (full handshake) | 8,800 - 9,100 | 3,900 - 4,100 | 2,100 - 2,200 | 1,800 |
+| HTTPS requests a second, connections kept | 109,000 - 122,000 | 47,000 | 37,000 - 40,000 | 9,000 - 12,000 |
+| new plain connections a second | 30,000 - 35,000 | 17,000 - 22,000 | 16,000 - 22,000 | 7,000 |
+| HTTP requests a second, connections kept | 110,000 - 128,000 | 60,000 - 71,000 | 58,000 - 68,000 | 14,000 |
+| memory for a held connection: plain, TLS | 20 B, 128 B | 3.2 KiB, 7.1 KiB | 4.0 KiB, 25.8 KiB | |
+
+- Only the first row is k3's own limit (its processors 2 to 5% idle; 460,000 cycles of
+  both processors' time per connection, nginx 1.0 and 1.9 million; the same rate when
+  the client asks as browsers do, with two key shares in 1.5 KB). In the other three
+  the server's network path is: about 130,000 frames a second each way, at which k3's
+  processors are 80 to 89% idle (2,400 cycles a plain request, 4,800 over TLS, driver
+  included). nginx and Caddy are at their processors' limit in every row.
+- With 4,096 new TLS connections in flight: median 0.33 to 0.53 s, 99% 0.8 to 1.6 s (six
+  runs), no frame lost, none over 10 s (nginx: 0.85 s and 1.8 s at the median). With
+  4,096 new plain connections in flight k3 asks more of the path than it carries: 1% take
+  a second longer (a SYN lost on the way; the same for nginx), and up to 0.02% lose it
+  four times running and take over 10 s (83 of 517,000 in the worst run; nginx, which
+  does not get to the path's limit, none).
+- Held: 60,000 TLS connections (what one client address has ports for), each with the
+  chain verified, held and fetched over: 30 runs after the last change, 1.8 million
+  connections, all but one that the client could not start. 60,000 plain ones the same.
+- Chrome and Firefox fetch from it there, with our CA as a trusted root in throwaway
+  profiles (2026-11-12).
+- From the user's machine (RTT 11 ms; 2026-11-11): a verified HTTPS fetch with curl takes
+  35 ms, a keep-alive request 10 ms (one round trip), both ciphers; a handshake costs
+  375,000 to 383,000 cycles on the server when the nonces were made while idle.
 
 | measured here (Ryzen 7 3800X, KVM) | |
 |---|---|
@@ -44,45 +69,44 @@ What it does under real load is still to be measured, from a load generator.
 | at 5% loss, 12 runs of each | 2 fetches of 240,000 ran past tapc's 60 s: a lost SYN-ACK leaves a Linux client with a retransmission timeout of 3 s, then 6 s, and two more losses on that connection are a minute (captured). No fault of ours, but ours to shorten: the timer in the plan |
 | emulated (KVM=0) | boots in 7 s (the tables for the curves), `measure.sh` passes |
 
-Before that, the 32-bit image on the server (2026-11-11, early): HTTPS and HTTP fetched
-with curl, Chrome and Firefox; 400 TLS connections held and fetched; 10 x 1,000 plain
-connections; 60 of 60 single fetches in 49 ms (HTTPS) and 24 ms (HTTP) each. The browsers
-have not been pointed at the 64-bit image on the server yet (locally they have).
 
 ## Plan
 Done of the user's four gaps: (1) the handshake but for session tickets, (2) records,
-(3) processors and RAM but for the offloads. Not done: (4) timers.
+(3) processors and RAM but for the offloads, (4) of the timers the one for SYN-ACKs. And
+it has been measured on the server under load, next to nginx and Caddy.
+
+What that showed decides the order: on the server only new TLS connections are bounded
+by k3's processors. Records, requests and plain connections are bounded by the network
+path, at a fifth of what k3 could do.
 
 **Next, in the order of what they are worth:**
-- **Measure it on the server under load.** It runs there (above); the numbers that count
-  (a ramp of handshakes, held connections in 4 GiB, plain connections a second) need a
-  load generator next to it (the user's; `tools/rawc.c` can use a real interface), not
-  a home connection.
-- **A retransmission timer** (gap 4). We still never send anything unasked: a lost SYN-ACK
-  costs the client its SYN timeout (1 s) and after that a retransmission timeout of 3 s
-  for the rest of the connection (it has no round-trip time to go by), everything else its
-  retransmission timeout (200 ms and up, or its tail loss probe). A queue of what was sent with a fixed timeout
-  is in time order by itself (no wheel needed); when an entry comes due and its connection
-  still lacks an ack, treat it as if the client had asked (`.resend`). For a SYN-ACK the
-  entry has to carry the SYN (there is no slot yet).
 - **Session tickets** (gap 1c). A ticket sealed under a key made at boot, psk_dhe_ke only
   (so forward secrecy stays), saves the signature and the certificate on a return visit,
-  not X25519: about a third of a handshake. Needs a real ClientHello parser (today: a
-  search for the key share, `handshake`), the binder check, the PSK key schedule and the
-  resumption secret (which needs the client's Finished: computable, it is a function of
-  the transcript).
-- **Checksum offload** (gap 3, the rest): the card offers CSUM and GUEST_CSUM (TSO too:
-  no use for a page of one segment). Or a 64-bit `csum` first: it is still 16 bits at a
-  time.
+  not X25519: about a third of a handshake. It is also the one thing nginx can do that
+  the comparison left out (bench/README.md). Needs the walk through the ClientHello's
+  extensions (`handshake` has it, for the key share) to find pre_shared_key as well, the
+  binder check, the PSK key schedule and the resumption secret (which needs the client's
+  Finished: computable, it is a function of the transcript).
 - **The handshake further.** Where its 430,000 cycles go: the ladder for the client's
   share 142,000 (256 steps of 529: ten multiplications of 30, eight additions of 4, and
   what the register machine costs around them), k G for the signature 86,000, our own
   share 31,000, the inversion 20,000, SHA-256 about 60,000 (75 blocks of 840), the rest
-  records and TCP. A squaring of its own, a short multiplication for a24, HMAC pads kept
-  between calls and X25519 key pairs made while idle are each a few percent.
-
+  records and TCP. OpenSSL's assembly does the ladder in 113,000 and the signature in
+  71,000 on the same machine: there is a fifth to be had. A squaring of its own, a short
+  multiplication for a24, HMAC pads kept between calls and X25519 key pairs made while
+  idle are each a few percent.
+- **A retransmission timer for data** (gap 4, the rest). A SYN-ACK is sent again (done:
+  "How TCP works here"). Everything else we sent and lost still waits for the client's
+  retransmission timeout (200 ms and up, or its tail loss probe). A queue of what was
+  sent with a fixed timeout is in time order by itself (no wheel needed); when an entry
+  comes due and its connection still lacks an ack, treat it as if the client had asked
+  (`.resend`). Like the SYN-ACKs: only when the processor has nothing waiting.
 **Later.** A real certificate (needs a name; then no `--cacert`), DHCP instead of a
-baked-in address, HelloRetryRequest, taking out the reset knock, size.
+baked-in address, HelloRetryRequest, taking out the reset knock (hcloud resets the server
+now), size. Rings for the processors there are, not for four (in 4 GiB, 64 MiB go to
+rings nobody uses). Checksum offload (the card offers CSUM and GUEST_CSUM): nothing on
+the server waits for checksums, so only for a machine whose network is faster than its
+processors. Unikraft and F-Stack next to k3 (bench/README.md says what that takes).
 
 ## What "secure" means here
 A standard validating client gets server authentication, confidentiality, integrity and
@@ -107,9 +131,9 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
 ## Commands
 - `make` assembles `src/os.asm` into `build/os.bin` (loaded at 1 MiB) and `build/disk.img`
   (`src/boot.asm` + the image; what the tests boot). `python3 tools/sizes.py build/os.lst`
-  = bytes per routine. (Of 10,549: boot, driver and the other processors 1,900, network
-  2,700, TLS handshake and key schedule 1,000, SHA-256 540, curves 2,800 with their
-  programs and constants, the two ciphers 1,160, certificate, response and tables 450. A
+  = bytes per routine. (Of 11,094: boot, driver and the other processors 2,300, network
+  2,750, TLS handshake and key schedule 1,200, SHA-256 450, curves 2,850 with their
+  programs and constants, the two ciphers 1,170, certificate and response 330. A
   flat binary: no padding anywhere.) `make B=dir CERT=dir NAME=n IP=a.b.c.d KNOCK=a,b`
   builds another image: its identity, the name in a generated certificate, the address it
   answers on, and (development only) the two ports that reset it. The scripts take `B`
@@ -148,10 +172,15 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
 - `make B=build-dbg DEBUG=1` builds an image that counts things (`count n` in the source)
   and shows six counters, four hex digits each, in place of the end of the page on port
   80: frames with a bad length or checksum, cycles per frame handled (an average since
-  boot), connections refused for lack of room, early segments, resends, RSTs sent (those
-  of the processor that answers). This is how the reordering was found on the server and
-  how the cost of a frame was taken apart. Not for images that are measured or kept
-  running (and rawc and tapc don't know its page).
+  boot), connections refused for lack of room and frames lost to a full ring, early
+  segments, resends, RSTs sent (those of the processor that answers; the page's first two
+  digits are how many processors take frames, less 1, and which one answered). Four
+  digits are the low 16 bits: 69,277 cycles a frame reads `0E9D`. This is how the
+  reordering was found on the server and how the cost of a frame was taken apart. With
+  `DEBUG=2` the fourth and sixth are instead the turns the polling loop made with nothing
+  to do (in units of 4,096) and the time (in units of 2^24 cycles): how busy a processor
+  is (`bench/busy.sh`). Not for images that are measured or kept running (and rawc, tapc
+  and measure.sh's check of port 80 don't know its page).
 - `unshare -Urn ./tap.sh build/rawc N [W]` (`gcc -O2 -o build/rawc tools/rawc.c`): the
   scale test. N plain connections made of raw packets on the tap, from as many source
   addresses as it takes (12 bytes each in the client, no sockets): each is opened and
@@ -166,6 +195,18 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   SYNs, acks and data from clients that don't exist (`tools/flood.py`) take none. With
   `IDLE=0` as well, a connection quiet for a minute or two may be replaced (default: about
   an hour): the way to test that rule. `TSHARE=n` gives the TLS table 1/2^n of the memory.
+- `tools/bench.c` (`gcc -O2 -o build/bench tools/bench.c -lssl -lcrypto`) measures rates,
+  of k3 and of what it is compared with: P processes with W connections each; a
+  connection is made, does the TLS handshake (1.3, X25519, AES-128-GCM unless `SUITES` or
+  `KEX` say otherwise: `KEX='*X25519MLKEM768:*X25519'` is the 1.5 KB ClientHello with two
+  key shares that browsers send; the chain is verified only with `CA=file`), fetches the
+  page `KA` times, is closed with a reset and made again, for T seconds. `DST=ip:port`,
+  `PLAIN=1` for port 80, `KA=1000000` for requests on connections that stay. It prints
+  connections and requests a second, errors, timeouts (`TIMEOUT`, 10 s) and how long one
+  took: median, 90%, 99%, 99.9%, longest. `bench/run.sh IP` is the eleven rows of the
+  comparison, `bench/busy.sh IP ENV...` one run with how busy k3's processors were (a
+  `DEBUG=2` image), `bench/hold.sh` 60,000 connections held with tapc; `bench/README.md`
+  has the method, the other servers' configurations and the results.
 - `tools/load.py` (through slirp, `PORT=`): `hold N`, `burst K`, `seq N` (handshake rate),
   `ka N` (keep-alive rate). Start a VM first: `source tools/vm.sh; boot` with `B`, `PORT`
   and `IMG=$B/os.bin` set.
@@ -187,7 +228,8 @@ SeaBIOS then puts the card's registers far above 4 GiB too; both are tested that
 The server (seen over ssh): "Hetzner vServer/Standard PC (Q35 + ICH9)", SeaBIOS (no UEFI),
 2 vCPUs, 4 GB, "Intel Xeon Processor (Skylake, IBRS, no TSX)" at 2,100 MHz with rdrand,
 aes, pclmulqdq, ssse3, sse4.1, adx, bmi2 (all needed), pdpe1gb, x2apic, avx512f/bw/vl, no
-sha_ni, no avx512ifma. RAM: 1 MiB to 0x7ffdc000 below 4 GiB, the other 2 GiB above.
+sha_ni, no avx512ifma. RAM: 1 MiB to 0x7ffdc000 below 4 GiB, another 1,952 MiB above (to
+0x17a000000).
 Network: 1af4:1041 at 01:00.0, BAR 4 at 0xfd000000 (64-bit, but below 4 GiB),
 common/ISR/device/notify structures at +0/+0x1000/+0x2000/+0x3000, notify multiplier 4,
 rings of 256, **one queue pair** (no multiqueue on offer; it offers CSUM, GUEST_CSUM, TSO,
@@ -221,13 +263,23 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
   port 22 means Linux is booting; a timeout means the image is still there). This is a backdoor for
   development (two port scans in a row could trigger it); it is only assembled with KNOCK
   set and must be left out of anything that gets benchmarked or kept running.
+- `hcloud` is set up on the user's machine (since 2026-11-11 the user lets Claude create,
+  reset and delete servers with it): `hcloud server reset k3` is the reset button, and
+  boots Linux (GRUB's default) whatever the image does. So an image that is measured
+  needs no knock: build it without `KNOCK=`, deploy, measure, `hcloud server reset k3`.
+- A load generator is a second server next to it, for an hour: `hcloud server create
+  --name k3-load --type ccx33 --image ubuntu-26.04 --location nbg1 --ssh-key KEY --label
+  purpose=k3-bench` (KEY from `hcloud ssh-key list`; the account's limit on dedicated
+  cores allows one ccx33, a second generator has to be a shared type such as cpx42), then
+  `bench/README.md`. It costs by the hour: `hcloud server delete k3-load` when done, and
+  `hcloud server list` to see that nothing is left.
 - The image never answers ping; the user's reset button in the Hetzner console is the
   fallback if a build doesn't come up or the knock doesn't work. A fault resets the
   machine by itself (there is no IDT), which boots Linux again; a hang does not.
-- Be modest with load from the user's home connection; the user is setting up a separate
-  load generator. From here: `B=build-hz DST=2.28.113.14:443 build/tapc 0.0.0.0 20000 400
-  www/index.html`, and with `PLAIN=1 INFLIGHT=32` and `DST=...:80` for port 80. Base ports
-  below 32768.
+- Be modest with load from the user's home connection: load comes from a generator next
+  to the server (above). From here, for a look: `B=build-hz DST=2.28.113.14:443 build/tapc
+  0.0.0.0 20000 400 www/index.html`, and with `PLAIN=1 INFLIGHT=32` and `DST=...:80` for
+  port 80. Base ports below 32768.
 - A browser against the server: `tools/nssdb.py DIR/.pki/nssdb build-hz/ca.pem`, then
   `HOME=DIR google-chrome --headless=new --no-sandbox --user-data-dir=DIR/c --dump-dom
   https://2.28.113.14/`; `tools/ffcheck.py https://2.28.113.14/ build-hz/ca.pem "Hello"`.
@@ -282,6 +334,7 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
 - `tools/gen.py`: certificate, HTTP response, curve programs and constants ->
   `build/*.inc`. `tools/ip.py`, `tools/mkdisk.py`: the baked-in address, the disk image.
 - `tools/vm.sh`: QEMU command line and curl options, sourced by the test scripts
+- `tools/bench.c`, `bench/`: the comparison with other servers (see Commands)
 - `tools/ffcheck.py`, `tools/nssdb.py`, `tools/certerr.py`: the browser checks' helpers
 
 ## Memory
@@ -295,21 +348,30 @@ What the page tables say (2 MiB pages; `start`):
   page tables at 9 MiB and their memory from 10 MiB.
 - Behind that, from 16 MiB up, **the table space**: every 2 MiB of RAM that the loader's
   memory map calls available, one after the other, wherever it is. On the server that is
-  the rest of the 2 GiB below 4 GiB and then the 2 GiB above. Boot divides it: n
-  handshake buffers and n places of 2 KiB for early segments (n a power of two: about
-  1/32 and 1/64 of it; one mask, `HSMASK`), then the table for TLS (an eighth of the
-  rest: `TSHARE`), then the table for port 80. In a 4 GiB machine: 16,384 buffers, 3.9
-  million TLS slots, 174 million for port 80.
+  the rest of the 2 GiB below 4 GiB and then what is above. Boot divides it: n handshake
+  buffers and n places of 2 KiB for early segments (n a power of two: about 1/32 and 1/64
+  of it; one mask, `HSMASK`), 4 n SYNs of late (128 bytes each, and a dword for when:
+  `tnote`), four rings of n frames (2 KiB each: one ring per processor, `drain`), then
+  the table for TLS (an eighth of the rest: `TSHARE`), then the table for port 80. In a
+  4 GiB machine n is 16,384, and the buffers, places, SYNs and rings take 232 MiB of it;
+  on the server (3,982 MiB of table space) that leaves 3.8 million TLS slots and 172
+  million for port 80.
 - The card's structures (and the local APIC), each in 4 MiB of its own in GiB 505.
 Variables in BSS are reached relative to the instruction pointer (`BSS equ mb + ...`:
 nasm won't do that for a plain number). Needs 64 MiB or more.
 
 ## Processors
-The server's card has one receive queue, so the others are fed in software. The first
-processor (the one that booted) takes every frame off the ring; a frame of a connection
-that is another's (`prf` of its addresses and ports, the low bits of the word that also
-picks the place of an early segment) is copied into that processor's ring (256 frames),
-which is all that one polls. Everything else it does itself, with the same code:
+The server's card has one receive queue, so the processors are fed in software. The
+first one (the one that booted) empties the device's ring (`drain`): each frame is copied
+into the ring of the processor whose connection it is (`prf` of its addresses and ports,
+the low bits of the word that also picks the place of an early segment), its own
+included. A ring holds n frames (16,384 in 4 GiB): with handshakes to make, that is half
+a second of work; beyond that frames are lost, and clients send them again. Each
+processor handles the frames in its ring, one at a time (`ring1`), with the same code.
+The device's ring is small (256 on the server), and what finds no room in it is lost on
+the host's side: so the first processor empties it before every frame it handles, and from inside whatever takes long
+(`bdrain`: every 64 steps of the ladder, after each k G that `sign` has to make itself,
+and while it waits for the transmit lock or a free transmit buffer).
 - Each of the others has page tables of its own that differ from the first one's in two
   places: BSS and page 0 are memory of its own (BSS a copy of the first one's as it was
   when everything was set up). So all that is at a fixed address there (the frame, the
@@ -330,11 +392,12 @@ which is all that one polls. Everything else it does itself, with the same code:
   on its own processor in the same microsecond.
 
 ## How TCP works here
-No timer and no copy of what was sent, except the handshake flight. Our side of a connection
-is a function of its keys: the flight, then one record of `RL` bytes per request answered. A
-connection knows the next byte it expects (`C_NXT`), our next byte (`C_SND`) and the
-client's last ack (`C_ACK`); a TLS connection also how many requests it has answered
-(`C_ST`), from which follows where its records start.
+One timer (for SYN-ACKs, below) and no copy of what was sent, except the handshake
+flight. Our side of a connection is a function of its keys: the flight, then one record
+of `RL` bytes per request answered. A connection knows the next byte it expects
+(`C_NXT`), our next byte (`C_SND`) and the client's last ack (`C_ACK`); a TLS connection
+also how many requests it has answered (`C_ST`), from which follows where its records
+start.
 - In-order data is taken (a segment that overlaps what we have is trimmed), data from
   further on is kept (see below) and gets an ack of what we expect, a keep-alive probe
   gets an ack.
@@ -377,6 +440,17 @@ client's last ack (`C_ACK`); a TLS connection also how many requests it has answ
   of the time. Dropping the early one cost a client timeout (+220 ms) on a quarter of all
   fetches; Linux on the same server counts the same swaps (TCPOFOQueue) and hides them the
   same way.
+- The one thing sent unasked is a SYN-ACK again. A SYN gets no slot, so the SYNs of late
+  are kept on the side (`tnote`: 4 n places, a client's picked by its hash, the frame as
+  it came), and a connection made takes its SYN out. A polling loop that has no frame to
+  handle goes round the places (`tidle`, 8 a turn); a SYN still there after 2^29 cycles
+  (a quarter second on the server) goes through `tcp` once more, three times at most,
+  one a tick (2^20 cycles) at most: a flood of SYNs gets at most 2,000 SYN-ACKs a second
+  and processor on top of its own. Without it a lost SYN-ACK costs the client a second,
+  and a retransmission timeout of 3 s for the rest of the connection. Only when idle:
+  while frames wait in a processor's ring, the client's answer may be one of them (it
+  ran on every frame at first, and under load the clients counted thousands of second
+  SYN-ACKs for connections they had made long ago: `TcpInErrs` in nstat).
 - Port 80 is the same machine without keys: its "records" are the bare response, all the
   same, and its requests are found by counting line ends (`.plain`: two in a row, CRs
   ignored, end a request; a request body would be read as more request lines).
@@ -486,8 +560,9 @@ ours).
 From k2, where they saved bytes. Ask before removing the ones about TLS.
 - TLS 1.3 only, two suites: TLS_CHACHA20_POLY1305_SHA256 and TLS_AES_128_GCM_SHA256,
   X25519, ecdsa_secp256r1_sha256. A ClientHello without an x25519 share gets a useless
-  answer (no HelloRetryRequest). The key share is found by searching the ClientHello for
-  its four bytes of group and length, not by parsing the extensions.
+  answer (no HelloRetryRequest). Of the ClientHello only the cipher suites and the x25519
+  key share are looked at (`handshake` walks the extensions to the key shares and those
+  to ours; every length on the way is bounded by the ClientHello's end).
 - The client's Finished is not checked as such: it carries handshake keys, fails the tag
   check like any forgery, and is skipped. The first request proves the same thing.
 - Client data is authenticated but never decrypted: every authentic record gets one HTTP
@@ -498,10 +573,10 @@ From k2, where they saved bytes. Ask before removing the ones about TLS.
   middleboxes.
 - After 2^32 requests on one connection its counter wraps to "no ClientHello yet": the
   connection is dead, the nonces never repeat.
-- TCP: no SACK, timestamps or window scaling, no timers, we never close first (not even
-  for `Connection: close`: the client has the Content-Length). The IP header's checksum
-  is not looked at: what we use of that header is fixed or goes into TCP's checksum, which
-  is. Bare-LF HTTP response.
+- TCP: no SACK, timestamps or window scaling, no timer but the one for SYN-ACKs, we
+  never close first (not even for `Connection: close`: the client has the
+  Content-Length). The IP header's checksum is not looked at: what we use of that header
+  is fixed or goes into TCP's checksum, which is. Bare-LF HTTP response.
 - HTTP: any request, whatever it asks for, gets the page; a request body is not understood.
 - `keys` writes 20 junk bytes after an IV: the handshake makes both key blocks in `KA` and
   copies them into the slot.
@@ -510,7 +585,9 @@ From k2, where they saved bytes. Ask before removing the ones about TLS.
 - Secrets are not wiped after use: the last handshake's are overwritten by the next, and
   unused nonces wait in the stock. (The private key is in the same memory.)
 Gone since k2: the ground server random (it is random now), r and s forced to 32 bytes by
-retrying, the tag compared with `repe cmpsb`, the calls through interrupt gates.
+retrying, the tag compared with `repe cmpsb`, the calls through interrupt gates, the key
+share found by searching the ClientHello for its first four bytes (see "Learned the hard
+way").
 
 ## Learned the hard way
 - Under KVM the NE2000 cost a VM exit per byte of port I/O (39 handshakes/s); virtio-net
@@ -531,7 +608,7 @@ retrying, the tag compared with `repe cmpsb`, the calls through interrupt gates.
   wrong. `tools/pcap.py FILE IP PORT` prints one connection from a `tcpdump -w` capture
   (in the namespace: `tcpdump -Z root -U -i k2t -w FILE`, and `kill -9` it afterwards: it
   does not go on SIGTERM there; lines `<-` are captured before the loss filter, lines `->`
-  after netem). tapc prints the port of each failed connection.
+  after netem). tapc prints the port of each failed connection, and why it failed.
 - A failure of 1 in 10,000 connections does not show in one run. Run the lossy test 16
   times, and the same on the last commit (`git worktree add`): that told a regression
   from a bug that had always been there (the duplicate-ack resend, "How TCP works here").
@@ -590,6 +667,48 @@ retrying, the tag compared with `repe cmpsb`, the calls through interrupt gates.
 - `pkill -f pattern` over ssh kills the ssh command that carries the pattern too: write a
   pid file, or `pgrep -f "http[.]server"`.
 - Hetzner's web console garbles `|` and `[`: use ssh.
+- A ceiling is not ours until it is measured from inside. On the server plain HTTP stops
+  at 35,000 connections a second and keep-alive at 130,000 requests, whatever is asked:
+  k3's processors are 80 to 89% idle there (`DEBUG=2`, `bench/busy.sh`), a second load
+  generator adds nothing (60,000 + 65,000), and one processor alone gets the same
+  (133,000, 85% idle). It is the instance's network path: about 130,000 frames a second
+  each way. The load generator had spare time too (its `/proc/stat`), which alone would
+  not have told.
+- What the load generator's own TCP counted says what kind of trouble it is (`nstat -n`
+  before, `nstat` after): TcpExtTCPSynRetrans (a SYN or its answer lost, or kept waiting
+  a second), TcpExtTCPTimeouts (the same for data), TcpInErrs (a SYN-ACK for a
+  connection that was made long ago: ours, sent again). In the times: a median far above
+  the round trip with a smooth tail is a queue; a step at 1 s is a SYN, at 200 ms a
+  segment.
+- With more connections in flight than can be served at once, what matters is where the
+  frames wait. Rings of 4,096 lost 3% of them at 4,096 new TLS connections in flight (a
+  count in `drain` showed it), and a client whose SYN was answered late takes three times
+  that wait as its retransmission timeout: three losses in a row were ten seconds, 177
+  connections in 120,000. Rings of 16,384: nothing lost, 99% done in 0.8 to 1.6 s, none
+  over 10 s.
+- Waiting to send is no reason not to receive: the transmit ring (256) fills in bursts
+  (50,000 short waits in 12 s of new TLS connections), and while the first processor
+  waited there for the device, nobody emptied the receive ring.
+- One handshake in two million failed, and it took a million held connections on the
+  server to see it twice: the client said "bad record mac". The key share was found by
+  searching the ClientHello for the four bytes that introduce it (00 1d 00 20), as in k2.
+  Clients now send a second, post-quantum key share in front of it (OpenSSL 3.5, Chrome,
+  Firefox: X25519MLKEM768, 1,216 bytes that look random), and once in so many times
+  those bytes are in there. We then took 32 bytes of it for the client's key, and the
+  client could not read our answer. Found because tapc was made to print why a
+  connection failed (it only gave the port); settled by a test that puts the four bytes
+  into an earlier extension on purpose (`tools/abuse.py`), and by counting them in real
+  ClientHellos (10 in 24 million of this machine's). A shortcut that was sound for the
+  ClientHellos of its day can stop being so without a line of ours changing.
+- nginx against BoringSSL (`bench/build-nginx-boring.sh`): the C++ runtime must not be
+  dropped by the linker before the archives that need it: `--with-ld-opt="-L.../
+  boringssl/build -Wl,--no-as-needed -lstdc++ -Wl,--as-needed -lpthread"`.
+- `GROUPS=x command` gives the command nothing: bash keeps that name for itself. The rate
+  client's option for key shares had it, and "two key shares" measured one until it was
+  called `KEX`.
+- `pkill -f` and `pgrep -f` did it again, twice in one night: a pattern that is in the
+  command line of the shell that runs it (over ssh or here) kills that shell. `pkill -f
+  "holdloo[p]"`.
 
 ## Tried and rejected
 - Compressed EC point in the leaf: Firefox says SEC_ERROR_UNSUPPORTED_EC_POINT_FORM.
@@ -604,6 +723,16 @@ retrying, the tag compared with `repe cmpsb`, the calls through interrupt gates.
   made again instead of kept): a key in memory that opens every recorded session since
   boot. Forward secrecy would be lower: not done.
 - An X25519 key share reused for a short window, the same.
+- Getting past 130,000 frames a second on the server: telling the card that we take no
+  interrupts (kept, it is the truth; no difference measured), a second load generator,
+  the second processor left out so that the host has it: the same ceiling each time.
+- The SYN-ACK timer on every frame handled: under load it fired for clients whose answer
+  was waiting in our ring. It runs when a processor is idle.
+- Dropping SYNs first when a ring fills, instead of whatever comes: the wait would move
+  into the clients' SYN timers (1 s, 3 s, 7 s), which is worse for them than the same
+  wait in our ring. Not done.
+- A flood of small UDP packets to see what packet rate Linux takes on the same server: it
+  would look like an attack to the provider. Not done.
 
 ## Workflow
 `./measure.sh` after every change (a second; also once each with `DEBUG=1`, `KNOCK=` and
@@ -614,6 +743,7 @@ anything else, and with `SMP=1` after touching what the processors share. After 
 `.resend`, `tcp_send`, the handshake buffers or the cookie rules, also the lossy runs
 many times over (a loop of `B=build-real LOSS=3 ... taprunc.sh 500 1024 4`, 16 or more):
 what is wrong there is wrong once in thousands. Then the server (deploy, fetch, knock)
-for anything that could behave differently on a real machine.
+for anything that could behave differently on a real machine, and `bench/run.sh` from a
+load generator (bench/README.md) for anything that could change what it does under load.
 Commit when the user asks. (The night of 2026-11-11 was worked on a branch, `night`, with
 a commit per step, because nobody was there to ask.)

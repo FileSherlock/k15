@@ -8,9 +8,11 @@
 //
 // Env: DST (default 10.0.2.15:443, or :80 with PLAIN), P (processes), W (connections in
 // flight in each), T (seconds measured, after one of warm-up), KA (requests per connection:
-// 1 measures handshakes, many measures requests), SUITES and GROUPS (what the client offers:
+// 1 measures handshakes, many measures requests), SUITES and KEX (what the client offers:
 // default TLS_AES_128_GCM_SHA256 and X25519, so that every server is asked for the same
-// work), CA (a file: verify the chain against it, as a browser would; default: no
+// work; KEX='*X25519MLKEM768:*X25519' sends the two key shares, 1.5 KB of ClientHello, that
+// browsers and OpenSSL 3.5 send by default; the name is not GROUPS because bash keeps that
+// one to itself), CA (a file: verify the chain against it, as a browser would; default: no
 // verification, which leaves the client more time to ask), SRC (bind to this address),
 // TIMEOUT (seconds a connection may take, default 10).
 // Prints connections/s, requests/s, errors, and the time from connect() (KA=1) or from the
@@ -199,7 +201,7 @@ static void worker(void) {
         SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF);
         SSL_CTX_set_mode(ctx, SSL_MODE_RELEASE_BUFFERS);
         if (!SSL_CTX_set_ciphersuites(ctx, (e = getenv("SUITES")) ? e : "TLS_AES_128_GCM_SHA256") ||
-            !SSL_CTX_set1_groups_list(ctx, (e = getenv("GROUPS")) ? e : "X25519")) exit(2);
+            !SSL_CTX_set1_groups_list(ctx, (e = getenv("KEX")) ? e : "X25519")) exit(2);
         if ((e = getenv("CA"))) {
             SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
             if (!SSL_CTX_load_verify_locations(ctx, e, NULL)) exit(2);

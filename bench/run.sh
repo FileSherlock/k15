@@ -16,6 +16,8 @@ run() {
 run "https, new connections, 64"   DST=$IP:443 P=8 W=8
 run "https, new connections, 512"  DST=$IP:443 P=8 W=64
 run "https, new connections, 4096" DST=$IP:443 P=8 W=512
+# (as a browser asks: two key shares, X25519MLKEM768 in front, 1.5 KB of ClientHello in two segments)
+run "https, new, two key shares, 512" DST=$IP:443 P=8 W=64 KEX='*X25519MLKEM768:*X25519'
 run "https, keep-alive, 64"        DST=$IP:443 P=8 W=8 KA=1000000
 run "https, keep-alive, 512"       DST=$IP:443 P=8 W=64 KA=1000000
 run "http, new connections, 64"    PLAIN=1 DST=$IP:80 P=8 W=8
