@@ -89,6 +89,12 @@ were run in turn):
   the server (57 paths, every kind of client it plays); 1.5 MiB take 0.3 s; Chrome and
   Firefox load the test site's page with its stylesheet and picture, our CA trusted in
   throwaway profiles. `./k3 deploy --persist` survived a reset: back by itself in 90 s.
+- **https://15kb.org/ is k3** (since the evening of 2026-11-12): the folder `site/` (the
+  project's own page), a certificate from Let's Encrypt that `./k3 renew --force` got
+  (69 s from the command to a verified fetch, the server away for about a minute of
+  it), `--persist`. curl with the system's roots, Chrome with its own, `tlsprobe.sh`
+  and `sitecheck.py` pass against it. The image is 19,841 bytes: 16,552 of system, of
+  which 3,400 are the chain as Let's Encrypt sends it (four certificates), 3,289 of site.
 
 | measured here (Ryzen 7 3800X, KVM) | |
 |---|---|
@@ -107,8 +113,8 @@ were run in turn):
 Done of the review's four things (2026-11-12): files by path with nothing buffered; the
 gaps a browser or scanner finds (requests in several segments, HelloRetryRequest, port 80
 redirecting, HSTS, a timer for what we sent); W^X; and the one-command tool, of which
-`renew`'s part on the server (certbot) is written and not yet run: it needs a name, and
-the user's word, since it agrees to Let's Encrypt's terms in their name.
+`renew` got 15kb.org its certificate (first against Let's Encrypt's staging server,
+then the real one; the user agreed to the terms, the account has no email address).
 A second review the same day found four things, all fixed: `renew` would have reset the
 server every night from cron and run into Let's Encrypt's limit of five certificates a
 week (it now does nothing while the certificate has 30 days left); the key was made on
@@ -119,12 +125,14 @@ without TLS 1.3, without our cipher suites or without x25519 got a ServerHello i
 not asked for (it gets an alert and the connection's end).
 
 **Next, in the order of what they are worth:**
-- **A name and a real certificate.** The user has to say which name and point it at the
-  server. Then `./k3 renew --force` (certbot on the server's Linux for a request made
-  here, the image packed and started again), SSL Labs, and the project's own page served
-  by itself: the proof
-  the hook asks for. Let's Encrypt also gives certificates for IP addresses now, valid
-  for six days: possible without a name, at a reboot every five days.
+- **What is left of the proof.** The name is 15kb.org and the project's page is served
+  by itself. Still to do: SSL Labs (the user's to start: it publishes), `./k3 renew
+  2.28.113.14 build-15kb.org --reset 'hcloud server reset k3'` in the user's cron (the
+  certificate ends on 2027-02-10; renew does nothing before 2027-01-11), `www.15kb.org`
+  (it points at the server and port 80 sends it on, but the certificate has one name:
+  https://www.15kb.org/ is refused by clients; an image has one name), and a shorter
+  chain: Let's Encrypt sends four certificates (3.4 KB, a flight of three segments) where
+  leaf and intermediate would do for clients that know the new root.
 - **Segmentation offload** (the card offers CSUM and TSO). Large files go at a quarter
   of nginx's speed because a frame is a segment; with TSO a frame is up to 45 records
   (the device cuts where we would have: a record is a segment). Needs transmit buffers
@@ -194,7 +202,9 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   folder, name, address, certificate folder, headers, what port 80 does) and started. If
   no certificate comes, the image as it was is started again. The key is never on the
   server but inside the image. `--force` for the first one (the private CA's lasts until
-  2049). The part on the server is not yet run (see Plan). Everything `./k3` makes is
+  2049), `--staging` for Let's Encrypt's test server (its certificate is trusted by
+  nobody, so the fetch at the end fails: "did not answer" is then the expected last
+  line). Everything `./k3` makes is
   for its owner's eyes only (umask 077), and /boot/k3.bin on the server for root's.
 - `make` assembles `src/os.asm` into `build/os.bin` (loaded at 1 MiB) and `build/disk.img`
   (`src/boot.asm` + the image; what the tests boot), with the site of `www/` in it.
@@ -360,8 +370,17 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
   Linux has come up, unless /run/k3.hold exists: so k3 comes back by itself after a reset
   (90 s, measured), and `./k3 deploy`, which touches that file as soon as ssh answers,
   still gets in. Without `--persist` the next deploy takes the unit out again. The
-  server was left without it on 2026-11-12: Linux, /boot/k3.bin (the last image
-  deployed: the test site) and its GRUB entry, nothing else of ours.
+  server runs 15kb.org with it since 2026-11-12 (`build-15kb.org`, `cert-15kb.org`):
+  a deploy of anything else takes the site down, so put it back afterwards (`./k3
+  deploy 2.28.113.14 build-15kb.org --persist --reset 'hcloud server reset k3'`).
+  On its Linux: /boot/k3.bin, the GRUB entry, the unit, certbot and its account
+  (/etc/letsencrypt: no key of the site's).
+- The name: 15kb.org is the user's, at Namecheap, with Namecheap's name servers; `@` and
+  `www` are A records for 2.28.113.14 (TTL 300), set through Namecheap's API with the
+  settings of `~/.namecheap.env` (`namecheap.domains.dns.setHosts` replaces all records
+  at once: read them first with `getHosts`). This machine's resolver kept the old answer
+  for its 30 minutes: `curl --resolve 15kb.org:443:2.28.113.14`, or Chrome with
+  `--host-resolver-rules="MAP 15kb.org 2.28.113.14"`, until it forgets.
 - `curl --cacert build-hz/ca.pem https://2.28.113.14/` and `curl http://2.28.113.14/`
 - By hand, with the reset knock (development only): `make B=build-hz CERT=cert-hz
   NAME=2.28.113.14 IP=2.28.113.14 KNOCK=$(tr ' ' , < build-hz/knock)` and

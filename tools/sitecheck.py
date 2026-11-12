@@ -296,9 +296,13 @@ def main():
 
     check("records that are no requests get no answer and do no harm", not_requests)
 
+    # (two paths these ask for: the test site's, or on another site what there is)
+    pg = "/docs/" if "/docs/" in paths else "/"
+    fl = "/size/2500.bin" if "/size/2500.bin" in paths else big
+
     def pieces():
         c = Conn()
-        req = b"GET /docs/ HTTP/1.1\r\nHost: " + NAME.encode() + b"\r\n\r\n"
+        req = b"GET " + pg.encode() + b" HTTP/1.1\r\nHost: " + NAME.encode() + b"\r\n\r\n"
         ok = True
         for cuts in ([3], [5], [6], [20], [1, 2, 3, 4, 5, 6, 7], [len(req) + 21]):
             c.tls.write(req)
@@ -308,12 +312,12 @@ def main():
                 c.sock.sendall(data[at:cut])
                 at = cut
                 time.sleep(0.03)
-            ok &= same(c.response(), paths["/docs/"])
+            ok &= same(c.response(), paths[pg])
         pad = b"X-Pad: " + b"p" * 2900 + b"\r\n"      # one that takes three segments
         c.get("/", extra=pad)
         ok &= same(c.response(), paths["/"])
-        c.get("/docs/")
-        ok &= same(c.response(), paths["/docs/"])
+        c.get(pg)
+        ok &= same(c.response(), paths[pg])
         c.close()
         return ok
 
@@ -328,10 +332,10 @@ def main():
 
     def two_at_once():
         c = Conn()
-        c.tls.write(b"GET /size/2500.bin HTTP/1.1\r\n\r\n")
-        c.tls.write(b"GET /docs/ HTTP/1.1\r\n\r\n")
+        c.tls.write(b"GET " + fl.encode() + b" HTTP/1.1\r\n\r\n")
+        c.tls.write(b"GET " + pg.encode() + b" HTTP/1.1\r\n\r\n")
         c.sock.sendall(c.out.read())
-        ok = same(c.response(), paths["/size/2500.bin"]) and same(c.response(), paths["/docs/"])
+        ok = same(c.response(), paths[fl]) and same(c.response(), paths[pg])
         c.close()
         return ok
 

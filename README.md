@@ -1,5 +1,7 @@
 # k3
 
+**https://15kb.org/ is served by it.**
+
 k3 turns a folder of static files into a bootable x86-64 HTTPS server: 13 KB of system
 with the files behind it, in one image. There is no operating system underneath, because
 it is one: its own boot sector, long mode, a virtio-net driver, ARP, TCP, TLS 1.3 and as
@@ -39,7 +41,7 @@ What you get, and what you don't:
 - **Clunky on purpose.** Content and certificate are part of the image: a change is a new
   image and a reboot of a few seconds. Nothing renews by itself: `./k3 renew` is there to
   be run from cron, does nothing until the certificate has a month left, and then makes
-  the new key on your machine (its part on the server has not met Let's Encrypt yet).
+  the new key on your machine: only a request for a certificate travels to the server.
   One site per server, one address
   baked in, GET and HEAD and nothing else, requests of up to 4 KB, no compression, no
   conditional requests, TLS 1.3 clients only.
