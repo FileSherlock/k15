@@ -198,10 +198,6 @@ still to come.
   longer; with today's chain a handshake buffer of 8 KiB), and a HelloRetryRequest
   only when a client has neither share. It costs bytes and cycles a handshake: both
   to be measured, the model first, as with the curves.
-- **What is left of the proof.** `./k15 renew 2.28.113.14 build-15kb.org --reset 'hcloud
-  server reset k3'` in the user's cron (the certificate ends on 2027-02-10; renew does
-  nothing before 2027-01-12). The page links to the repository, which is public:
-  https://github.com/FileSherlock/k15 (since 2026-11-12, late).
 - **The chain** is the user's to shorten or not. Let's Encrypt sends four certificates
   (3,391 bytes: the leaf; YE1 or YE2; Root YE signed by ISRG Root X2; ISRG Root X2
   signed by ISRG Root X1). Leaf and intermediate alone verify nowhere: Root YE is in no
@@ -524,6 +520,17 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
   at once: read them first with `getHosts`). This machine's resolver kept the old answer
   for its 30 minutes: `curl --resolve 15kb.org:443:2.28.113.14`, or Chrome with
   `--host-resolver-rules="MAP 15kb.org 2.28.113.14"`, until it forgets.
+- Renewal: a systemd user timer on the user's machine (`15kb-renew.timer`, since
+  2026-11-12: daily at 04:30, and after a day the machine was off as soon as it is on)
+  runs `~/.local/bin/15kb-renew`, which is `./k15 renew 2.28.113.14 build-15kb.org
+  --reset 'hcloud server reset k3'` in `~/Desktop/k15`. It does nothing before 2027-01-12 (the
+  certificate ends on 2027-02-10), then gets a new one: the site away for a minute.
+  ssh to the server takes the key in the desktop's keyring agent, so the timer runs
+  while the user is logged in (a user unit, no linger), and the script starts nothing
+  when the agent holds no key (a reset that can't get in costs the site 90 s a day
+  for nothing). A failure shows on the desktop (notify-send) and in `journalctl
+  --user -u 15kb-renew`. Not cron: `crontab` can't be written from Claude's shell
+  (NoNewPrivs: its setgid is refused, "fopen: Permission denied").
 - `curl --cacert build-hz/ca.pem https://2.28.113.14/` and `curl http://2.28.113.14/`
 - By hand, with the reset knock (development only): `make B=build-hz CERT=cert-hz
   NAME=2.28.113.14 IP=2.28.113.14 KNOCK=$(tr ' ' , < build-hz/knock)` and
