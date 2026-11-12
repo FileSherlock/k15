@@ -137,10 +137,12 @@ after the other within an hour and a half):
   PQC (Post-Quantum Cryptography) key exchange" is no warning and not what keeps the
   A+ away: letsencrypt.org gets the same note and an A+ (checked 2026-11-12; neither
   takes a ClientHello that offers X25519MLKEM768 alone). What letsencrypt.org has and
-  15kb.org lacks: TLS 1.2 with TLS_FALLBACK_SCSV, and a CAA record. Which of the two
-  SSL Labs counts is not known: Qualys's notice of 2025-02-26 says a missing SCSV no
-  longer counts and is not looked for on a server of TLS 1.3 alone, and yet that is
-  the difference in the report. A CAA record would tell (and is worth having).
+  15kb.org lacked: TLS 1.2 with TLS_FALLBACK_SCSV, and a CAA record. The CAA record
+  is there now (late on 2026-11-12: Let's Encrypt may issue, nobody a wildcard), SSL
+  Labs' next scan saw it, and the grade stayed A (its API: `isExceptional` false here,
+  true there). So it is TLS 1.2 and its downgrade protection, though Qualys's notice of
+  2025-02-26 says a missing SCSV no longer counts and is not looked for on a server of
+  TLS 1.3 alone. The A+ is not to be had without speaking TLS 1.2, and we won't.
 
 | measured here (Ryzen 7 3800X, KVM) | |
 |---|---|
@@ -516,7 +518,8 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
   On its Linux: /boot/k15.bin, the GRUB entry, the unit, certbot and its account
   (/etc/letsencrypt: no key of the site's).
 - The name: 15kb.org is the user's, at Namecheap, with Namecheap's name servers; `@` and
-  `www` are A records for 2.28.113.14 (TTL 300), set through Namecheap's API with the
+  `www` are A records for 2.28.113.14 (TTL 300), and `@` has two CAA records, `0 issue
+  "letsencrypt.org"` and `0 issuewild ";"` (since 2026-11-12, late), set through Namecheap's API with the
   settings of `~/.namecheap.env` (`namecheap.domains.dns.setHosts` replaces all records
   at once: read them first with `getHosts`). This machine's resolver kept the old answer
   for its 30 minutes: `curl --resolve 15kb.org:443:2.28.113.14`, or Chrome with
