@@ -15,7 +15,7 @@ cd "$(dirname "$0")/.." || exit 1
 JOBS=${1:-4}
 shift
 WANT=" $* "
-LOGS=${LOGS:-$(mktemp -d /tmp/k3-suite.XXXXXX)}
+LOGS=${LOGS:-$(mktemp -d /tmp/k15-suite.XXXXXX)}
 mkdir -p "$LOGS"
 
 AES=SUITES=TLS_AES_128_GCM_SHA256
@@ -56,7 +56,7 @@ T[hrr_mtu300_loss3]="KEX=P-256:X25519 $AES MTU=300 LOSS=3 $TLS"
 T[hrr_reorder]="KEX=P-256:X25519 REORDER=25 $TLS"
 T[real_hrr_loss3]="KEX=P-256:X25519 B=build-real LOSS=3 $TLS"
 # an image as for a real site: a DNS name, port 80 redirects, HSTS
-REDIR='B=build-redir CERT=cert-redir NAME=k3.test P80=redirect HSTS=63072000'
+REDIR='B=build-redir CERT=cert-redir NAME=k15.test P80=redirect HSTS=63072000'
 T[redirect]="$REDIR PORT=8473 ./measure.sh"
 T[raw_redirect]='B=build-redir unshare -Urn ./tap.sh build/rawc 200000'
 # Sequence numbers that go round: images whose every connection begins within 1 MiB below
@@ -75,8 +75,8 @@ T[site_wrap31_loss3]='LOSS=3 B=build-wrapl31 ISNTOP=0x7FF00000 unshare -Urn tool
 T[site_wrap32_loss3]='LOSS=3 B=build-wrapl32 ISNTOP=0xFFF00000 unshare -Urn tools/sitetest.sh tap quick'
 # a connection's key is not used for more records than it should be (here: 2^10)
 T[site_keylife]='B=build-keylife KEYLIFE=10 ONLY=sealed unshare -Urn tools/sitetest.sh tap'
-# the tool: ./k3 pack and ./k3 run
-T[k3]='PORT=8513 tools/k3test.sh'
+# the tool: ./k15 pack and ./k15 run
+T[k15]='PORT=8513 tools/k15test.sh'
 # only code is executed, and neither code nor site is written (tools/wxtest.sh)
 T[wx]='tools/wxtest.sh'
 # a site of many files, one of them large (tools/sitetest.sh): every path, every kind of client
@@ -96,7 +96,7 @@ ORDER="measure measure_tcg browsers tls tls_loss3 tls_mtu300_loss3 tls_reorder a
   real_mtu300_loss3 real_reorder hrr hrr_loss3 hrr_mtu300_loss3
   hrr_reorder real_hrr_loss3 redirect raw_redirect tls_isn31 tls_isn32 tls_isn31_loss3
   plain_isn32_loss3 real_isn31_loss3 real_isn32_reorder site_wrap31 site_wrap32 site_wrap31_loss3
-  site_wrap32_loss3 site_keylife k3 wx site site_tap site_loss3 site_mtu600_loss3 site_reorder
+  site_wrap32_loss3 site_keylife k15 wx site site_tap site_loss3 site_mtu600_loss3 site_reorder
   site_notso_loss3 bneck"
 
 # the images and clients first (not in parallel)
@@ -131,7 +131,7 @@ verdict() {  # name, exit code -> one line
     churn*) [[ $rc == 0 ]] && v=ok; note=$(tail -1 "$f");;
     wx) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 6 ok; $(grep -m1 '^FAIL' "$f")";;
     bneck) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 4 ok; $(grep -m1 '^FAIL' "$f" | cut -c1-80)";;
-    k3) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 24 ok; $(grep -m1 '^FAIL' "$f")";;
+    k15) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 24 ok; $(grep -m1 '^FAIL' "$f")";;
     site*) [[ $rc == 0 ]] && grep -q '^all ok' "$f" && v=ok; note="$(grep -c '^ok' "$f") checks ok; $(grep -m2 '^FAIL' "$f" | cut -c1-90 | tr '\n' ';')";;
     *) note=$(grep '^SCORE' "$f"); [[ $note == SCORE* && $note != "SCORE 0.0"* ]] && ! grep -q FAILED "$f" && v=ok
        note="${note#*= }; $(grep -c FAILED "$f") failed; $(grep -m1 -o 'open_s [0-9.]*' "$f")";;

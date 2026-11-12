@@ -123,7 +123,7 @@ def content_type(name):
 def main(site, out):
     env = os.environ.get
     cache, hsts = env("CACHE", "600"), env("HSTS", "")
-    common = [b"Server: k3"]
+    common = [b"Server: k15"]
     if cache:
         common.append(b"Cache-Control: max-age=%d" % int(cache))
     if hsts:
@@ -138,7 +138,7 @@ def main(site, out):
         return head, body
 
     def page(status, ctype, body, more=()):
-        return response(status, [b"Server: k3", b"Content-Type: " + ctype.encode()] + common[1:] + list(more), body)
+        return response(status, [b"Server: k15", b"Content-Type: " + ctype.encode()] + common[1:] + list(more), body)
 
     responses = []      # (head, body, flags)
     index = {}          # (head, body, flags) -> its number
@@ -225,18 +225,18 @@ def main(site, out):
             folder = url[:-len("index.html")]               # "/" or "/a/b/"
             paths[folder.encode()] = n
             if folder != "/":
-                head, _ = response(b"301 Moved Permanently", [b"Server: k3", b"Location: " + folder.encode()] + strict, b"")
+                head, _ = response(b"301 Moved Permanently", [b"Server: k15", b"Location: " + folder.encode()] + strict, b"")
                 paths.setdefault(folder[:-1].encode(), add(head, b""))
     ctype, body = not_found or ("text/plain; charset=utf-8", b"404 Not Found\n")
-    a404 = add(*response(b"404 Not Found", [b"Server: k3", b"Content-Type: " + ctype.encode()] + kept, body))
-    head, _ = response(b"405 Method Not Allowed", [b"Server: k3", b"Allow: GET, HEAD", b"Connection: close"] + strict, b"")
+    a404 = add(*response(b"404 Not Found", [b"Server: k15", b"Content-Type: " + ctype.encode()] + kept, body))
+    head, _ = response(b"405 Method Not Allowed", [b"Server: k15", b"Allow: GET, HEAD", b"Connection: close"] + strict, b"")
     a405 = add(head, b"", 1)
 
     # port 80: one response for every request
     name = open(os.path.join(out, "name")).read().strip() if os.path.exists(os.path.join(out, "name")) else ""
     if env("P80", "page") == "redirect":
         host = f"[{name}]" if ":" in name else name
-        head, body = response(b"301 Moved Permanently", [b"Server: k3", b"Location: https://" + host.encode() + b"/"], b"")
+        head, body = response(b"301 Moved Permanently", [b"Server: k15", b"Location: https://" + host.encode() + b"/"], b"")
         p80 = head + body
     elif front:                             # (the front page, with no word about forms of it)
         head, body = page(b"200 OK", *front)

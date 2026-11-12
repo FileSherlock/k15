@@ -1,6 +1,6 @@
 # Goal: a folder of static files as a bootable, sealed HTTPS server
 
-k3 is k2 (`../k2`: 3,231 bytes, QEMU with an ISA NE2000, scored in connections per KiB)
+k15 is k2 (`../k2`: 3,231 bytes, QEMU with an ISA NE2000, scored in connections per KiB)
 taken off its machine contract and put on a Hetzner cloud server. Decided with the user:
 - (2026-11-10) the load is k6-style: ramp to N users in 60 s, hold, under 1% errors
 - (2026-11-11) it is to be useful and competitive: the user named nginx, BoringSSL,
@@ -28,6 +28,10 @@ taken off its machine contract and put on a Hetzner cloud server. Decided with t
   "under 0.4 s for 1.5 MiB over 100 ms" (a window that opens that fast loses segments
   in heaps where the path is narrower, and without SACK they come back one a round
   trip: see "How TCP works here").
+- (2026-11-12, late) published as k15, https://github.com/FileSherlock/k15 (public):
+  the history of k3 (the project's first name, a private repository that stays) with
+  every name in it made k15, the tool `./k15` included, and the commits' address
+  GitHub's noreply one. 15kb.org is deployed from here.
 - security as in k2 (below) holds for everything behind TLS. Port 80 has none of it: it
   says one public thing to everyone (where the site is, or its front page).
 
@@ -51,13 +55,13 @@ compressed form of a file for a client whose Accept-Encoding takes it, 304 for o
 whose If-None-Match names what it would get, 404, a redirect for a folder without its
 slash, "no" and a closed connection for other methods, keep-alive. Port 80 redirects to
 the site, or serves its front page. No memory is both written and executed.
-`./k3 pack FOLDER`, `./k3 run`, `./k3 deploy HOST` (see Commands).
+`./k15 pack FOLDER`, `./k15 run`, `./k15 deploy HOST` (see Commands).
 
 On the server (cx23, 2 shared vCPUs; from a load generator 0.4 ms away; method in
 `bench/README.md`). The night of 2026-11-11, the image that served one page, next to
 nginx and Caddy with the same page, key and certificate:
 
-| on the server (2 vCPUs) | k3 | nginx + BoringSSL | nginx + OpenSSL 3.5 | Caddy |
+| on the server (2 vCPUs) | k15 | nginx + BoringSSL | nginx + OpenSSL 3.5 | Caddy |
 |---|---|---|---|---|
 | new TLS connections a second (full handshake) | 8,800 - 9,100 | 3,900 - 4,100 | 2,100 - 2,200 | 1,800 |
 | HTTPS requests a second, connections kept | 109,000 - 122,000 | 47,000 | 37,000 - 40,000 | 9,000 - 12,000 |
@@ -79,16 +83,16 @@ were run in turn):
 The night of 2026-11-12 (`bench/files.sh`: wrk, 64 connections that stay; one server
 after the other within an hour and a half):
 
-| files | k3 tonight | k3 of the afternoon, tonight | nginx + OpenSSL 3.5, tonight |
+| files | k15 tonight | k15 of the afternoon, tonight | nginx + OpenSSL 3.5, tonight |
 |---|---|---|---|
 | a page of 167 bytes, requests a second | 108,700 | 110,300 | 33,900 |
-| a file of 14 KB, as wrk asks (k3: ChaCha20; nginx: AES-256-GCM) | 30,400 a second, 411 MB/s | 13,700, 185 MB/s | 26,700, 362 MB/s |
+| a file of 14 KB, as wrk asks (k15: ChaCha20; nginx: AES-256-GCM) | 30,400 a second, 411 MB/s | 13,700, 185 MB/s | 26,700, 362 MB/s |
 | the same with AES-128-GCM (what browsers put first) | 35,300 a second, 478 MB/s | 14,900 | 23,900 |
 | a file of 1.5 MiB, as wrk asks | 307 a second, 466 MB/s | 114, 177 MB/s | 611, 0.90 GB/s |
 | the same with AES-128-GCM | 624 a second, 0.92 GB/s | 108, 167 MB/s | 667, 0.98 GB/s |
 | the same, 8 connections / 1 connection | 772 / 145 - 160 MB/s | 157 / 64 MB/s | 1,010 / 392 MB/s |
 
-- Small things k3 does three times as fast as nginx, files of 14 KB a quarter to a half
+- Small things k15 does three times as fast as nginx, files of 14 KB a quarter to a half
   faster (they went half as fast), large files nearly as fast when the client asks as
   a browser does, and half as fast under ChaCha20-Poly1305. Until tonight a segment
   was a frame, and the server's network path carries about 130,000 frames a second each
@@ -98,10 +102,10 @@ after the other within an hour and a half):
   large files now is sealing them: see "Next".
 - nginx was a third faster tonight than in the afternoon (742 MB/s then). The same
   server is not the same machine from hour to hour.
-- Only new TLS connections are bounded by k3's processors (460,000 cycles of both
+- Only new TLS connections are bounded by k15's processors (460,000 cycles of both
   processors' time per connection in the night; nginx 1.0 and 1.9 million).
 - With 4,096 new TLS connections in flight: median 0.47 s, 99% 1.5 s, none over 10 s.
-  With 4,096 new plain connections in flight k3 asks more of the path than it carries: 1%
+  With 4,096 new plain connections in flight k15 asks more of the path than it carries: 1%
   take a second longer (a SYN lost on the way; the same for nginx), and up to 0.05% lose
   it four times running and take over 10 s (353 of 645,000; the night's image the same
   day 155, in the night 83 of 517,000; nginx, which does not get to the path's limit,
@@ -112,24 +116,31 @@ after the other within an hour and a half):
 - From the user's machine (RTT 11 ms; 2026-11-12): `tools/sitecheck.py` passes against
   the server (57 paths, every kind of client it plays); 1.5 MiB take 0.3 s; Chrome and
   Firefox load the test site's page with its stylesheet and picture, our CA trusted in
-  throwaway profiles. `./k3 deploy --persist` survived a reset: back by itself in 90 s.
-- **https://15kb.org/ is k3** (since the evening of 2026-11-12), and so is
+  throwaway profiles. `./k15 deploy --persist` survived a reset: back by itself in 90 s.
+- **https://15kb.org/ is k15** (since the evening of 2026-11-12), and so is
   https://www.15kb.org/: the folder `site/` (the project's own page), a certificate
-  from Let's Encrypt for both names that `./k3 renew --force` got (65 s from the
+  from Let's Encrypt for both names that `./k15 renew --force` got (65 s from the
   command to a verified fetch, the server away for about a minute of it), HSTS for a
   year, `--persist`. curl with the system's roots, Chrome and Firefox with their own,
-  `tlsprobe.sh` and `sitecheck.py` pass against it. The image is 24,376 bytes (since
-  the night of 2026-11-12, with tonight's system): 17,441 of system, of which 3,400
-  are the chain as Let's Encrypt sends it (four certificates), 6,935 of site: the page
-  three times (1,610 bytes as it is, 907 with gzip, 669 with brotli, which is what a
-  browser gets: one segment), the ETags and the answers that say "not modified".
-  (`--no-compress` would make it 21,758; the image before tonight, 20,114 bytes, is
-  kept in `build-15kb.org-old`.)
+  `tlsprobe.sh` and `sitecheck.py` pass against it. The image is 24,645 bytes (since
+  late on 2026-11-12, packed here as k15, the page with its link to the repository):
+  17,441 of system, of which 3,400 are the chain as Let's Encrypt sends it (four
+  certificates), 7,204 of site: the page three times (1,763 bytes as it is, 962 with
+  gzip, 717 with brotli, which is what a browser gets: one segment), the ETags and the
+  answers that say "not modified". (`--no-compress` would make it 21,920; the images
+  before, 24,376 and 20,114 bytes, are kept in `../k3`: `build-15kb.org` and
+  `build-15kb.org-old`.)
 - **SSL Labs gives it an A** (2026-11-12; results kept off its boards): trusted in all
   five stores it looks at, no chain issues, TLS 1.3 only, forward secrecy, HSTS "with
-  long duration", every client it plays served or told why not in an alert. One
-  warning: "This server does not support PQC (Post-Quantum Cryptography) key
-  exchange." Its rating guide gives the A+ to "no warnings": it takes X25519MLKEM768.
+  long duration", every client it plays served or told why not in an alert, and no
+  warnings (its API: `"hasWarnings": false`). The note "This server does not support
+  PQC (Post-Quantum Cryptography) key exchange" is no warning and not what keeps the
+  A+ away: letsencrypt.org gets the same note and an A+ (checked 2026-11-12; neither
+  takes a ClientHello that offers X25519MLKEM768 alone). What letsencrypt.org has and
+  15kb.org lacks: TLS 1.2 with TLS_FALLBACK_SCSV, and a CAA record. Which of the two
+  SSL Labs counts is not known: Qualys's notice of 2025-02-26 says a missing SCSV no
+  longer counts and is not looked for on a server of TLS 1.3 alone, and yet that is
+  the difference in the report. A CAA record would tell (and is worth having).
 
 | measured here (Ryzen 7 3800X, KVM) | |
 |---|---|
@@ -140,7 +151,7 @@ after the other within an hour and a half):
 | 6 MiB through a bottleneck (`tools/bneck.sh`: 20 Mbit/s, a queue of 60, 50 ms there and back) | 4.3 s (5.2 s with a window of 64 KB; 23.6 s with one that doubles up to 367 KB: bench/README.md has seven such paths) |
 | guest cycles per frame, TLS keep-alive requests (the night's image) | 3,900 |
 | TLS connections held over tap, 256 MiB VM (the night's image) | 144,000 of 144,000, each verified and fetched |
-| plain connections held over tap, 2 GiB VM (32-bit image, k3's first week) | 83,983,904 of 84,000,000 tried, each fetched twice |
+| plain connections held over tap, 2 GiB VM (32-bit image, k15's first week) | 83,983,904 of 84,000,000 tried, each fetched twice |
 | connections opened and fetched per second over tap | ~80,000-100,000 (QEMU's packet path is the limit, not the guest) |
 | `tools/suite.sh`: 54 runs (loss 3%, MTU 300 and 600, reordering, both ciphers, a two-segment flight, HelloRetryRequest, sequence numbers that go round, a site of 80 files with and without TSO, a bottleneck, W^X, a million raw connections) | all pass on 1 and 2 processors; on 4, all but `raw1m_20k` when the host is that busy (3 of 3 alone) |
 | the lossy runs many times over (2026-11-12, and again that night after the last change: 16 x 2,000 handshakes each of seven kinds, the site test 44 times) | none failed (the end of "Workflow" has the list) |
@@ -155,7 +166,7 @@ then the real one; the user agreed to the terms, the account has no email addres
 A second review the same day found four things, all fixed: `renew` would have reset the
 server every night from cron and run into Let's Encrypt's limit of five certificates a
 week (it now does nothing while the certificate has 30 days left); the key was made on
-the server and stayed on its disk, and /boot/k3.bin was readable by all (the key is
+the server and stayed on its disk, and /boot/k15.bin was readable by all (the key is
 made here now and only a request travels; the image is root's alone); `renew` packed
 with settings of its own (it packs as the image was packed: OUT/pack.conf); and a client
 without TLS 1.3, without our cipher suites or without x25519 got a ServerHello it had
@@ -175,8 +186,8 @@ a window that grows past 64 KB only slowly; small frames held back while acks ar
 still to come.
 
 **Next, in the order of what they are worth:**
-- **Post-quantum key exchange (X25519MLKEM768).** What stands between the A and the A+
-  at SSL Labs, and more than a grade: every browser offers that share first today, we
+- **Post-quantum key exchange (X25519MLKEM768).** Not for a grade (it is not what keeps
+  the A+ away: "Where it stands"), but every browser offers that share first today, we
   take their second one (x25519), so what is recorded now is as safe as that curve
   stays. Security goes up with it, never down: the secret is both halves' together.
   On our side it is ML-KEM-768's encapsulation against the client's key (FIPS 203:
@@ -185,10 +196,10 @@ still to come.
   longer; with today's chain a handshake buffer of 8 KiB), and a HelloRetryRequest
   only when a client has neither share. It costs bytes and cycles a handshake: both
   to be measured, the model first, as with the curves.
-- **What is left of the proof.** `./k3 renew 2.28.113.14 build-15kb.org --reset 'hcloud
+- **What is left of the proof.** `./k15 renew 2.28.113.14 build-15kb.org --reset 'hcloud
   server reset k3'` in the user's cron (the certificate ends on 2027-02-10; renew does
-  nothing before 2027-01-12), and a link from the page to the repository once that is
-  public (it is private on GitHub, and this branch is not pushed).
+  nothing before 2027-01-12). The page links to the repository, which is public:
+  https://github.com/FileSherlock/k15 (since 2026-11-12, late).
 - **The chain** is the user's to shorten or not. Let's Encrypt sends four certificates
   (3,391 bytes: the leaf; YE1 or YE2; Root YE signed by ISRG Root X2; ISRG Root X2
   signed by ISRG Root X1). Leaf and intermediate alone verify nowhere: Root YE is in no
@@ -229,7 +240,7 @@ still to come.
   ladder in 113,000 and the signature in 71,000 on the same machine: there is a fifth
   to be had.
 **Later.** DHCP instead of a baked-in address, taking out the reset knock, rings for
-the processors there are, Unikraft and F-Stack next to k3 (bench/README.md
+the processors there are, Unikraft and F-Stack next to k15 (bench/README.md
 says what that takes), a retransmission timer that knows the round trip (it is 2^29
 cycles whatever the path: 0.26 s on the server, 0.14 s on a machine of 3.9 GHz, where
 a path of 150 ms there and back then gets every segment twice), zstd beside brotli
@@ -243,9 +254,9 @@ forward secrecy against a network attacker, and no packet makes the server leak 
   server random too (k2 reused the client's)
 - a real ECDSA P-256 signature under a key that only exists in the image
 - a certificate chain clients verify (private CA by default, or a real chain dropped in)
-- the key is in the image and nowhere else that a network can reach: `./k3 renew` makes
+- the key is in the image and nowhere else that a network can reach: `./k15 renew` makes
   it on the user's machine and sends the server's Linux a request for a certificate,
-  not the key; what holds it (the build folder, the certificate folder, /boot/k3.bin on
+  not the key; what holds it (the build folder, the certificate folder, /boot/k15.bin on
   the server) is for its owner's eyes only
 - a client record is read only if its AEAD tag verifies (next sequence number); the
   comparison looks at all 16 bytes whatever they are. What it decrypts to is looked at
@@ -272,18 +283,18 @@ The image contains the private key: `build*/` and `cert*/` are secrets and are n
 Unlike k2 this one faces the internet: anything a packet can make it do is in scope.
 
 ## Commands
-- `./k3` is the tool for somebody who has a site and a server:
-  `./k3 pack FOLDER [-n NAME] [--san NAME]... [-i IP] [-c CERTDIR] [-o OUT] [--plain80]
+- `./k15` is the tool for somebody who has a site and a server:
+  `./k15 pack FOLDER [-n NAME] [--san NAME]... [-i IP] [-c CERTDIR] [-o OUT] [--plain80]
   [--hsts SECONDS] [--cache SECONDS] [--header 'Name: value'] [--no-compress]` makes
   OUT/os.bin and OUT/disk.img (port 80 redirects to https://NAME/ unless `--plain80`;
   `--no-compress`: no file is packed a second and third time, compressed; `--san` is a
   further name for the certificate, `www.NAME` say: the server does not look at the
   name it is asked for, so every name that points at it and is in its certificate gets
   the site; pack says which of the names the certificate in CERTDIR is not for, and
-  renew asks for all of them); `./k3 run [OUT]` boots it in QEMU
-  (https://127.0.0.1:8443/, http://127.0.0.1:9443/); `./k3 deploy HOST [OUT] [--persist]
+  renew asks for all of them); `./k15 run [OUT]` boots it in QEMU
+  (https://127.0.0.1:8443/, http://127.0.0.1:9443/); `./k15 deploy HOST [OUT] [--persist]
   [--reset 'COMMAND']` puts it on a server that runs Linux with GRUB and starts it (see
-  "Running it on the server"); `./k3 renew HOST [OUT] --reset 'COMMAND' [--days N]
+  "Running it on the server"); `./k15 renew HOST [OUT] --reset 'COMMAND' [--days N]
   [--force] [--dry-run]` gets a new certificate from Let's Encrypt when the one OUT was
   packed with ends within N days (30), and does nothing at all before that, so cron may
   run it daily. When it is time: a new key and a request (CSR) are made here, the server
@@ -294,8 +305,8 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   server but inside the image. `--force` for the first one (the private CA's lasts until
   2049), `--staging` for Let's Encrypt's test server (its certificate is trusted by
   nobody, so the fetch at the end fails: "did not answer" is then the expected last
-  line). Everything `./k3` makes is
-  for its owner's eyes only (umask 077), and /boot/k3.bin on the server for root's.
+  line). Everything `./k15` makes is
+  for its owner's eyes only (umask 077), and /boot/k15.bin on the server for root's.
 - `make` assembles `src/os.asm` into `build/os.bin` (loaded at 1 MiB) and `build/disk.img`
   (`src/boot.asm` + the image; what the tests boot), with the site of `www/` in it.
   `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 14,245,
@@ -436,7 +447,7 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   `IDLE=0` as well, a connection quiet for a minute or two may be replaced (default: about
   an hour): the way to test that rule. `TSHARE=n` gives the TLS table 1/2^n of the memory.
 - `tools/bench.c` (`gcc -O2 -o build/bench tools/bench.c -lssl -lcrypto`) measures rates,
-  of k3 and of what it is compared with: P processes with W connections each; a
+  of k15 and of what it is compared with: P processes with W connections each; a
   connection is made, does the TLS handshake (1.3, X25519, AES-128-GCM unless `SUITES` or
   `KEX` say otherwise: `KEX='*X25519MLKEM768:*X25519'` is the 1.5 KB ClientHello with two
   key shares that browsers send; the chain is verified only with `CA=file`), fetches the
@@ -446,7 +457,7 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   took: median, 90%, 99%, 99.9%, longest. `bench/run.sh IP` is the eleven rows of the
   comparison, `bench/files.sh IP [all]` the rows about files (wrk; each large one with
   OpenSSL's order of ciphers and with AES-128-GCM alone, and what the generator's TCP
-  counted meanwhile), `bench/busy.sh IP ENV...` one run with how busy k3's processors
+  counted meanwhile), `bench/busy.sh IP ENV...` one run with how busy k15's processors
   were (a `DEBUG=2` image), `bench/hold.sh` 60,000 connections held with tapc;
   `bench/README.md` has the method, the other servers' configurations and the results.
 - `tools/load.py` (through slirp, `PORT=`): `hold N`, `burst K`, `seq N` (handshake rate),
@@ -483,26 +494,26 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
 
 ## Running it on the server
 `ssh root@2.28.113.14` works from the user's machine while the server runs Linux.
-- `./k3 pack FOLDER -n 2.28.113.14 -i 2.28.113.14 -c cert-hz -o build-hz` (for the
-  comparison's page: `./k3 pack www ... -o build-hzb --plain80`), then
-  `./k3 deploy 2.28.113.14 build-hz --reset 'hcloud server reset k3'`: if Linux does not
-  answer ssh (k3 is running), the server is reset; then the image is copied to
-  /boot/k3.bin and the server reboots into it ONCE through a GRUB entry ("k3" in
+- `./k15 pack FOLDER -n 2.28.113.14 -i 2.28.113.14 -c cert-hz -o build-hz` (for the
+  comparison's page: `./k15 pack www ... -o build-hzb --plain80`), then
+  `./k15 deploy 2.28.113.14 build-hz --reset 'hcloud server reset k3'`: if Linux does not
+  answer ssh (k15 is running), the server is reset; then the image is copied to
+  /boot/k15.bin and the server reboots into it ONCE through a GRUB entry ("k15" in
   /etc/grub.d/40_custom, loaded with `multiboot`), and the command waits for a verified
   fetch. Ubuntu stays installed and is what any later reset boots. Up 4 s after the
   reboot (all 4 GiB are zeroed, and the curve tables take 25 ms).
-- With `--persist`, Linux gets a unit (`k3-chain.service`) that starts k3 a minute after
-  Linux has come up, unless /run/k3.hold exists: so k3 comes back by itself after a reset
-  (90 s, measured), and `./k3 deploy`, which touches that file as soon as ssh answers,
+- With `--persist`, Linux gets a unit (`k15-chain.service`) that starts k15 a minute after
+  Linux has come up, unless /run/k15.hold exists: so k15 comes back by itself after a reset
+  (90 s, measured), and `./k15 deploy`, which touches that file as soon as ssh answers,
   still gets in. Without `--persist` the next deploy takes the unit out again. The
   server runs 15kb.org with it since 2026-11-12 (`build-15kb.org`, `cert-15kb.org`;
-  packed as `./k3 pack site -n 15kb.org --san www.15kb.org -i 2.28.113.14 -c
+  packed as `./k15 pack site -n 15kb.org --san www.15kb.org -i 2.28.113.14 -c
   cert-15kb.org -o build-15kb.org --hsts 31536000`, which is what its pack.conf says):
-  a deploy of anything else takes the site down, so put it back afterwards (`./k3
+  a deploy of anything else takes the site down, so put it back afterwards (`./k15
   deploy 2.28.113.14 build-15kb.org --persist --reset 'hcloud server reset k3'`). (The
   night of 2026-11-12 it was away four times for measurements, 45 minutes in all, and
   a minute for its new image.)
-  On its Linux: /boot/k3.bin, the GRUB entry, the unit, certbot and its account
+  On its Linux: /boot/k15.bin, the GRUB entry, the unit, certbot and its account
   (/etc/letsencrypt: no key of the site's).
 - The name: 15kb.org is the user's, at Namecheap, with Namecheap's name servers; `@` and
   `www` are A records for 2.28.113.14 (TTL 300), set through Namecheap's API with the
@@ -530,14 +541,15 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
   development (two port scans in a row could trigger it); it is only assembled with KNOCK
   set and must be left out of anything that gets benchmarked or kept running.
 - `hcloud` is set up on the user's machine (since 2026-11-11 the user lets Claude create,
-  reset and delete servers with it): `hcloud server reset k3` is the reset button, and
+  reset and delete servers with it): `hcloud server reset k3` is the reset button (the
+  server is called k3 at Hetzner: the project's first name), and
   boots Linux (GRUB's default) whatever the image does. So an image that is measured
   needs no knock: build it without `KNOCK=`, deploy, measure, `hcloud server reset k3`.
 - A load generator is a second server next to it, for an hour: `hcloud server create
-  --name k3-load --type ccx33 --image ubuntu-26.04 --location nbg1 --ssh-key KEY --label
-  purpose=k3-bench` (KEY from `hcloud ssh-key list`; the account's limit on dedicated
+  --name k15-load --type ccx33 --image ubuntu-26.04 --location nbg1 --ssh-key KEY --label
+  purpose=k15-bench` (KEY from `hcloud ssh-key list`; the account's limit on dedicated
   cores allows one ccx33, a second generator has to be a shared type such as cpx42), then
-  `bench/README.md`. It costs by the hour: `hcloud server delete k3-load` when done, and
+  `bench/README.md`. It costs by the hour: `hcloud server delete k15-load` when done, and
   `hcloud server list` to see that nothing is left.
 - The image never answers ping; the user's reset button in the Hetzner console is the
   fallback if a build doesn't come up or the knock doesn't work. A fault resets the
@@ -557,7 +569,7 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
 
 ## The certificate (`tools/gen.py`, `cert/`)
 - `cert/server.key` (ECDSA P-256) and `cert/server.pem` (leaf, then intermediates) are the
-  identity that gets baked in. Nothing renews by itself: `./k3 renew` is the command to
+  identity that gets baked in. Nothing renews by itself: `./k15 renew` is the command to
   run from cron (Commands; a minute or two without a server when it is time, nothing
   before). To use a certificate from elsewhere, put those two files there (and no
   `ca.pem`); `tools/mkchain.py DIR` makes a realistic test chain.
@@ -627,9 +639,9 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
   that the asm must match number for number. Read its docstring before touching either.
 - `tools/gen.py`: certificate, curve programs and constants -> `build/*.inc`.
   `tools/pack.py`: the site -> `build/site.bin`, `site.inc`. `tools/ip.py`,
-  `tools/mkdisk.py`: the baked-in address, the disk image. `k3`: the tool on top.
+  `tools/mkdisk.py`: the baked-in address, the disk image. `k15`: the tool on top.
 - `tools/mksite.py`, `tools/sitecheck.py`, `tools/sitetest.sh`, `tools/wxtest.sh`,
-  `tools/jcc.py`, `tools/tlsprobe.sh`, `tools/k3test.sh`: the test site and its checker,
+  `tools/jcc.py`, `tools/tlsprobe.sh`, `tools/k15test.sh`: the test site and its checker,
   the W^X test, the jumps on boundaries, a scanner's questions, the tool's own test.
   `tools/bneck.sh`, `tools/bnecktest.sh`, `tools/tl.py`: a bottleneck between guest and
   client, the test that uses it, a download's timeline from a capture.
@@ -1143,7 +1155,7 @@ segment a frame, no window scaling, no compression, no conditional requests.
 - Hetzner's web console garbles `|` and `[`: use ssh.
 - A ceiling is not ours until it is measured from inside. On the server plain HTTP stops
   at 35,000 connections a second and keep-alive at 130,000 requests, whatever is asked:
-  k3's processors are 80 to 89% idle there (`DEBUG=2`, `bench/busy.sh`), a second load
+  k15's processors are 80 to 89% idle there (`DEBUG=2`, `bench/busy.sh`), a second load
   generator adds nothing (60,000 + 65,000), and one processor alone gets the same
   (133,000, 85% idle). It is the instance's network path: about 130,000 frames a second
   each way. The load generator had spare time too (its `/proc/stat`), which alone would
@@ -1207,7 +1219,7 @@ segment a frame, no window scaling, no compression, no conditional requests.
 - The server is not the same machine from hour to hour (shared processors, and the
   network path: plain connections went from 35,000 a second in the night to 45,000 in
   the afternoon, handshakes from 9,000 to 8,000). Two images are compared in turn, in
-  one session, several times each (`./k3 deploy --reset` makes that a loop).
+  one session, several times each (`./k15 deploy --reset` makes that a loop).
 - Clients send a ChangeCipherSpec record in front of their second ClientHello. Taking the
   first record for the ClientHello, as it had always been, made a handshake of those six
   bytes.
@@ -1227,7 +1239,7 @@ segment a frame, no window scaling, no compression, no conditional requests.
   with the Write tool and run that.
 
 - A tool that is "to be run from cron" must be a no-op on most days, and must say so
-  itself. `./k3 renew` reset the server and asked for a certificate every time it ran:
+  itself. `./k15 renew` reset the server and asked for a certificate every time it ran:
   every night without a server, and Let's Encrypt's limit (five of the same certificate
   in seven days) on the sixth. And where a key is made is where it stays: certbot's own
   key lands in /etc/letsencrypt on the server's disk, in a Linux that is supposed to
@@ -1241,20 +1253,21 @@ segment a frame, no window scaling, no compression, no conditional requests.
   without HSTS because pack was not told `--hsts` (status and Location had been looked
   at, the list of headers not), and the answers that are no file (404, a folder's
   redirect, 405) had never carried one header about security: nobody had read a 404's
-  headers until the day they mattered. `curl -sSI` on each kind, and tools/k3test.sh
+  headers until the day they mattered. `curl -sSI` on each kind, and tools/k15test.sh
   does it now.
 - Which certificates a chain can do without is a question about other people's trust
   stores, not this machine's. `openssl verify -untrusted FIRST-N-CERTS LEAF` says what
   verifies here (leaf and intermediate did not: the new root is in no store), and here
   three of the four did, because this machine has ISRG Root X2; an iPhone of 2021 has
   not. Let's Encrypt's compatibility page lists who has which root.
-- A grade is what the grader says today. SSL Labs' rating guide (last changed in May
-  2025) does not know post-quantum key exchange; its test of November 2026 warns about
-  a server without it, and with a warning there is no A+. The same for a review's
-  "this gets you an A+": run the test.
+- A grade is what the grader says today, and a note on its page is not a reason for
+  it. This file said for a day that the A+ needed post-quantum key exchange, because
+  the page said "does not support PQC"; letsencrypt.org has that note too, and an A+.
+  Compare with a site that has the grade (the API's `details`, field by field) before
+  writing down why. The same for a review's "this gets you an A+": run the test.
 - A number in this file that nobody measured is a guess, and was: "a full record, some
   8,000 cycles" (it was 17,900 under ChaCha20 and 11,600 under AES-GCM), and with it
-  "k3's processors are mostly idle" at 166 MB/s of large files (they were at half of
+  "k15's processors are mostly idle" at 166 MB/s of large files (they were at half of
   what they can do). `make bench` times a record now. And the loop that cost most was
   the plainest one: `lodsb / xor al, [rdx] / stosb` over the key stream, with source
   and destination the same, 6,500 cycles of the record. Sixteen bytes at a time.
@@ -1333,7 +1346,7 @@ segment a frame, no window scaling, no compression, no conditional requests.
   that the client asks again whatever we lose): a client gives a connection up when its
   data stays unacknowledged for long (Windows after five tries, some ten seconds).
 - Putting ACME, DNS or a clock into the image: the certificate is renewed from outside
-  (`./k3 renew`), by packing a new image.
+  (`./k15 renew`), by packing a new image.
 - Three bits for the client's window shift (the list said two or three, in spare bits of
   `C_FLG`): Linux 7 says 10 (its receive buffers go to 32 MB), and a shift taken too
   small shows us a fraction of the window. Four bits, in `C_FL2`; the count of repeated
@@ -1372,7 +1385,7 @@ touching what lets segments go (`C_CW`, the window, `.pump`, what counts as lost
 `tools/bneck.sh` over a few paths, next to the last commit's image: over tap alone
 nothing is ever lost for lack of room, and every one of the night's three mistakes
 there passed the suite. Then
-the server (`./k3 deploy`, `tools/sitecheck.py` against it, a browser) for anything that
+the server (`./k15 deploy`, `tools/sitecheck.py` against it, a browser) for anything that
 could behave differently on a real machine, and `bench/run.sh` from a load generator
 (bench/README.md), in turn with the image before, for anything that could change what it
 does under load.

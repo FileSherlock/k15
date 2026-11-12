@@ -1,5 +1,5 @@
 // bench: how many connections (or requests) a second a server takes, and how long each
-// takes: for k3 and for whatever it is compared with (bench/). Unlike tapc it does not hold
+// takes: for k15 and for whatever it is compared with (bench/). Unlike tapc it does not hold
 // connections: each of W places per process connects, does the TLS handshake, fetches the
 // page KA times, closes (with a reset: no TIME-WAIT, on either side), and starts over, for
 // T seconds. P processes, each with its own epoll and its own OpenSSL context.

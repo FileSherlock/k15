@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bench/busy.sh IP [ENV...]: how busy is each of k3's processors while bench runs? For an
+# bench/busy.sh IP [ENV...]: how busy is each of k15's processors while bench runs? For an
 # image built with DEBUG=2 (its page on port 80 then ends in the turns its polling loop made
 # with nothing to do, and the time). Run where run.sh runs. First three seconds of nothing,
 # for the rate that means idle; then bench with ENV, e.g.

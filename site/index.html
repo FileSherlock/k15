@@ -2,18 +2,18 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>k3: a static site as a bootable HTTPS server</title>
+<title>k15: a static site as a bootable HTTPS server</title>
 <link rel="stylesheet" href="/style.css">
-<h1>k3</h1>
+<h1>k15</h1>
 <p class="sub">This page is served by the thing it describes.
-<p>k3 turns a folder of static files into a bootable x86-64 HTTPS server. The whole
+<p>k15 turns a folder of static files into a bootable x86-64 HTTPS server. The whole
 system (boot code, network driver, TCP, TLS 1.3, HTTP) is about 14 KB of assembly, and
 the files come behind it in the same image. There is no operating system underneath:
 no kernel, no shell, no file system, nothing to log into.
 <p>What answered your request is a cloud server with two shared virtual processors and
 4 GB of memory, running nothing but that image.
 <table>
-<tr><th>on that server<th>k3<th>nginx + OpenSSL
+<tr><th>on that server<th>k15<th>nginx + OpenSSL
 <tr><td>new TLS 1.3 connections a second<td>7,500 to 9,000<td>2,100 to 2,200
 <tr><td>small pages a second, connections kept<td>105,000 to 125,000<td>30,000 to 34,000
 <tr><td>files of 14 KB a second<td>30,000 to 35,000<td>24,000 to 27,000
@@ -24,5 +24,6 @@ no kernel, no shell, no file system, nothing to log into.
 files, it speaks TLS 1.3 only, it serves GET and HEAD and nothing else, and a change of
 content or certificate is a new image and a reboot. That is the design: clunky, limited, small, and hard to
 break into.
-<p>How the numbers were measured, and what they do not say, is in the project's
-<code>bench/README.md</code>.
+<p>The source is at <a href="https://github.com/FileSherlock/k15">github.com/FileSherlock/k15</a>.
+How the numbers were measured, and what they do not say, is in its
+<a href="https://github.com/FileSherlock/k15/blob/main/bench/README.md">bench/README.md</a>.

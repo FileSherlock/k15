@@ -1,25 +1,26 @@
-# k3
+# k15
 
-**https://15kb.org/ is served by it** (SSL Labs: A; what is missing for the A+ is
-post-quantum key exchange).
+**https://15kb.org/ is served by it** (SSL Labs: A with no warnings, where letsencrypt.org
+gets an A+ without post-quantum key exchange either. What letsencrypt.org has and
+15kb.org does not is TLS 1.2, guarded against downgrades: k15 speaks TLS 1.3 alone.)
 
-k3 turns a folder of static files into a bootable x86-64 HTTPS server: 14 KB of system
+k15 turns a folder of static files into a bootable x86-64 HTTPS server: 14 KB of system
 with the files behind it, in one image. There is no operating system underneath, because
 it is one: its own boot sector, long mode, a virtio-net driver, ARP, TCP, TLS 1.3 and as
 much of HTTP as a static site needs, in one assembly file.
 
 ```bash
-./k3 pack site/ -n example.org -i 203.0.113.7    # -> build-example.org/os.bin and disk.img
-./k3 run build-example.org                       # try it in QEMU: https://127.0.0.1:8443/
-./k3 deploy 203.0.113.7 build-example.org        # onto a server that runs Linux with GRUB
+./k15 pack site/ -n example.org -i 203.0.113.7    # -> build-example.org/os.bin and disk.img
+./k15 run build-example.org                       # try it in QEMU: https://127.0.0.1:8443/
+./k15 deploy 203.0.113.7 build-example.org        # onto a server that runs Linux with GRUB
 ```
 
 For a site that is meant to stay (`--reset`: how the server gets back into its Linux):
 
 ```bash
-./k3 pack site/ -n example.org --san www.example.org --hsts 31536000 -i 203.0.113.7
-./k3 renew 203.0.113.7 build-example.org --force --reset 'hcloud server reset NAME'   # Let's Encrypt
-./k3 deploy 203.0.113.7 build-example.org --persist --reset 'hcloud server reset NAME'
+./k15 pack site/ -n example.org --san www.example.org --hsts 31536000 -i 203.0.113.7
+./k15 renew 203.0.113.7 build-example.org --force --reset 'hcloud server reset NAME'   # Let's Encrypt
+./k15 deploy 203.0.113.7 build-example.org --persist --reset 'hcloud server reset NAME'
 ```
 
 What you get, and what you don't:
@@ -49,13 +50,13 @@ What you get, and what you don't:
   has the comparison, how it was made, and what it does not say.
 - **Large files about as fast as nginx, or half as fast**, by the cipher the client
   asks for: 0.92 GB/s with AES-128-GCM, which browsers put first, where nginx did 0.98
-  the same night; 0.47 GB/s with ChaCha20-Poly1305, which OpenSSL's tools get from k3,
+  the same night; 0.47 GB/s with ChaCha20-Poly1305, which OpenSSL's tools get from k15,
   where nginx gives them AES-256-GCM at 0.90. (It was 0.17 GB/s until the card was
   given 45 records to a frame to cut up, and sealing a record got faster.) Over a
   distance a window may grow past 64 KB, but only slowly: without SACK, what is lost
   in a large window comes back a segment a round trip.
 - **Clunky on purpose.** Content and certificate are part of the image: a change is a new
-  image and a reboot of a few seconds. Nothing renews by itself: `./k3 renew` is there to
+  image and a reboot of a few seconds. Nothing renews by itself: `./k15 renew` is there to
   be run from cron, does nothing until the certificate has a month left, and then makes
   the new key on your machine: only a request for a certificate travels to the server.
   One site per server, one address

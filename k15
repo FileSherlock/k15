@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# k3: a folder of static files becomes a bootable HTTPS server, and gets onto a machine.
+# k15: a folder of static files becomes a bootable HTTPS server, and gets onto a machine.
 #
-#   k3 pack SITE [-n NAME] [--san NAME]... [-i IP] [-c CERTDIR] [-o OUT] [--plain80]
+#   k15 pack SITE [-n NAME] [--san NAME]... [-i IP] [-c CERTDIR] [-o OUT] [--plain80]
 #                [--hsts SECONDS] [--cache SECONDS] [--header 'Name: value'] [--no-compress]
 #       OUT/os.bin (the image: what a multiboot loader such as GRUB starts) and OUT/disk.img
 #       (the same behind a boot sector: what a BIOS starts from a disk). NAME is what the
@@ -15,18 +15,18 @@
 #       then what clients must trust). OUT defaults to build-NAME, CERTDIR to cert-NAME.
 #       Files that get shorter by it are packed compressed as well (gzip, brotli), for
 #       clients that say they take that: --no-compress leaves that out (a smaller image).
-#       How it was packed is kept in OUT/pack.conf, for `k3 renew`.
-#   k3 run [OUT] [-p PORT]
+#       How it was packed is kept in OUT/pack.conf, for `k15 renew`.
+#   k15 run [OUT] [-p PORT]
 #       Boot OUT/disk.img in QEMU: https://127.0.0.1:8443/ and http://127.0.0.1:9443/
 #       (or PORT and PORT + 1000).
-#   k3 deploy HOST [OUT] [--persist] [--reset 'COMMAND']
+#   k15 deploy HOST [OUT] [--persist] [--reset 'COMMAND']
 #       Put OUT/os.bin on a server that runs Linux with GRUB (ssh root@HOST) and start it.
 #       Linux stays installed. Without --persist a later reset of the server starts Linux
 #       again. With it, Linux, whenever it comes up, waits a minute for somebody to say
-#       "hold" (which this command does when it needs the machine) and then starts k3: so
-#       k3 survives a reset, and the way back in is a reset. If k3 is running there now,
+#       "hold" (which this command does when it needs the machine) and then starts k15: so
+#       k15 survives a reset, and the way back in is a reset. If k15 is running there now,
 #       --reset says how to reset the server (say 'hcloud server reset NAME').
-#   k3 renew HOST [OUT] --reset 'COMMAND' [--days N] [--force] [--dry-run] [--email ADDRESS]
+#   k15 renew HOST [OUT] --reset 'COMMAND' [--days N] [--force] [--dry-run] [--email ADDRESS]
 #                [--staging]
 #       A new certificate from Let's Encrypt for the names OUT was packed for (which must
 #       point at the server), if the one in its CERTDIR ends within N days (30); else
@@ -41,12 +41,12 @@
 #       --dry-run stops before the server is touched and says what would be asked for.
 #
 # The image holds the private key: OUT and CERTDIR are secrets, and are made for their
-# owner's eyes only; so is /boot/k3.bin on the server.
+# owner's eyes only; so is /boot/k15.bin on the server.
 set -euo pipefail
 umask 077
 HERE=$PWD
 cd "$(dirname "$0")"
-die() { echo "k3: $*" >&2; exit 1; }
+die() { echo "k15: $*" >&2; exit 1; }
 SSHO=(-o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new)
 # (paths are the caller's, not this folder's; make can't have blanks in them)
 abs() {
@@ -85,11 +85,11 @@ build() {
   local no
   no=$(lacks "$4" "$2" ${10})
   if [[ -n $no ]]; then
-    echo "k3: the certificate in $4 is not for: $no" >&2
+    echo "k15: the certificate in $4 is not for: $no" >&2
     if [[ -s $5/ca.pem ]]; then
       echo "    (it is the private CA's: take $4 away and pack again for a new one)" >&2
     else
-      echo "    (k3 renew --force gets one for all of: $2 ${10})" >&2
+      echo "    (k15 renew --force gets one for all of: $2 ${10})" >&2
     fi
   fi
 }
@@ -125,7 +125,7 @@ run() {
   done
   out=$(abs "$out")
   local hport=$((port + 1000))
-  [[ -f $out/disk.img ]] || die "run: no $out/disk.img (k3 pack first)"
+  [[ -f $out/disk.img ]] || die "run: no $out/disk.img (k15 pack first)"
   local name ip
   name=$(cat "$out/name")
   ip=$(cat "$out/ip")
@@ -144,65 +144,65 @@ run() {
 }
 
 # linux HOST RESET: make sure Linux is running there and stays (a "hold" for the chain into
-# k3, if that is installed); if ssh does not answer, RESET is run first
+# k15, if that is installed); if ssh does not answer, RESET is run first
 linux() {
   local host=$1 reset=$2
-  if ! ssh "${SSHO[@]}" "root@$host" 'touch /run/k3.hold' 2>/dev/null; then
-    [[ -n $reset ]] || die "ssh root@$host does not answer. If k3 is running there, say how to reset the server: --reset 'COMMAND'"
+  if ! ssh "${SSHO[@]}" "root@$host" 'touch /run/k15.hold' 2>/dev/null; then
+    [[ -n $reset ]] || die "ssh root@$host does not answer. If k15 is running there, say how to reset the server: --reset 'COMMAND'"
     echo "resetting the server: $reset"
     bash -c "$reset" >/dev/null
     local i
     for i in $(seq 1 60); do
       sleep 3
-      ssh "${SSHO[@]}" "root@$host" 'touch /run/k3.hold' 2>/dev/null && break
+      ssh "${SSHO[@]}" "root@$host" 'touch /run/k15.hold' 2>/dev/null && break
       [[ $i == 60 ]] && die "Linux did not come up on $host within three minutes"
     done
   fi
   echo "Linux is up on $host, and held"
 }
 
-# start HOST OUT PERSIST: the image goes to /boot/k3.bin (for root's eyes only: it holds
-# the key), GRUB gets its entry, and the server boots into it. PERSIST: 1 (Linux starts k3
+# start HOST OUT PERSIST: the image goes to /boot/k15.bin (for root's eyes only: it holds
+# the key), GRUB gets its entry, and the server boots into it. PERSIST: 1 (Linux starts k15
 # whenever it comes up), 0 (it does not), keep (as it is there now)
 start() {
   local host=$1 out=$2 persist=$3
-  ssh "${SSHO[@]}" "root@$host" 'umask 077 && rm -f /boot/k3.bin.new && cat > /boot/k3.bin.new && chmod 600 /boot/k3.bin.new && mv /boot/k3.bin.new /boot/k3.bin' < "$out/os.bin"
+  ssh "${SSHO[@]}" "root@$host" 'umask 077 && rm -f /boot/k15.bin.new && cat > /boot/k15.bin.new && chmod 600 /boot/k15.bin.new && mv /boot/k15.bin.new /boot/k15.bin' < "$out/os.bin"
   ssh "${SSHO[@]}" "root@$host" "PERSIST=$persist bash -s" <<'EOF'
 set -e
-if ! grep -q 'menuentry "k3"' /etc/grub.d/40_custom; then
+if ! grep -q 'menuentry "k15"' /etc/grub.d/40_custom; then
   UUID=$(findmnt -no UUID /boot 2>/dev/null || findmnt -no UUID /)
   cat >> /etc/grub.d/40_custom <<END
-menuentry "k3" --id k3 {
+menuentry "k15" --id k15 {
     insmod part_gpt
     insmod ext2
     insmod multiboot
     search --no-floppy --fs-uuid --set=root $UUID
-    multiboot /boot/k3.bin
+    multiboot /boot/k15.bin
 }
 END
   update-grub 2>&1 | tail -1
 fi
-UNIT=/etc/systemd/system/k3-chain.service
+UNIT=/etc/systemd/system/k15-chain.service
 if [ "$PERSIST" = 1 ]; then
   cat > $UNIT <<END
 [Unit]
-Description=Start k3 a minute after Linux has come up, unless somebody holds it (touch /run/k3.hold)
+Description=Start k15 a minute after Linux has come up, unless somebody holds it (touch /run/k15.hold)
 After=multi-user.target
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'sleep 60; [ -e /run/k3.hold ] || { grub-reboot k3 && systemctl reboot; }'
+ExecStart=/bin/sh -c 'sleep 60; [ -e /run/k15.hold ] || { grub-reboot k15 && systemctl reboot; }'
 [Install]
 WantedBy=multi-user.target
 END
   chmod 644 $UNIT
   systemctl daemon-reload
-  systemctl enable k3-chain.service >/dev/null 2>&1
+  systemctl enable k15-chain.service >/dev/null 2>&1
 elif [ "$PERSIST" = 0 ] && [ -e $UNIT ]; then
-  systemctl disable k3-chain.service >/dev/null 2>&1 || true
+  systemctl disable k15-chain.service >/dev/null 2>&1 || true
   rm -f $UNIT
   systemctl daemon-reload
 fi
-grub-reboot k3
+grub-reboot k15
 sync
 nohup sh -c "sleep 1; systemctl reboot" >/dev/null 2>&1 &
 EOF
@@ -213,7 +213,7 @@ EOF
   for i in $(seq 1 40); do
     sleep 2
     if curl -s --max-time 4 "${ca[@]}" --connect-to "$name:443:$host:443" -o /dev/null "https://$name/"; then
-      echo "k3 is up: https://$name/ (a verified fetch from $host)"
+      echo "k15 is up: https://$name/ (a verified fetch from $host)"
       # its other names, if it was packed with any
       local sans= n
       [[ -f $out/pack.conf ]] && sans=$(source "$out/pack.conf" && echo "${sans:-}")
@@ -221,7 +221,7 @@ EOF
         if curl -s --max-time 4 "${ca[@]}" --connect-to "$n:443:$host:443" -o /dev/null "https://$n/"; then
           echo "          https://$n/ too"
         else
-          echo "k3: but not as https://$n/: the certificate is not for that name" >&2
+          echo "k15: but not as https://$n/: the certificate is not for that name" >&2
         fi
       done
       return 0
@@ -242,7 +242,7 @@ deploy() {
     esac
   done
   out=$(abs "${out:-build}")
-  [[ -f $out/os.bin ]] || die "deploy: no $out/os.bin (k3 pack first)"
+  [[ -f $out/os.bin ]] || die "deploy: no $out/os.bin (k15 pack first)"
   linux "$host" "$reset"
   start "$host" "$out" "$persist"
 }
@@ -260,7 +260,7 @@ renew() {
     esac
   done
   out=$(abs "${out:-build}")
-  [[ -f $out/pack.conf ]] || die "renew: $out/pack.conf is not there (k3 pack makes it: how the image is to be packed again)"
+  [[ -f $out/pack.conf ]] || die "renew: $out/pack.conf is not there (k15 pack makes it: how the image is to be packed again)"
   local site name ip cert p80 hsts cache headers sans= compress=1
   # shellcheck disable=SC1091
   source "$out/pack.conf"
@@ -272,7 +272,7 @@ renew() {
     # shellcheck disable=SC2086
     no=$(lacks "$cert" "$name" $sans)
     echo "the certificate for $name is good until $(openssl x509 -enddate -noout -in "$cert/server.pem" | cut -d= -f2): nothing to do (--force gets a new one all the same)"
-    [[ -z $no ]] || echo "k3: but it is not for: $no(--force gets one that is)" >&2
+    [[ -z $no ]] || echo "k15: but it is not for: $no(--force gets one that is)" >&2
     return 0
   fi
   # A new key (the kind the image signs with: ECDSA on P-256) and a request for a
@@ -294,18 +294,18 @@ renew() {
   linux "$host" "$reset"
   local contact=--register-unsafely-without-email
   [[ -n $email ]] && contact="--email $email"
-  ssh "${SSHO[@]}" "root@$host" 'cat > /run/k3.csr' < "$new/csr.pem"
+  ssh "${SSHO[@]}" "root@$host" 'cat > /run/k15.csr' < "$new/csr.pem"
   if ! ssh "${SSHO[@]}" "root@$host" "set -e
       command -v certbot >/dev/null || { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot >/dev/null; }
-      rm -f /run/k3.cert.pem /run/k3.chain.pem /run/k3.full.pem
-      certbot certonly --standalone --non-interactive --agree-tos $contact $staging --csr /run/k3.csr \\
-        --cert-path /run/k3.cert.pem --chain-path /run/k3.chain.pem --fullchain-path /run/k3.full.pem >/dev/null
-      cat /run/k3.full.pem
-      rm -f /run/k3.csr /run/k3.cert.pem /run/k3.chain.pem /run/k3.full.pem" > "$new/server.pem" ||
+      rm -f /run/k15.cert.pem /run/k15.chain.pem /run/k15.full.pem
+      certbot certonly --standalone --non-interactive --agree-tos $contact $staging --csr /run/k15.csr \\
+        --cert-path /run/k15.cert.pem --chain-path /run/k15.chain.pem --fullchain-path /run/k15.full.pem >/dev/null
+      cat /run/k15.full.pem
+      rm -f /run/k15.csr /run/k15.cert.pem /run/k15.chain.pem /run/k15.full.pem" > "$new/server.pem" ||
      [[ $(openssl x509 -pubkey -noout -in "$new/server.pem" 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum) != \
         $(openssl pkey -in "$new/server.key" -pubout -outform DER | sha256sum) ]]; then
     drop
-    echo "k3: no certificate came for $name: starting the image as it was" >&2
+    echo "k15: no certificate came for $name: starting the image as it was" >&2
     start "$host" "$out" keep
     exit 1
   fi

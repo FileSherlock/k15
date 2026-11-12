@@ -2,7 +2,7 @@
 # bench/files.sh IP [all]: the rows about files (bench/README.md), run on a load generator
 # next to the server, from the directory that has this script: wrk, 8 s a row (D=8s), for
 # a server that has the site of tools/mksite.py. Each large row twice: with OpenSSL's own
-# order of cipher suites (of which k3 takes ChaCha20-Poly1305 and nginx AES-256-GCM) and
+# order of cipher suites (of which k15 takes ChaCha20-Poly1305 and nginx AES-256-GCM) and
 # with AES-128-GCM alone (what browsers put first). Behind each row, what this side's TCP
 # counted meanwhile: its own segments sent again and timeouts (requests that waited), and
 # segments that came early (something before them was lost or late). With "all": also a

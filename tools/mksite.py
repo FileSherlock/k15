@@ -16,7 +16,7 @@ def noise(tag, n):
 
 def main(root, big):
     files = {
-        "index.html": b"<!doctype html>\n<title>k3 test site</title>\n<link rel=stylesheet href=css/style.css>\n"
+        "index.html": b"<!doctype html>\n<title>k15 test site</title>\n<link rel=stylesheet href=css/style.css>\n"
                       b"<h1>Hello from a tiny HTTPS OS</h1>\n<img src=img/logo.svg>\n<a href=docs/>docs</a>\n",
         "css/style.css": b"body { font: 16px/1.5 sans-serif; margin: 3em auto; max-width: 40em }\n" * 40,
         "img/logo.svg": b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect width="8" height="8" fill="#246"/></svg>\n',

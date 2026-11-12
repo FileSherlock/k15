@@ -5,15 +5,15 @@
 set -e
 export DEBIAN_FRONTEND=noninteractive
 command -v nginx >/dev/null || { apt-get update -qq; apt-get install -y -qq nginx-light >/dev/null; }
-mkdir -p /etc/nginx/k3bench /var/www/k3bench
-cp /root/k3bench/server.pem /root/k3bench/server.key /etc/nginx/k3bench/
-chmod 600 /etc/nginx/k3bench/server.key
-cp /root/k3bench/index.html /var/www/k3bench/index.html
-cp /root/k3bench/nginx.conf /etc/nginx/nginx.conf
+mkdir -p /etc/nginx/k15bench /var/www/k15bench
+cp /root/k15bench/server.pem /root/k15bench/server.key /etc/nginx/k15bench/
+chmod 600 /etc/nginx/k15bench/server.key
+cp /root/k15bench/index.html /var/www/k15bench/index.html
+cp /root/k15bench/nginx.conf /etc/nginx/nginx.conf
 sysctl -q -w net.core.somaxconn=65535 net.ipv4.tcp_max_syn_backlog=65535 net.core.netdev_max_backlog=65535 \
   fs.file-max=4000000 fs.nr_open=2000000 net.ipv4.tcp_max_orphans=1000000 net.ipv4.tcp_tw_reuse=1
 # one receive queue, two processors: let the kernel spread the packets over both (RPS),
-# as k3 does itself
+# as k15 does itself
 for q in /sys/class/net/e*/queues/rx-*; do echo 3 > $q/rps_cpus; done
 mkdir -p /etc/systemd/system/nginx.service.d
 printf '[Service]\nLimitNOFILE=1048576\n' > /etc/systemd/system/nginx.service.d/limits.conf

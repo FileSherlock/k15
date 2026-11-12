@@ -1,10 +1,10 @@
-# k3 next to nginx and Caddy
+# k15 next to nginx and Caddy
 
-What k3 does on its server, and what nginx (with BoringSSL and with OpenSSL) and Caddy do
+What k15 does on its server, and what nginx (with BoringSSL and with OpenSSL) and Caddy do
 on the same server with the same page, key and certificate. Measured in the night of
 2026-11-11 to 12. Short version:
 
-| on a 2-vCPU cloud server | k3 | nginx + BoringSSL | nginx + OpenSSL 3.5 | Caddy 2.6 |
+| on a 2-vCPU cloud server | k15 | nginx + BoringSSL | nginx + OpenSSL 3.5 | Caddy 2.6 |
 |---|---|---|---|---|
 | new TLS 1.3 connections a second (full handshake) | 8,800 - 9,100 | 3,900 - 4,100 | 2,100 - 2,200 | 1,700 - 1,850 |
 | HTTPS requests a second, connections kept | 109,000 - 122,000 (1) | 47,000 - 48,000 | 37,000 - 40,000 | 9,000 - 12,000 |
@@ -13,18 +13,18 @@ on the same server with the same page, key and certificate. Measured in the nigh
 | memory for a connection that is held: plain, TLS | 20 bytes, 128 bytes | 3.2 KiB, 7.1 KiB | 4.0 KiB, 25.8 KiB | not measured |
 | what has to be on the disk | 11,094 bytes | 3.6 MB + a kernel (17 MB) | 9.1 MB + a kernel | 39 MB + a kernel |
 
-(1) Not k3's limit: the server's network path carries about 130,000 frames a second each
-way and k3's processors are 80 to 89% idle at that point (see "What limits whom"). The
-other servers' numbers, and k3's new TLS connections, are what their processors can do.
+(1) Not k15's limit: the server's network path carries about 130,000 frames a second each
+way and k15's processors are 80 to 89% idle at that point (see "What limits whom"). The
+other servers' numbers, and k15's new TLS connections, are what their processors can do.
 
 ## The machines
 - The server: Hetzner cx23 in Nuremberg: 2 shared vCPUs (Xeon Skylake, 2.1 GHz), 4 GB,
-  one virtio-net queue. For k3 it boots the image (GRUB, multiboot); for the others it
+  one virtio-net queue. For k15 it boots the image (GRUB, multiboot); for the others it
   runs Ubuntu 26.04 (kernel 7.0.0-30).
 - The load generator: a ccx33 in the same location (8 dedicated vCPUs, Ubuntu 26.04),
   0.4 ms away (ping: 0.41 ms at best, 0.8 on average). A second one (cpx42) was added for
   one experiment.
-- Shared vCPUs: the same row measured again differs by 10%, sometimes 15 (k3, new TLS
+- Shared vCPUs: the same row measured again differs by 10%, sometimes 15 (k15, new TLS
   connections: 64 in flight 7,561, 7,563 and 8,902 in three runs, 512 in flight 8,109 to
   9,471 in six; nginx + OpenSSL, 512 in flight: 1,926, 2,086 and 2,192).
 
@@ -48,13 +48,13 @@ key shares, a post-quantum one in front: 1.5 KB in two segments. One row asks th
 All serve `www/index.html` (27 bytes) with the certificate and key of `cert-hz/` (ECDSA
 P-256, the generated leaf and CA), TLS 1.3 only, X25519, no session tickets and no session
 cache, on ports 443 and 80, logging nothing.
-- k3: the image of commit "The key share is found by walking the ClientHello" (11,094
+- k15: the image of commit "The key share is found by walking the ClientHello" (11,094
   bytes), built without `DEBUG`, `KNOCK` and `LIFE`.
 - nginx 1.28.3 with OpenSSL 3.5.5, as Ubuntu packages them (`nginx-light`), with
   `bench/nginx.conf`: a worker per processor, `reuseport`, a backlog of 65,535, and
   `bench/setup-nginx.sh` for the kernel (the limits on queues and files raised, and
   receive packet steering on, so that both processors take packets from the one queue as
-  they do under k3).
+  they do under k15).
 - nginx 1.28.3 built from nginx.org's source against BoringSSL (the commit of 2026-11-11,
   `-DCMAKE_BUILD_TYPE=Release`; `bench/build-nginx-boring.sh`), same configuration file.
 - Caddy 2.6.2 (Ubuntu's package, not a recent Caddy; Go's crypto/tls) with
@@ -64,7 +64,7 @@ cache, on ports 443 and 80, logging nothing.
 Connections or requests a second; then, in ms, the median and the 99th percentile.
 "In flight" is how many connections the client keeps going at once (8 x W).
 
-| | in flight | k3 | nginx + BoringSSL | nginx + OpenSSL | Caddy |
+| | in flight | k15 | nginx + BoringSSL | nginx + OpenSSL | Caddy |
 |---|---|---|---|---|---|
 | HTTPS, a new connection each | 64 | 8,902 (6.8, 15.3) | 3,884 (15.0, 42.2) | 2,229 (26.5, 70.6) | 1,836 (34.1, 66.4) |
 | | 512 | 8,832 (51.7, 140) | 3,887 (102, 347) | 2,086 (208, 571) | 1,846 (266, 508) |
@@ -78,40 +78,40 @@ Connections or requests a second; then, in ms, the median and the 99th percentil
 | HTTP, connections kept | 64 | 110,280 (0.55, 1.22) | 59,815 (1.01, 2.67) | 58,370 (1.02, 2.57) | 14,084 (3.81, 15.3) |
 | | 512 | 128,404 (3.86, 5.38) | 70,560 (6.64, 16.0) | 67,621 (7.09, 16.6) | 14,427 (34.3, 69.9) |
 
-No errors anywhere. Timeouts (over 10 s): none, except for k3 in the 4,096 row of plain
+No errors anywhere. Timeouts (over 10 s): none, except for k15 in the 4,096 row of plain
 HTTP: 83 of 517,000 connections in this run, and 1, 4 and 6 in three earlier ones (see
 "With more in flight"). The HTTP rows of the two nginx columns are the same nginx version
 doing the same work, the TLS library not involved: they show how much a row moves between
 runs.
 
-Per new TLS connection that is, of both processors' time: k3 460,000 cycles, nginx with
+Per new TLS connection that is, of both processors' time: k15 460,000 cycles, nginx with
 BoringSSL 1.0 million, with OpenSSL 1.9 million, Caddy 2.3 million. The curve arithmetic
-is not where k3 gains. On the development machine, where both were timed (`make bench`,
+is not where k15 gains. On the development machine, where both were timed (`make bench`,
 `openssl speed`), OpenSSL signs with ECDSA P-256 in 71,000 cycles and does an X25519
-multiplication in 113,000; k3 signs in 89,000 (2,000 when it made the nonce while idle)
+multiplication in 113,000; k15 signs in 89,000 (2,000 when it made the nonce while idle)
 and needs 209,000 for its key share and the shared secret together. (On the server
-OpenSSL's two take 77,000 and 120,000.) k3 gains on everything around the arithmetic:
+OpenSSL's two take 77,000 and 120,000.) k15 gains on everything around the arithmetic:
 there is no kernel under it and no socket between the two, and a connection is 128 bytes.
 
 ### What limits whom
 - nginx and Caddy: their processors (`vmstat` on the server: 0 to 6% idle in every row).
-- k3, new TLS connections: its processors (2 to 5% idle; a `DEBUG=2` image and
+- k15, new TLS connections: its processors (2 to 5% idle; a `DEBUG=2` image and
   `bench/busy.sh`).
-- k3, everything else: the path to it. With connections kept it levels off at about
+- k15, everything else: the path to it. With connections kept it levels off at about
   130,000 requests a second, with new plain connections at 35,000 (140,000 frames a
   second in), and at that point its processors are 80 to 89% idle. Two load generators at
-  once get the same total (59,900 + 64,700 requests a second); k3 with one processor gets
+  once get the same total (59,900 + 64,700 requests a second); k15 with one processor gets
   the same (133,000 HTTP requests a second at 15% busy, 126,000 HTTPS at 28%: 2,400 and
   4,800 cycles a request, the driver included). The load generator was not the limit
   either (its processes 80% idle, its one receive queue's processor half idle). What it
   is on the host's side could not be seen from inside the guest.
 - So the three rows marked (1) say less than they could: on a path that carried more,
-  k3 would do several times as much, and the others would not.
+  k15 would do several times as much, and the others would not.
 
 ### With more in flight than can be served
 4,096 connections in flight is more than any of the four can serve in less than half a
 second. What happens then:
-- k3 lets the frames wait (rings of 16,384 frames per processor). New TLS connections at
+- k15 lets the frames wait (rings of 16,384 frames per processor). New TLS connections at
   4,096 in flight: 0.43 s at the median and 99% within 1.4 s in the run above; over six
   runs the median was 0.33 to 0.53 s and the 99th percentile 0.8 to 1.6 s; none took over
   10 s, and an image that counts found no frame lost. (With rings of 4,096, as they were
@@ -122,23 +122,23 @@ second. What happens then:
   (OpenSSL), no connection over 10 s.
 - On port 80, at 4,096 in flight, 1% of the connections take a second longer with every
   server: a SYN lost on the way (the client's own counters say so: `nstat`,
-  TcpExtTCPSynRetrans). k3 at that point asks more of the path than it carries, nginx
-  does not get that far; so k3 has the connections that lose their SYN four times running
+  TcpExtTCPSynRetrans). k15 at that point asks more of the path than it carries, nginx
+  does not get that far; so k15 has the connections that lose their SYN four times running
   and take over 10 s (0.02% in the worst run), and nginx has none. An image that counts
-  showed no frame lost in k3's own rings there. Where on the path they go was not found.
+  showed no frame lost in k15's own rings there. Where on the path they go was not found.
 
 ## The image that serves files (2026-11-12, afternoon)
-Since the night k3 has become what it is meant to be: it serves the files of a site by
+Since the night k15 has become what it is meant to be: it serves the files of a site by
 their paths (`tools/pack.py`), with headers as other servers send them, reads requests
 of up to 4 KB, sends a file a record to a segment with congestion control and a timer,
 asks a client for an x25519 key share if it sent another, and executes nothing that can
 be written. 13,933 bytes with the page of `www/` (13,243 of system; 13,371 since it
 also tells a client it can't serve why not, which these runs did not have), built as
-`./k3 pack www -n IP -i IP -c cert-hz --plain80`.
+`./k15 pack www -n IP -i IP -c cert-hz --plain80`.
 
 The server was not the same machine as in the night (see "The machines": shared
 processors, and a network path that carried a third more plain connections now), so the
-night's image was run again, in turn with the new one (`./k3 deploy` each time):
+night's image was run again, in turn with the new one (`./k15 deploy` each time):
 
 | | the afternoon's image | the night's image, the same afternoon |
 |---|---|---|
@@ -168,18 +168,18 @@ lies so (`HOT` in src/os.asm, `tools/jcc.py`), at the price of 320 bytes of padd
 nginx 1.28.3 with OpenSSL 3.5.5 and `bench/nginx.conf` on the same server with the same
 files and certificate):
 
-| 64 connections that stay | k3 | nginx + OpenSSL |
+| 64 connections that stay | k15 | nginx + OpenSSL |
 |---|---|---|
 | the page (167 bytes), requests a second | 105,247 (512 connections: 113,931) | 30,302 (512: 31,229) |
 | a file of 14,000 bytes | 10,939 a second, 148 MB/s | 22,128 a second, 300 MB/s |
 | a file of 1.5 MiB | 108 a second, 166 MB/s (8 connections: 162 MB/s) | 494 a second, 742 MB/s (8: 757 MB/s) |
 | one fetch of the 1.5 MiB, connection included | 22 to 28 ms | 9 to 15 ms |
 
-k3's 166 MB/s is 115,000 segments a second: the same ceiling of frames as everywhere
+k15's 166 MB/s is 115,000 segments a second: the same ceiling of frames as everywhere
 else in this comparison, with its processors mostly idle. nginx is not under that
 ceiling here because Linux gives the card 64 KB at a time and lets it cut the segments
-(TSO). k3 sends a segment a frame. For large files nginx is four and a half times as
-fast on this server; for the pages and small files a site is mostly made of, k3 three
+(TSO). k15 sends a segment a frame. For large files nginx is four and a half times as
+fast on this server; for the pages and small files a site is mostly made of, k15 three
 times.
 
 Over a distance (the developer's connection, 11 ms away): the 1.5 MiB take 0.3 s. Over
@@ -206,11 +206,11 @@ The image of the afternoon sent a segment a frame, and the path to it carries ab
 - files that get shorter by it are **packed compressed as well** (gzip, brotli), and a
   client that has a file is told so (ETag, 304).
 
-14,245 bytes of system, with the site of `tools/mksite.py` behind it, built as `./k3 pack
+14,245 bytes of system, with the site of `tools/mksite.py` behind it, built as `./k15 pack
 build-hzn/www -n IP -i IP -c cert-hz --plain80`. From the same generator, the same night,
 one server after the other (`bench/files.sh`: wrk, 8 s a row, 64 connections that stay
 unless it says otherwise). wrk's OpenSSL puts AES-256-GCM first, then ChaCha20-Poly1305,
-then AES-128-GCM: nginx takes the first, k3 has no AES-256 and takes the second.
+then AES-128-GCM: nginx takes the first, k15 has no AES-256 and takes the second.
 Browsers put AES-128-GCM first: the rows that say so were asked that way.
 
 | | this image (22:02) | the afternoon's image (20:40) | nginx + OpenSSL 3.5 (20:50) |
@@ -235,7 +235,7 @@ No request failed or took over 2 s in any row. So:
   fast under ChaCha20-Poly1305, which is half of what nginx does with AES-256-GCM;
 - nginx itself was a third faster than in the afternoon (742 MB/s then): the same server
   is not the same machine from hour to hour.
-What limits k3 now is, as far as can be told from outside, sealing: 0.92 GB/s are
+What limits k15 now is, as far as can be told from outside, sealing: 0.92 GB/s are
 650,000 records a second, which is all the time two processors of 2.1 GHz have at 6,500
 cycles a record (a record under AES-128-GCM takes 3,900 on the development machine;
 its frame, its acks and the hash of the tag come on top; how busy the processors were
@@ -283,14 +283,14 @@ a queue of ten packets and a sender that does not pace.
 ## Held connections
 `tools/tapc.c` from the load generator (`bench/hold.sh`; 60,000 from one address is what
 the ports allow):
-- k3: 60,000 TLS connections opened (256 at a time, 28 s: that is the client), each with
+- k15: 60,000 TLS connections opened (256 at a time, 28 s: that is the client), each with
   the chain and the name verified, all held, then the page fetched over each. 30 runs of
   that with the image above, each after a burst of new connections: 1.8 million
   connections, every one opened, verified and served but for one that the client could
   not start (its port was taken). The same with 60,000 plain connections. (Some 17 such
   runs earlier in the night had two failed handshakes between them: that is how the bug in
   finding the key share was found, see CLAUDE.md, "Learned the hard way".)
-- A held connection costs k3 20 bytes on port 80 and 128 bytes on 443, by construction:
+- A held connection costs k15 20 bytes on port 80 and 128 bytes on 443, by construction:
   on this server there is room for 172 million and 3.8 million.
 - nginx: the same 60,000, and what the server's `MemAvailable` loses while they are held:
   4.0 KiB a plain connection; 25.8 KiB a TLS connection with OpenSSL (22 KiB of it in the
@@ -299,7 +299,7 @@ the ports allow):
   tried).
 
 ## Size
-- k3: 11,094 bytes, all of it: boot code, driver, TCP, TLS, the two curves, the page.
+- k15: 11,094 bytes, all of it: boot code, driver, TCP, TLS, the two curves, the page.
   (The afternoon's image: 13,243 bytes and the site.)
 - nginx + OpenSSL: nginx 1.6 MB, libssl 1.1 MB, libcrypto 6.4 MB; under them the kernel
   (vmlinuz, compressed: 17.3 MB) and the rest of a Linux system.
@@ -307,21 +307,21 @@ the ports allow):
 - Caddy: 39.2 MB, and the kernel.
 
 By the project's own measure, connections that can be held per KiB of what has to be on
-the disk (kernel included, the rest of the system not), TLS: k3 about 350,000 (3.8 million
+the disk (kernel included, the rest of the system not), TLS: k15 about 350,000 (3.8 million
 slots, 10.8 KiB); nginx + BoringSSL about 20; nginx + OpenSSL about 5.
 
 ## What this does not say
 - nginx and Caddy are web servers: any file, any header, virtual hosts, HTTP/2, logs,
-  reloads, every cipher and curve a client may want, session resumption. In the night k3
+  reloads, every cipher and curve a client may want, session resumption. In the night k15
   served one page of one segment to clients that speak TLS 1.3 with an X25519 share, and
   nothing else: its response was 59 bytes (a status line and one header), nginx's 256 (a
   status line and eight). The afternoon's image serves a site's files with six headers
   (179 bytes for that page), and still nothing but GET and HEAD of what was packed into
   it.
 - Large files: see "Large files: many records to a frame".
-- No resumption was measured, because k3 has none: every connection here is a full
+- No resumption was measured, because k15 has none: every connection here is a full
   handshake. A server with session tickets does a returning client's handshake for less;
-  how nginx then compares with k3's full handshake was not measured.
+  how nginx then compares with k15's full handshake was not measured.
 - One server, one location, one night, shared vCPUs. Not measured: other instance types,
   dedicated cores, more than two processors on a real machine, anything over a real
   distance.
@@ -329,7 +329,7 @@ slots, 10.8 KiB); nginx + BoringSSL about 20; nginx + OpenSSL about 5.
   a 27-byte page) and does not verify certificates. A different mix moves all four.
 - Unikraft and F-Stack were not measured. Unikraft needs a hypervisor of its own (these
   cloud servers don't offer nested virtualisation; on the development machine it could be
-  run next to k3 under QEMU, which nobody has set up yet). F-Stack needs DPDK to take the
+  run next to k15 under QEMU, which nobody has set up yet). F-Stack needs DPDK to take the
   network card away from Linux, which on a server with one card takes away ssh as well.
 - BoringSSL was measured inside nginx only, not by itself.
 
@@ -339,25 +339,25 @@ slots, 10.8 KiB); nginx + BoringSSL about 20; nginx + OpenSSL about 5.
    `www/`, `bench/run.sh`, `bench/busy.sh`, `bench/hold.sh`, and in `build/` the server's
    `ca.pem` and `name` (from `build-hz/`); `gcc -O2 -o build/bench tools/bench.c -lssl
    -lcrypto` (tapc the same).
-2. k3: build without `KNOCK`, `tools/deploy.sh`, then on the generator `./run.sh IP`.
+2. k15: build without `KNOCK`, `tools/deploy.sh`, then on the generator `./run.sh IP`.
    `hcloud server reset k3` brings Linux back.
 3. nginx: copy `bench/nginx.conf`, `www/index.html` and `cert-hz/server.pem` and
-   `server.key` to `/root/k3bench/` on the server, `ssh root@server 'bash -s' <
+   `server.key` to `/root/k15bench/` on the server, `ssh root@server 'bash -s' <
    bench/setup-nginx.sh`, then `./run.sh IP`. With BoringSSL: `bench/build-nginx-boring.sh`
    on the generator, the binary to the server, started as that script's first lines say.
    Caddy: its package, `bench/Caddyfile`.
 4. Held connections: `./hold.sh tls 60000 IP` on the generator, and when it says "all
    open", `touch /tmp/bar/go` (before that is the time to read the server's
    `/proc/meminfo`).
-5. How busy k3 is: an image with `DEBUG=2`, then `./busy.sh IP PLAIN=1 DST=IP:80 P=8 W=64
+5. How busy k15 is: an image with `DEBUG=2`, then `./busy.sh IP PLAIN=1 DST=IP:80 P=8 W=64
    KA=1000000` and the like.
-6. Afterwards: the server's key is on its disk in `/root/k3bench` and `/etc/nginx/k3bench`
+6. Afterwards: the server's key is on its disk in `/root/k15bench` and `/etc/nginx/k15bench`
    (remove both, and the packages), and the generator costs by the hour (`hcloud server
    delete`). On 2026-11-12 the server was left as it was found: Ubuntu, nothing of this
-   on it but `/boot/k3.bin` and its GRUB entry.
-7. Two images of k3 in turn: `./k3 deploy IP DIR --reset 'hcloud server reset k3'` for
+   on it but `/boot/k15.bin` and its GRUB entry.
+7. Two images of k15 in turn: `./k15 deploy IP DIR --reset 'hcloud server reset k3'` for
    each, and the rows that matter between (the afternoon used the first two of run.sh,
    twice, 12 s each). Files: `./files.sh IP [all]` on the generator (`apt-get install
    wrk`; `bench/files.sh` beside run.sh); for nginx the site's folder goes to
-   `/var/www/k3bench`. While 15kb.org lives on the server, every such deploy takes it
-   down: `./k3 deploy IP build-15kb.org --persist --reset ...` puts it back.
+   `/var/www/k15bench`. While 15kb.org lives on the server, every such deploy takes it
+   down: `./k15 deploy IP build-15kb.org --persist --reset ...` puts it back.
