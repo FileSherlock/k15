@@ -70,9 +70,10 @@ static void want(conn *c, int ev) {
     c->ev = ev;
 }
 
-static void fail(conn *c) {
+static void fail(conn *c, const char *why) {
     static const char *const what[] = {"unused", "connecting", "handshake", "idle", "request", "response", "failed"};
-    fprintf(stderr, "FAILED: %s port %d while in %s\n", inet_ntoa(src.sin_addr), ntohs(src.sin_port) + (int)(c - C), what[c->st]);
+    fprintf(stderr, "FAILED: %s port %d while in %s: %s\n", inet_ntoa(src.sin_addr), ntohs(src.sin_port) + (int)(c - C),
+            what[c->st], why);
     if (c->st == CONNECTING || c->st == HANDSHAKE) hs_err++, inflight--;
     else if (c->st == REQUEST || c->st == RESPONSE) get_err++, inflight--, opened--;
     else if (c->st == IDLE) closed_err++, opened--;
@@ -81,6 +82,18 @@ static void fail(conn *c) {
     close(c->fd);
     c->st = FAILED;
     ERR_clear_error();
+}
+
+static const char *why(conn *c, int r) {  // what a call that failed for good says about it
+    static char b[200];
+    if (PLAIN) return r == 0 ? "closed by the server" : strerror(errno);
+    int e = SSL_get_error(c->ssl, r);
+    unsigned long q = ERR_peek_error();
+    if (e == SSL_ERROR_SSL && q) return ERR_error_string_n(q, b, sizeof b), b;
+    if (e == SSL_ERROR_SYSCALL) return errno ? strerror(errno) : "closed by the server, no close_notify";
+    if (e == SSL_ERROR_ZERO_RETURN) return "closed by the server";
+    snprintf(b, sizeof b, "SSL error %d", e);
+    return b;
 }
 
 static int blocked(conn *c, int r) {  // after an SSL call failed: 1 = wait for the socket
@@ -93,6 +106,8 @@ static int blocked(conn *c, int r) {  // after an SSL call failed: 1 = wait for 
 
 static int body_ok(const char *b, int n) {
     const char *end = memmem(b, n, "\n\n", 2), *cl = memmem(b, n, "Content-Length:", 15);
+    const char *crlf = memmem(b, n, "\r\n\r\n", 4);  // (other servers than ours end lines so)
+    if (crlf && (!end || crlf < end)) end = crlf + 2;
     if (!end || !cl) return 0;
     int len = atoi(cl + 15);
     end += 2;
@@ -103,14 +118,14 @@ static void drive(conn *c, uint32_t ev) {
     char buf[1024];
     int r;
     if (c->st == IDLE) {  // the server never speaks first: any event on an idle connection means it died
-        fail(c);
+        fail(c, "the server spoke or closed");
         return;
     }
     if (c->st == CONNECTING) {
         int err = 0;
         socklen_t l = sizeof err;
         getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &err, &l);
-        if (err) return fail(c);
+        if (err) return fail(c, strerror(err));
         if (PLAIN) {
             c->st = IDLE;
             inflight--;
@@ -125,7 +140,7 @@ static void drive(conn *c, uint32_t ev) {
     }
     if (c->st == HANDSHAKE) {
         if ((r = SSL_do_handshake(c->ssl)) != 1) {
-            if (!blocked(c, r)) fail(c);
+            if (!blocked(c, r)) fail(c, why(c, r));
             return;
         }
         c->st = IDLE;
@@ -136,17 +151,17 @@ static void drive(conn *c, uint32_t ev) {
     }
     if (c->st == REQUEST) {
         if ((r = PLAIN ? write(c->fd, REQ, sizeof REQ - 1) : SSL_write(c->ssl, REQ, sizeof REQ - 1)) <= 0) {
-            if (!blocked(c, r)) fail(c);
+            if (!blocked(c, r)) fail(c, why(c, r));
             return;
         }
         c->st = RESPONSE;
     }
     if (c->st == RESPONSE) {
         if ((r = PLAIN ? read(c->fd, buf, sizeof buf) : SSL_read(c->ssl, buf, sizeof buf)) <= 0) {
-            if (!blocked(c, r)) fail(c);
+            if (!blocked(c, r)) fail(c, why(c, r));
             return;
         }
-        if (!body_ok(buf, r)) return fail(c);  // each response is one TLS record
+        if (!body_ok(buf, r)) return fail(c, "not the page");  // each response is one TLS record
         c->st = IDLE;
         inflight--;
         served++;
@@ -172,7 +187,7 @@ static void start(int i) {
     if (bind(c->fd, (void *)&a, sizeof a) < 0 ||
         (connect(c->fd, (void *)&dst, sizeof dst) < 0 && errno != EINPROGRESS)) {
         fprintf(stderr, "bind/connect port %d: %s\n", ntohs(a.sin_port), strerror(errno));
-        return fail(c);
+        return fail(c, "bind/connect");
     }
     c->ev = EPOLLOUT;
     struct epoll_event e = {.events = EPOLLOUT, .data.ptr = c};
@@ -188,7 +203,7 @@ static void pump(void) {
     if (t != last) {
         last = t;
         for (int i = 0; i < in_use; i++)
-            if (C[i].st != IDLE && C[i].st != FAILED && C[i].st != UNUSED && C[i].deadline < t) fail(&C[i]);
+            if (C[i].st != IDLE && C[i].st != FAILED && C[i].st != UNUSED && C[i].deadline < t) fail(&C[i], "took too long");
     }
 }
 

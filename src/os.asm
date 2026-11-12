@@ -2117,17 +2117,50 @@ handshake:
         rep movsb
         pop rsi
         mov ebx, edi            ; the ServerHello goes here
-        mov eax, TR             ; find the client's x25519 key share (group, length). If it
-        mov edx, 0x20001d00     ; sent none, this stops the search: we then answer
-        mov [rdi], edx          ; with a "share" of junk, and the client gives up
-.ks:    inc eax
-        cmp [rax], edx
-        jne .ks
-        push rax
+        ; The client's x25519 key share. Behind the session id, the cipher suites and the
+        ; compression methods come the extensions: type, length, data (two bytes each for
+        ; the first two). The one of type 51 holds the key shares, which look the same:
+        ; group, length, key. Ours is group 29 with 32 bytes. Every length is the client's:
+        ; what is walked has 36 bytes of ClientHello in front of it, or the walk ends. If
+        ; there is no such share, we answer with a "share" of junk (the client's random),
+        ; and the client gives up. (This was once a search for the four bytes 00 1d 00 20.
+        ; A client's other key shares are a kilobyte of random-looking bytes these days:
+        ; once in two million handshakes they held those four.)
+        mov eax, TR + 2
+        lea edi, [rax+36]
+        movzx ecx, byte [rdi]   ; session id (these two lengths are within reach in any case:
+        lea edi, [rdi+rcx+1]    ; the transcript has room for a ClientHello of any size)
+        movzx ecx, word [rdi]
+        xchg cl, ch             ; cipher suites
+        lea edi, [rdi+rcx+2]
+        cmp edi, ebx
+        jae .nks
+        movzx ecx, byte [rdi]   ; compression methods, and the extensions' length
+        lea edi, [rdi+rcx+3]
+        mov edx, 0x3300         ; looking for: the extension with the key shares (51)
+.walk:  lea ecx, [rdi+36]
+        cmp ecx, ebx
+        ja .nks
+        movzx ecx, word [rdi+2]
+        xchg cl, ch             ; its length
+        cmp [rdi], dx
+        je .hit
+.next:  lea edi, [rdi+rcx+4]
+        jmp .walk
+.hit:   cmp dh, 0x33
+        jne .share
+        mov dh, 0x1d            ; in it: the share for x25519 (29),
+        add edi, 6
+        jmp .walk
+.share: cmp ecx, 32             ; which is 32 bytes
+        jne .next
+        xchg eax, edi
+.nks:   push rax                ; (the key is 4 bytes on from there)
         push rsi
         mov esi, HT             ; the transcript's hash starts over
         mov edi, TSH
-        mov cl, 8               ; (ecx = 0 after the copy above)
+        xor ecx, ecx
+        mov cl, 8
         rep movsd
         mov dword [TPOS], TR
         pop rsi

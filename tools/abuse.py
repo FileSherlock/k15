@@ -3,8 +3,10 @@
 
   1. forged, truncated and replayed records inside a real TLS connection are ignored, and
      the connection still serves the next real request (so they moved no sequence number)
-  2. a ClientHello without an x25519 key share gets no working session
-  3. junk instead of a ClientHello, and an oversized "ClientHello", do no harm
+  2. a ClientHello without an x25519 key share gets no working session, and one with bytes
+     that look like the start of one in another extension is served all the same
+  3. junk instead of a ClientHello, an oversized "ClientHello", and a real one cut short
+     anywhere or with any of its lengths gone wrong, do no harm
   4. after all of that a normal client is still served
   5. plain HTTP on port 80 (127.0.0.1:$HPORT): a request in pieces gets one response, two in
      one segment get two, bytes without an empty line get none
@@ -90,6 +92,47 @@ def served(ctx=None):
         return False
 
 
+def client_hello():
+    """The ClientHello this machine's TLS sends (the handshake message, without the record header)."""
+    inc, out = ssl.MemoryBIO(), ssl.MemoryBIO()
+    tls = context().wrap_bio(inc, out, server_hostname=NAME)
+    try:
+        tls.do_handshake()
+    except ssl.SSLWantReadError:
+        pass
+    rec = out.read()
+    assert rec[0] == 22 and rec[5] == 1 and int.from_bytes(rec[3:5], "big") == len(rec) - 5, "one record with a ClientHello"
+    return rec[5:]
+
+
+def lengths(hello):
+    """(offset, size) of every length field in a ClientHello: the message's own, session id,
+    cipher suites, compression methods, extensions, each extension, and inside the key
+    share extension the list and each share."""
+    out = [(1, 3)]
+    p = 38
+    out.append((p, 1))
+    p += 1 + hello[p]
+    out.append((p, 2))
+    p += 2 + int.from_bytes(hello[p:p + 2], "big")
+    out.append((p, 1))
+    p += 1 + hello[p]
+    out.append((p, 2))
+    p += 2
+    while p + 4 <= len(hello):
+        kind, n = int.from_bytes(hello[p:p + 2], "big"), int.from_bytes(hello[p + 2:p + 4], "big")
+        out.append((p + 2, 2))
+        if kind == 51:
+            out.append((p + 4, 2))
+            q = p + 6
+            while q + 4 <= p + 4 + n:
+                out.append((q + 2, 2))
+                q += 4 + int.from_bytes(hello[q + 2:q + 4], "big")
+        p += 4 + n
+    assert p == len(hello), "a ClientHello as we know them"
+    return out
+
+
 def check(name, ok):
     print(("ok  " if ok else "FAIL"), name)
     return ok
@@ -132,6 +175,15 @@ def main():
     # 2. no x25519 share
     good &= check("a client offering only P-256 gets no session", not served(context("prime256v1")))
 
+    # 2b. The four bytes that introduce an x25519 key share (group 29, 32 bytes long) in an
+    # extension that comes before the key shares. The share was once looked for by those
+    # bytes alone; a client's other key shares are a kilobyte of random-looking bytes these
+    # days, and had them once in two million handshakes (the server then took the wrong
+    # 32 bytes for the key, and the client could not read the answer).
+    decoy = context()
+    decoy.set_alpn_protocols(["\x00\x1d\x00 " + "k" * 32])
+    good &= check("the key share is found behind an extension that looks like its start", served(decoy))
+
     # 3. junk and oversized hellos
     for name, data in (("random bytes", os.urandom(3000)),
                        ("a 16 KB ClientHello record", bytes([22, 3, 1, 0x40, 0]) + os.urandom(9000)),
@@ -147,6 +199,24 @@ def main():
             pass
         s.close()
         good &= check(f"still serving after {name}", served())
+
+    # 3b. A real ClientHello, cut short at every length, and with each of its lengths in
+    # turn at its largest: the server walks it to find the key share, and must not walk
+    # out of it. (A fault resets the machine: nothing would be served after that.)
+    hello = client_hello()
+    variants = [hello[:n] for n in range(1, len(hello))]
+    for at, size in lengths(hello):
+        variants.append(hello[:at] + b"\xff" * size + hello[at + size:])
+        variants.append(hello[:at] + b"\x00" * size + hello[at + size:])
+    for body in variants:
+        s = socket.create_connection((HOST, PORT), timeout=5)
+        try:
+            s.sendall(bytes([22, 3, 1]) + len(body).to_bytes(2, "big") + body)
+        except OSError:
+            pass
+        s.close()
+    good &= check(f"still serving after {len(variants)} ClientHellos cut short or with a length gone wrong", served())
+    good &= check("and the one they were made from is served", served())
 
     # 5. port 80
     def plain(pieces, want):
