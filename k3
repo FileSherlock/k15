@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+# k3: a folder of static files becomes a bootable HTTPS server, and gets onto a machine.
+#
+#   k3 pack SITE [-n NAME] [-i IP] [-c CERTDIR] [-o OUT] [--plain80] [--hsts SECONDS]
+#                [--cache SECONDS] [--header 'Name: value']
+#       OUT/os.bin (the image: what a multiboot loader such as GRUB starts) and OUT/disk.img
+#       (the same behind a boot sector: what a BIOS starts from a disk). NAME is what the
+#       certificate is for and what port 80 redirects to (a DNS name or an IP address;
+#       default 127.0.0.1), IP the address the server answers on (default 10.0.2.15, QEMU's).
+#       CERTDIR holds server.key (ECDSA P-256) and server.pem (the chain); if it has
+#       neither, a certificate for NAME under a private CA is made there (OUT/ca.pem is
+#       then what clients must trust). OUT defaults to build-NAME, CERTDIR to cert-NAME.
+#       How it was packed is kept in OUT/pack.conf, for `k3 renew`.
+#   k3 run [OUT] [-p PORT]
+#       Boot OUT/disk.img in QEMU: https://127.0.0.1:8443/ and http://127.0.0.1:9443/
+#       (or PORT and PORT + 1000).
+#   k3 deploy HOST [OUT] [--persist] [--reset 'COMMAND']
+#       Put OUT/os.bin on a server that runs Linux with GRUB (ssh root@HOST) and start it.
+#       Linux stays installed. Without --persist a later reset of the server starts Linux
+#       again. With it, Linux, whenever it comes up, waits a minute for somebody to say
+#       "hold" (which this command does when it needs the machine) and then starts k3: so
+#       k3 survives a reset, and the way back in is a reset. If k3 is running there now,
+#       --reset says how to reset the server (say 'hcloud server reset NAME').
+#   k3 renew HOST [OUT] --reset 'COMMAND' [--days N] [--force] [--dry-run] [--email ADDRESS]
+#                [--staging]
+#       A new certificate from Let's Encrypt for the name OUT was packed for (which must
+#       point at the server), if the one in its CERTDIR ends within N days (30); else
+#       nothing happens, and nothing is touched: so this can run from cron every day.
+#       --force gets one whatever the old one says (the first time, when the old one is
+#       from the private CA). When it is time: a new key and a request for a certificate
+#       are made here; the server is reset into Linux, where certbot answers Let's
+#       Encrypt's challenge on port 80 for that request; the certificate comes back; OUT
+#       is packed again as it was packed before, with the new key and certificate, and
+#       started. A minute or two without a server. The key never leaves this machine but
+#       inside the image. If no certificate comes, the image as it was is started again.
+#       --dry-run stops before the server is touched and says what would be asked for.
+#
+# The image holds the private key: OUT and CERTDIR are secrets, and are made for their
+# owner's eyes only; so is /boot/k3.bin on the server.
+set -euo pipefail
+umask 077
+HERE=$PWD
+cd "$(dirname "$0")"
+die() { echo "k3: $*" >&2; exit 1; }
+SSHO=(-o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new)
+# (paths are the caller's, not this folder's; make can't have blanks in them)
+abs() {
+  local p=$1
+  [[ $p == /* ]] || p=$HERE/$p
+  [[ $p == *[[:space:]]* ]] && die "a path with a blank in it: '$p'"
+  printf '%s\n' "$p"
+}
+
+# build SITE NAME IP CERT OUT P80 HSTS CACHE HEADERS: make the image, and note how
+build() {
+  make -s B="$5" SITE="$1" CERT="$4" NAME="$2" IP="$3" P80="$6" HSTS="$7" CACHE="$8" HEADERS="$9" >/dev/null
+  printf 'site=%q\nname=%q\nip=%q\ncert=%q\np80=%q\nhsts=%q\ncache=%q\nheaders=%q\n' \
+    "$1" "$2" "$3" "$4" "$6" "$7" "$8" "$9" > "$5/pack.conf"
+  chmod -R go= "$5" "$4"
+  local total site_bytes name
+  total=$(stat -c %s "$5/os.bin")
+  site_bytes=$(stat -c %s "$5/site.bin")
+  name=$(cat "$5/name")
+  echo "$5/os.bin: $total bytes ($((total - site_bytes)) of system, $site_bytes of site), for https://$name/ on $3"
+  if [[ -s $5/ca.pem ]]; then
+    echo "its certificate is under a private CA: clients need $5/ca.pem (curl --cacert $5/ca.pem)"
+  fi
+}
+
+pack() {
+  local site=${1:-} name=127.0.0.1 ip=10.0.2.15 cert= out= p80=redirect hsts= cache=600 headers=
+  [[ -n $site ]] || die "pack: which folder?"
+  site=$(abs "$site")
+  [[ -d $site ]] || die "pack: no such folder: '$site'"
+  shift
+  while (($#)); do
+    case $1 in
+      -n) name=$2; shift 2;; -i) ip=$2; shift 2;; -c) cert=$2; shift 2;; -o) out=$2; shift 2;;
+      --plain80) p80=page; shift;; --hsts) hsts=$2; shift 2;; --cache) cache=$2; shift 2;;
+      --header) headers+="$2;;"; shift 2;;
+      *) die "pack: what is '$1'?";;
+    esac
+  done
+  out=$(abs "${out:-build-$name}")
+  cert=$(abs "${cert:-cert-$name}")
+  build "$site" "$name" "$ip" "$cert" "$out" "$p80" "$hsts" "$cache" "$headers"
+}
+
+run() {
+  local out=build port=8443
+  while (($#)); do
+    case $1 in
+      -p) port=$2; shift 2;;
+      -*) die "run: what is '$1'?";;
+      *) out=$1; shift;;
+    esac
+  done
+  out=$(abs "$out")
+  local hport=$((port + 1000))
+  [[ -f $out/disk.img ]] || die "run: no $out/disk.img (k3 pack first)"
+  local name ip
+  name=$(cat "$out/name")
+  ip=$(cat "$out/ip")
+  [[ $ip == 10.0.2.15 ]] || echo "(this image answers on $ip; QEMU's network is made to match)"
+  local accel=(-cpu max)
+  [[ -w /dev/kvm ]] && accel=(-accel kvm -cpu host)
+  echo "https://127.0.0.1:$port/  http://127.0.0.1:$hport/   (Ctrl-C ends it)"
+  local ca=
+  [[ -s $out/ca.pem ]] && ca="--cacert $out/ca.pem "
+  echo "curl ${ca}--connect-to $name:$port:127.0.0.1:$port https://$name:$port/"
+  exec qemu-system-x86_64 -nodefaults -display none -no-reboot -machine q35 -smp 2 "${accel[@]}" -m 256 \
+    -drive "file=$out/disk.img,format=raw,if=none,id=d0,snapshot=on" \
+    -netdev "user,id=n0,net=${ip%.*}.0/24,host=${ip%.*}.2,hostfwd=tcp:127.0.0.1:$port-$ip:443,hostfwd=tcp:127.0.0.1:$hport-$ip:80" \
+    -device pcie-root-port,id=rp1,chassis=1 -device virtio-net-pci,bus=rp1,netdev=n0,disable-legacy=on,romfile= \
+    -device pcie-root-port,id=rp2,chassis=2 -device virtio-scsi-pci,bus=rp2 -device scsi-hd,drive=d0
+}
+
+# linux HOST RESET: make sure Linux is running there and stays (a "hold" for the chain into
+# k3, if that is installed); if ssh does not answer, RESET is run first
+linux() {
+  local host=$1 reset=$2
+  if ! ssh "${SSHO[@]}" "root@$host" 'touch /run/k3.hold' 2>/dev/null; then
+    [[ -n $reset ]] || die "ssh root@$host does not answer. If k3 is running there, say how to reset the server: --reset 'COMMAND'"
+    echo "resetting the server: $reset"
+    bash -c "$reset" >/dev/null
+    local i
+    for i in $(seq 1 60); do
+      sleep 3
+      ssh "${SSHO[@]}" "root@$host" 'touch /run/k3.hold' 2>/dev/null && break
+      [[ $i == 60 ]] && die "Linux did not come up on $host within three minutes"
+    done
+  fi
+  echo "Linux is up on $host, and held"
+}
+
+# start HOST OUT PERSIST: the image goes to /boot/k3.bin (for root's eyes only: it holds
+# the key), GRUB gets its entry, and the server boots into it. PERSIST: 1 (Linux starts k3
+# whenever it comes up), 0 (it does not), keep (as it is there now)
+start() {
+  local host=$1 out=$2 persist=$3
+  ssh "${SSHO[@]}" "root@$host" 'umask 077 && rm -f /boot/k3.bin.new && cat > /boot/k3.bin.new && chmod 600 /boot/k3.bin.new && mv /boot/k3.bin.new /boot/k3.bin' < "$out/os.bin"
+  ssh "${SSHO[@]}" "root@$host" "PERSIST=$persist bash -s" <<'EOF'
+set -e
+if ! grep -q 'menuentry "k3"' /etc/grub.d/40_custom; then
+  UUID=$(findmnt -no UUID /boot 2>/dev/null || findmnt -no UUID /)
+  cat >> /etc/grub.d/40_custom <<END
+menuentry "k3" --id k3 {
+    insmod part_gpt
+    insmod ext2
+    insmod multiboot
+    search --no-floppy --fs-uuid --set=root $UUID
+    multiboot /boot/k3.bin
+}
+END
+  update-grub 2>&1 | tail -1
+fi
+UNIT=/etc/systemd/system/k3-chain.service
+if [ "$PERSIST" = 1 ]; then
+  cat > $UNIT <<END
+[Unit]
+Description=Start k3 a minute after Linux has come up, unless somebody holds it (touch /run/k3.hold)
+After=multi-user.target
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'sleep 60; [ -e /run/k3.hold ] || { grub-reboot k3 && systemctl reboot; }'
+[Install]
+WantedBy=multi-user.target
+END
+  chmod 644 $UNIT
+  systemctl daemon-reload
+  systemctl enable k3-chain.service >/dev/null 2>&1
+elif [ "$PERSIST" = 0 ] && [ -e $UNIT ]; then
+  systemctl disable k3-chain.service >/dev/null 2>&1 || true
+  rm -f $UNIT
+  systemctl daemon-reload
+fi
+grub-reboot k3
+sync
+nohup sh -c "sleep 1; systemctl reboot" >/dev/null 2>&1 &
+EOF
+  local name ca=()
+  name=$(cat "$out/name")
+  [[ -s $out/ca.pem ]] && ca=(--cacert "$out/ca.pem")
+  local i
+  for i in $(seq 1 40); do
+    sleep 2
+    if curl -s --max-time 4 "${ca[@]}" --connect-to "$name:443:$host:443" -o /dev/null "https://$name/"; then
+      echo "k3 is up: https://$name/ (a verified fetch from $host)"
+      return 0
+    fi
+  done
+  die "the server did not answer https://$name/ within 80 s. A reset brings Linux back."
+}
+
+deploy() {
+  local host=${1:-} out= persist=0 reset=
+  [[ -n $host ]] || die "deploy: which host?"
+  shift
+  while (($#)); do
+    case $1 in
+      --persist) persist=1; shift;; --reset) reset=$2; shift 2;;
+      -*) die "deploy: what is '$1'?";;
+      *) out=$1; shift;;
+    esac
+  done
+  out=$(abs "${out:-build}")
+  [[ -f $out/os.bin ]] || die "deploy: no $out/os.bin (k3 pack first)"
+  linux "$host" "$reset"
+  start "$host" "$out" "$persist"
+}
+
+renew() {
+  local host=${1:-} out= reset= email= staging= force= dry= days=30
+  [[ -n $host && $host != -* ]] || die "renew: which host?"
+  shift
+  while (($#)); do
+    case $1 in
+      --reset) reset=$2; shift 2;; --email) email=$2; shift 2;; --staging) staging=--staging; shift;;
+      --force) force=1; shift;; --days) days=$2; shift 2;; --dry-run) dry=1; shift;;
+      -*) die "renew: what is '$1'?";;
+      *) out=$1; shift;;
+    esac
+  done
+  out=$(abs "${out:-build}")
+  [[ -f $out/pack.conf ]] || die "renew: $out/pack.conf is not there (k3 pack makes it: how the image is to be packed again)"
+  local site name ip cert p80 hsts cache headers
+  # shellcheck disable=SC1091
+  source "$out/pack.conf"
+  # Is it time? If not, this was all: nothing is reset, nobody is asked for anything.
+  if [[ -z $force && -f $cert/server.pem ]] && openssl x509 -checkend $((days * 86400)) -noout -in "$cert/server.pem" >/dev/null; then
+    echo "the certificate for $name is good until $(openssl x509 -enddate -noout -in "$cert/server.pem" | cut -d= -f2): nothing to do (--force gets a new one all the same)"
+    return 0
+  fi
+  # A new key (the kind the image signs with: ECDSA on P-256) and a request for a
+  # certificate for it. Both are made here: only the request goes to the server.
+  local new san="DNS:$name"
+  [[ $name =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ || $name == *:* ]] && san="IP:$name"
+  mkdir -p "$cert"
+  new=$(mktemp -d "$cert/.new.XXXXXX")
+  drop() { rm -f "$new/server.key" "$new/csr.pem" "$new/server.pem"; rmdir "$new"; }
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$new/server.key" 2>/dev/null
+  openssl req -new -key "$new/server.key" -subj "/CN=$name" -addext "subjectAltName=$san" -out "$new/csr.pem"
+  if [[ -n $dry ]]; then
+    echo "would ask Let's Encrypt for a certificate for $san ($(openssl req -in "$new/csr.pem" -noout -subject)), then pack $site again and start it on $host"
+    drop
+    return 0
+  fi
+  linux "$host" "$reset"
+  local contact=--register-unsafely-without-email
+  [[ -n $email ]] && contact="--email $email"
+  ssh "${SSHO[@]}" "root@$host" 'cat > /run/k3.csr' < "$new/csr.pem"
+  if ! ssh "${SSHO[@]}" "root@$host" "set -e
+      command -v certbot >/dev/null || { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot >/dev/null; }
+      rm -f /run/k3.cert.pem /run/k3.chain.pem /run/k3.full.pem
+      certbot certonly --standalone --non-interactive --agree-tos $contact $staging --csr /run/k3.csr \\
+        --cert-path /run/k3.cert.pem --chain-path /run/k3.chain.pem --fullchain-path /run/k3.full.pem >/dev/null
+      cat /run/k3.full.pem
+      rm -f /run/k3.csr /run/k3.cert.pem /run/k3.chain.pem /run/k3.full.pem" > "$new/server.pem" ||
+     [[ $(openssl x509 -pubkey -noout -in "$new/server.pem" 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum) != \
+        $(openssl pkey -in "$new/server.key" -pubout -outform DER | sha256sum) ]]; then
+    drop
+    echo "k3: no certificate came for $name: starting the image as it was" >&2
+    start "$host" "$out" keep
+    exit 1
+  fi
+  # The old pair is kept beside the new one, the image packed again as it was packed, and started.
+  mkdir -p "$cert/old"
+  [[ -f $cert/server.key ]] && cp -p "$cert/server.key" "$cert/server.pem" "$cert/old/"
+  mv "$new/server.key" "$cert/server.key"
+  mv "$new/server.pem" "$cert/server.pem"
+  rm -f "$cert/ca.pem"            # (a public chain: nothing for clients to add)
+  drop
+  build "$site" "$name" "$ip" "$cert" "$out" "$p80" "$hsts" "$cache" "$headers"
+  start "$host" "$out" keep
+}
+
+case ${1:-} in
+  pack) shift; pack "$@";;
+  run) shift; run "$@";;
+  deploy) shift; deploy "$@";;
+  renew) shift; renew "$@";;
+  *) sed -n '2,/^set -euo pipefail$/{/^set -euo pipefail$/!p}' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
+esac

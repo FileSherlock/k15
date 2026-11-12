@@ -269,16 +269,14 @@ int main(int argc, char **argv) {
     SPLIT = getenv("SPLIT") != NULL;
     int rounds = (e = getenv("ROUNDS")) ? atoi(e) : 1, hold = (e = getenv("HOLD")) ? atoi(e) : 0;
 
-    FILE *f = fopen("www/index.html", "rb");
-    if (!f) return perror("www/index.html"), 2;
-    char html[2048];
-    int hl = fread(html, 1, sizeof html, f);
-    fclose(f);
-    rlen = snprintf(resp, sizeof resp, "HTTP/1.1 200\nContent-Length:%d\n\n", hl);
-    memcpy(resp + rlen, html, hl);
-    rlen += hl;
-
     char cmd[128], line[256] = "";
+    snprintf(cmd, sizeof cmd, "%s/page80.bin", (e = getenv("B")) ? e : "build");  // what port 80 says (tools/pack.py)
+    FILE *f = fopen(cmd, "rb");
+    if (!f) return perror(cmd), 2;
+    rlen = fread(resp, 1, sizeof resp, f);
+    fclose(f);
+    if (rlen < 1 || rlen > 1400) return fprintf(stderr, "%s: a response of one segment is all this client knows\n", cmd), 2;
+
     const char *via = (e = getenv("VIA")) ? e : guest;
     snprintf(cmd, sizeof cmd, "ip neigh show %s", via);
     f = popen(cmd, "r");

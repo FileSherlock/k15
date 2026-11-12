@@ -16,12 +16,22 @@ typedef unsigned int u32;
 static void sha(u8 *out, u8 *m, u32 n) { ASMCALL(sha256, "+D"(out), "+S"(m), "+c"(n)); }
 static void hm(u8 *out, const u8 *k, const u8 *m, u32 n) { ASMCALL(hmac, "+D"(out), "+b"(k), "+S"(m), "+c"(n)); }
 static void ex(u8 *out, const u8 *sec, const char *lab, const u8 *ctx) { ASMCALL(expand, "+D"(out), "+b"(sec), "+S"(lab), "+d"(ctx)); }
+/* a record for the n bytes at m, of which the last says what the others are */
 static u32 sl(u8 *o, const u8 *m, u32 n, const u8 *kiv, u32 seq)
 {
     u8 *e = o;
-    __asm__ volatile("clc\n\tcall seal" : "+D"(e), "+S"(m), "+c"(n), "+b"(kiv), "+d"(seq) : : SCRATCH); /* CF = 0: encrypt */
+    u32 type = m[--n];
+    __asm__ volatile("clc\n\tcall seal" : "+D"(e), "+S"(m), "+c"(n), "+b"(kiv), "+d"(seq), "+a"(type) : : SCRATCH); /* CF = 0: encrypt */
     return e - o;
 }
+/* what a record held (n bytes at c, between header and tag), decrypted, and the tag it should have had */
+static u32 op(u8 *o, const u8 *c, u32 n, const u8 *kiv, u32 seq)
+{
+    u8 *e = o;
+    __asm__ volatile("stc\n\tcall seal" : "+D"(e), "+S"(c), "+c"(n), "+b"(kiv), "+d"(seq) : : SCRATCH); /* CF = 1: decrypt */
+    return e - o;
+}
+extern u8 CIPH[];
 
 extern u8 E[], REGS[];
 enum { R_X = 3 * 32, R_Y = 4 * 32 }; /* as in tools/ec.py */
@@ -62,14 +72,17 @@ int main(void)
     hex("hmac", h, 32);
     ex(h, m, "\x20\x07" "derived", m + 100);
     hex("expand", h, 32);
-    for (i = 0; i < 32; i++) kiv[i] = m[300 + i], kiv[36 + i] = m[400 + i];
-    for (i = 0; i < 12; i++) {       /* ChaCha20-Poly1305, then AES-128-GCM (the key block says) */
+    for (i = 0; i < 32; i++) kiv[i] = m[300 + i], kiv[32 + i] = m[400 + i];
+    for (i = 0; i < 12; i++) {       /* ChaCha20-Poly1305, then AES-128-GCM (CIPH says) */
         u32 n = (u32[]){1, 100, 1500, 15, 16, 17}[i % 6], L;
         char t[32];
-        kiv[32] = i >= 6;
+        CIPH[0] = i >= 6;
         L = sl(out, m, n, kiv, i * 77);
         sprintf(t, "%s%u_%u", i >= 6 ? "gcm" : "seal", n, i * 77);
         hex(t, out, L);
+        L = op(tmp, out + 5, L - 21, kiv, i * 77);    /* and back: the plaintext, then the tag */
+        sprintf(t, "%s%u_%u", i >= 6 ? "ungcm" : "unseal", n, i * 77);
+        hex(t, tmp, L);
     }
     /* X25519 with our scalar e (unclamped): key share, and the secret with the public key
      * of the all-zero private key; then with scalars of all ones and all zeros, and with a

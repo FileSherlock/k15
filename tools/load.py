@@ -59,13 +59,13 @@ async def connect(src=0):
 
 
 async def get(conn):
-    """One request, one response (the server frames it with Content-Length and bare LFs)."""
+    """One request, one response (the server frames it with Content-Length)."""
     r, w = conn
 
     async def go():
         w.write(REQ)
-        head = await r.readuntil(b"\n\n")
-        n = int(head.split(b"Content-Length:")[1].split(b"\n")[0])
+        head = await r.readuntil(b"\r\n\r\n")
+        n = int(head.split(b"Content-Length:")[1].split(b"\r\n")[0])
         if await r.readexactly(n) != EXPECT:
             raise ValueError("bad body")
 

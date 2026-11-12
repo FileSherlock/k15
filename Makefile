@@ -22,7 +22,23 @@ TABLEDEF := $(if $(CAP),-DCAP=$(CAP),) $(if $(IDLE),-DIDLE=$(IDLE),) $(if $(TSHA
 # (DEBUG=2: and how busy each processor is, see bench/busy.sh)
 # LIFE=n (development): the machine is reset after about n minutes (at 2.1 GHz), come what may
 DEBUGDEF := $(if $(DEBUG),-DDEBUG=$(DEBUG),) $(if $(LIFE),-DLIFE=$(LIFE),)
+# SITE: the folder of files that is served (tools/pack.py makes them part of the image).
+# P80=redirect: port 80 sends everybody to https://NAME/ (default: it serves the page at /)
+# HSTS=seconds, CACHE=seconds, HEADERS='Name: value': headers for every file (tools/pack.py)
+SITE ?= www
+P80 ?= page
+HSTS ?=
+CACHE ?= 600
+HEADERS ?=
+# WIN=n: so many segments of a response may be on their way to a client at once
+WIN ?=
+WINDEF := $(if $(WIN),-DWIN=$(WIN),) $(if $(WXTEST),-DWXTEST=$(WXTEST),) $(if $(ISNTOP),-DISNTOP=$(ISNTOP),) $(if $(ISNBITS),-DISNBITS=$(ISNBITS),) $(if $(KEYLIFE),-DKEYLIFE=$(KEYLIFE),)
 
+# the routines a handshake spends its time in: none of their jumps may lie on a 32-byte
+# boundary (tools/jcc.py; of `seal` only the loops count, which that list can't say)
+HOT := shablk xdh cswap comb select vm fas addk fmul inv chacha aeskey aesblk
+
+# (the image, its listing and the disk hold the private key: for their owner's eyes only)
 # The image: hand-written assembly (src/os.asm) -> flat binary, loaded at 1 MiB; and a
 # disk image that boots it: the boot sector (src/boot.asm), then the image, padded
 all: $(B)/disk.img
@@ -35,21 +51,36 @@ FORCE:
 $(B)/disk.img: src/boot.asm $(B)/os.bin tools/mkdisk.py
 	nasm -f bin -o $(B)/boot.bin src/boot.asm
 	python3 tools/mkdisk.py $(B)/boot.bin $(B)/os.bin $@
+	@chmod go= $@
 
 # cert/ is made on the first build (a private CA and a leaf) or holds a real certificate
 GEN := $(B)/gen.inc $(B)/ec.inc $(B)/regs.inc $(B)/conf.inc
 ID := $(CERT)/server.key $(CERT)/server.pem
 $(ID) &:
 	@mkdir -p $(B)
-	CERT=$(CERT) python3 tools/gen.py www/index.html $(B)
+	CERT=$(CERT) python3 tools/gen.py $(B)
 
-$(GEN) &: tools/gen.py tools/ec.py www/index.html $(ID)
+$(GEN) &: tools/gen.py tools/ec.py $(ID)
 	@mkdir -p $(B)
-	CERT=$(CERT) python3 tools/gen.py www/index.html $(B)
+	CERT=$(CERT) python3 tools/gen.py $(B)
 
-$(B)/os.bin: src/os.asm $(GEN) $(B)/ip
-	nasm -f bin -DOURIP=$(OURIP) $(KNOCKDEF) $(TABLEDEF) $(DEBUGDEF) -I$(B)/ -o $@ -l $(B)/os.lst src/os.asm
-	@echo "image: $$(stat -c %s $@) bytes"
+# The site: every file under $(SITE) as the response it is sent as, and the table of paths.
+# It is made again when $(B)/site.conf changes, which lists the settings and the files
+# (names, sizes, times: file names are not for make to read).
+PACKED := $(B)/site.inc $(B)/site.bin
+PACKSET := $(SITE) $(P80) $(HSTS) $(CACHE) $(HEADERS)
+$(B)/site.conf: FORCE
+	@mkdir -p $(B)
+	@{ echo '$(PACKSET)'; find $(SITE) -type f -printf '%p %s %T@\n' | sort; } > $@.$$$$; \
+	 if cmp -s $@.$$$$ $@; then rm $@.$$$$; else mv $@.$$$$ $@; fi
+$(PACKED) &: tools/pack.py $(B)/site.conf $(GEN)
+	P80=$(P80) HSTS=$(HSTS) CACHE=$(CACHE) HEADERS='$(HEADERS)' python3 tools/pack.py $(SITE) $(B)
+
+$(B)/os.bin: src/os.asm $(GEN) $(PACKED) $(B)/ip
+	nasm -f bin -DOURIP=$(OURIP) $(KNOCKDEF) $(TABLEDEF) $(DEBUGDEF) $(WINDEF) -I$(B)/ -o $@ -l $(B)/os.lst src/os.asm
+	@chmod go= $@ $(B)/os.lst
+	@echo "image: $$(stat -c %s $@) bytes, of which the site: $$(stat -c %s $(B)/site.bin)"
+	@python3 tools/jcc.py $(B)/os.lst $(HOT) || echo "(these jumps lie on 32-byte boundaries: see HOT in src/os.asm)"
 
 # asm crypto checked against pyca/cryptography on the host (the asm calls and pushes as it
 # likes: no red zone; and it wants its buffers below 4 GiB: no PIE)

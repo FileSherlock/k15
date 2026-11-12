@@ -284,6 +284,9 @@ int main(int argc, char **argv) {
                                               : X509_VERIFY_PARAM_set1_host(vp, name, 0))) return 2;
     SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
     if (getenv("SUITES") && !SSL_CTX_set_ciphersuites(ctx, getenv("SUITES"))) return 2;
+    // KEX: the groups to offer; a key share goes with the first, so "P-256:X25519" makes
+    // the server ask for another ClientHello (HelloRetryRequest)
+    if (getenv("KEX") && !SSL_CTX_set1_groups_list(ctx, getenv("KEX"))) return 2;
     SSL_CTX_set_mode(ctx, SSL_MODE_RELEASE_BUFFERS);
     SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF);
     C = calloc(N, sizeof(conn));

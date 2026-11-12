@@ -1,14 +1,17 @@
 ; boot.asm - boot sector: what a BIOS needs to start os.bin from a disk (a cloud server's, or
-; `qemu -drive`). The disk image is this sector followed by os.bin.
+; `qemu -drive`). The disk image is this sector followed by os.bin (tools/mkdisk.py).
 ;
-; Loads the 64 sectors after itself, asks the BIOS for its memory map, enters 32-bit
-; protected mode with flat segments, copies the image to 1 MiB and enters it where its
-; multiboot header says, with the memory map in a multiboot information structure, as GRUB
-; would pass it. (os.asm then sets up long mode, its own segments and stack, and zeroes its
-; memory, as it does after any other loader.)
+; Loads the image to 1 MiB, however long it is (it ends with the site it serves), a piece
+; of 32 KiB at a time: the BIOS reads a piece into low memory, and we copy it up from real
+; mode with segments that reach all of memory (set in a moment of protected mode before
+; each copy: the BIOS may have set them back). Then it asks the BIOS for its memory map,
+; enters 32-bit protected mode with flat segments, and enters the image where its
+; multiboot header says, with the memory map in a multiboot information structure, as
+; GRUB would pass it. (os.asm then sets up long mode, its own segments and stack, and
+; zeroes its memory, as it does after any other loader.)
 
-LOAD    equ 0x8000              ; where the BIOS reads the image to
-SECTORS equ 64                  ; 32 KiB (the Makefile checks that os.bin fits)
+LOAD    equ 0x8000              ; where the BIOS reads a piece of the image to
+CHUNK   equ 64                  ; sectors a piece: 32 KiB
 MMAP    equ 0x6000              ; the memory map: entries of size (20) | base | length | type
 MMAX    equ 128                 ;   (as many as fit below the stack)
 
@@ -21,11 +24,40 @@ BITS 16
         mov es, ax
         mov ss, ax
         mov sp, 0x7C00
-        sti
+        mov [drive], dl         ; the drive we were booted from
+        in al, 0x92
+        or al, 2
+        out 0x92, al            ; A20, in case it is off
+.piece: sti
         mov si, dap
-        mov ah, 0x42            ; extended read; dl = the drive we were booted from
+        mov dl, [drive]
+        mov ah, 0x42            ; extended read
         int 0x13
         jc $                    ; (nothing to fall back on)
+        cli
+        xor ax, ax
+        mov ds, ax
+        lgdt [gdtr]
+        mov eax, cr0
+        or al, 1
+        mov cr0, eax
+        mov bx, 16              ; segments without a limit, for the copy
+        mov ds, bx
+        mov es, bx
+        dec ax
+        mov cr0, eax
+        mov esi, LOAD
+        mov edi, 0x100000
+dest    equ $ - 4               ; (where the next piece goes)
+        mov ecx, CHUNK * 512 / 4
+        a32 rep movsd
+        xor ax, ax
+        mov ds, ax
+        mov es, ax
+        mov [dest], edi
+        add dword [dap+8], CHUNK
+        sub dword [left], CHUNK
+        ja .piece
         mov di, MMAP + 4        ; int 15h, E820: one range per call, ebx says where we are
         xor ebx, ebx
 .e820:  mov eax, 0xE820
@@ -42,9 +74,6 @@ BITS 16
 .done:  sub di, MMAP + 4
         mov [mbi+44], di
         cli
-        in al, 0x92
-        or al, 2
-        out 0x92, al            ; A20, in case it is off
         lgdt [gdtr]
         mov eax, cr0
         or al, 1
@@ -58,16 +87,13 @@ pm:     mov ax, 16
         mov fs, ax
         mov gs, ax
         mov esp, 0x7C00
-        mov esi, LOAD
-        mov edi, 0x100000
-        mov ecx, SECTORS * 512 / 4
-        rep movsd
         mov eax, 0x2BADB002     ; enter it the way a multiboot loader does
         mov ebx, mbi
         jmp [0x10001C]          ; the multiboot header's entry address
 
-dap:    db 16, 0                ; disk address packet: 64 sectors to 0000:8000 from LBA 1
-        dw SECTORS
+drive:  db 0
+dap:    db 16, 0                ; disk address packet: a piece to 0000:8000, from LBA 1 on
+        dw CHUNK
         dw LOAD, 0
         dq 1
 mbi:    dd 0x40                 ; multiboot information: flags (there is a memory map),
@@ -78,5 +104,6 @@ gdt:    dq 0
         dq 0x00CF92000000FFFF   ; 16: data, 4 GiB
 gdtr:   dw 23
         dd gdt
-        times 510 - ($ - $$) db 0
+        times 506 - ($ - $$) db 0
+left:   dd 0                    ; the image's length in sectors (tools/mkdisk.py fills it in)
         dw 0xAA55

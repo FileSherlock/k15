@@ -28,8 +28,10 @@ for i, n in enumerate((1, 100, 1500, 15, 16, 17) * 2):
     hdr = bytes([0x17, 3, 3]) + (n + 16).to_bytes(2, "big")
     if i < 6:
         exp[f"seal{n}_{seq}"] = hdr + ChaCha20Poly1305(key).encrypt(nonce, m[:n], hdr)
+        exp[f"unseal{n}_{seq}"] = m[:n] + exp[f"seal{n}_{seq}"][-16:]   # decrypted again, and its tag
     else:
         exp[f"gcm{n}_{seq}"] = hdr + AESGCM(key[:16]).encrypt(nonce, m[:n], hdr)
+        exp[f"ungcm{n}_{seq}"] = m[:n] + exp[f"gcm{n}_{seq}"][-16:]
 
 got = {}
 for line in subprocess.run([sys.argv[1]], capture_output=True, text=True, check=True).stdout.splitlines():

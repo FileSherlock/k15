@@ -2,7 +2,7 @@
 # Boot the image on a tap interface instead of slirp and run a command against it: a real
 # Ethernet segment (ARP, the host's own traffic, random initial sequence numbers), and no
 # slirp walking every open socket. No root needed inside a throwaway namespace:
-# Usage: [B=build] [KVM=1] [SMP=1] [MEM=n] [LOSS=1] [REORDER=25] [MTU=n] unshare -Urn ./tap.sh COMMAND [ARGS...]   e.g. ... ./taprunc.sh 2000 1024 4
+# Usage: [B=build] [KVM=1] [SMP=1] [MEM=n] [LOSS=1] [REORDER=25] [DELAY=20] [MTU=n] unshare -Urn ./tap.sh COMMAND [ARGS...]   e.g. ... ./taprunc.sh 2000 1024 4
 # (The VM has 2 processors and 256 MiB unless SMP and MEM say otherwise.)
 # The host is 10.0.2.2 plus 10.0.2.32-63; the guest is 10.0.2.15.
 set -euo pipefail
@@ -28,11 +28,14 @@ if [[ -n ${LOSS:-} ]]; then
 fi
 # REORDER=n: n% of the packets to the guest overtake the others, which are held 5 ms (not with LOSS)
 [[ -n ${REORDER:-} ]] && tc qdisc add dev "$TAP" root netem delay 5ms reorder "$REORDER%"
+# DELAY=n: what goes to the guest takes n ms (a round trip of that length; not with LOSS or REORDER)
+[[ -n ${DELAY:-} ]] && tc qdisc add dev "$TAP" root netem delay "${DELAY}ms" limit 100000
 [[ -n ${MTU:-} ]] && ip link set "$TAP" mtu "$MTU"
 ACCEL=(-cpu max)
 [[ ${KVM:-1} == 1 && -w /dev/kvm ]] && ACCEL=(-accel kvm -cpu host)
 LOG=$(mktemp)
-qemu-system-x86_64 -nodefaults -display none -no-reboot -machine q35 -smp "${SMP:-2}" "${ACCEL[@]}" -m "${MEM:-256}" -drive "file=${IMG%os.bin}disk.img,format=raw,if=none,id=d0,snapshot=on" \
+# MON=path: QEMU's monitor on that unix socket (to ask a guest that hangs where it is)
+qemu-system-x86_64 -nodefaults -display none ${MON:+-monitor unix:$MON,server,nowait} -no-reboot -machine q35 -smp "${SMP:-2}" "${ACCEL[@]}" -m "${MEM:-256}" -drive "file=${IMG%os.bin}disk.img,format=raw,if=none,id=d0,snapshot=on" \
   -netdev "tap,id=n0,ifname=$TAP,script=no,downscript=no" -device pcie-root-port,id=rp1,chassis=1 -device virtio-net-pci,bus=rp1,netdev=n0,disable-legacy=on,romfile= -device pcie-root-port,id=rp2,chassis=2 -device virtio-scsi-pci,bus=rp2 -device scsi-hd,drive=d0 >"$LOG" 2>&1 &
 QEMU_PID=$!
 trap 'kill $QEMU_PID 2>/dev/null || true; wait $QEMU_PID 2>/dev/null || true; ip link del '"$TAP"' 2>/dev/null || true; rm -f "$LOG"' EXIT

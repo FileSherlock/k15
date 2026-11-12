@@ -11,7 +11,8 @@ B=${B:-build-hz}
 HOST=$1
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST")
 
-scp -q -o BatchMode=yes "$B/os.bin" "$HOST:/boot/k3.bin"
+# (the image holds the key: on the server it is for root's eyes only, from its first byte)
+"${SSH[@]}" 'umask 077 && rm -f /boot/k3.bin.new && cat > /boot/k3.bin.new && chmod 600 /boot/k3.bin.new && mv /boot/k3.bin.new /boot/k3.bin' < "$B/os.bin"
 "${SSH[@]}" 'set -e
 if ! grep -q "menuentry \"k3\"" /etc/grub.d/40_custom; then
   UUID=$(findmnt -no UUID /boot 2>/dev/null || findmnt -no UUID /)

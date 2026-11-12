@@ -127,6 +127,69 @@ second. What happens then:
   and take over 10 s (0.02% in the worst run), and nginx has none. An image that counts
   showed no frame lost in k3's own rings there. Where on the path they go was not found.
 
+## The image that serves files (2026-11-12, afternoon)
+Since the night k3 has become what it is meant to be: it serves the files of a site by
+their paths (`tools/pack.py`), with headers as other servers send them, reads requests
+of up to 4 KB, sends a file a record to a segment with congestion control and a timer,
+asks a client for an x25519 key share if it sent another, and executes nothing that can
+be written. 13,933 bytes with the page of `www/` (13,243 of system; 13,371 since it
+also tells a client it can't serve why not, which these runs did not have), built as
+`./k3 pack www -n IP -i IP -c cert-hz --plain80`.
+
+The server was not the same machine as in the night (see "The machines": shared
+processors, and a network path that carried a third more plain connections now), so the
+night's image was run again, in turn with the new one (`./k3 deploy` each time):
+
+| | the afternoon's image | the night's image, the same afternoon |
+|---|---|---|
+| new TLS connections a second, 64 in flight (4 runs each of 12 s) | 7,365 to 7,717 | 7,260 to 8,022 |
+| the same, 512 in flight (4 runs each) | 7,668 to 8,288 | 7,669 to 8,611 |
+| mean of the 8 | 7,816 | 7,880 |
+| https, connections kept, 64 and 512 | 104,206 and 114,772 requests a second | 105,605 and 111,939 |
+| http, new connections, 64, 512, 4096 | 43,472, 45,529, 43,007 (353 over 10 s) | 42,436, 46,546, 46,266 (155 over 10 s) |
+| http, connections kept, 64 and 512 | 103,341 and 111,233 | 110,657 and 116,165 |
+| https, new connections, 4096 in flight | 8,533 a second; median 0.47 s, 99% 1.5 s | 7,804 |
+| https, new, two key shares, 512 | 8,253 | 7,447 |
+
+So it does more for every request (the request is decrypted and looked up, the response
+has six headers instead of one, a timer is set) and is as fast. Before its hot loops
+were placed (below) it was 6% slower at new TLS connections: 7,591 against 8,077 (8 runs
+each), in every pair of runs.
+
+**Where a jump lies.** The server's processor (Skylake) decodes a jump again every time
+it meets it, if the jump crosses a 32-byte boundary or ends on one (a microcode fix for
+an erratum; all that shares the 32 bytes with it is decoded again too). The new code
+had moved the SHA-256 round loop, the curve machine's dispatch and the field addition so
+that each had such a jump. On the development machine (Zen 2) the two images were equal.
+The routines a handshake spends its time in now each begin where none of their jumps
+lies so (`HOT` in src/os.asm, `tools/jcc.py`), at the price of 320 bytes of padding.
+
+**Files** (the site of `tools/mksite.py`; `wrk`, 8 s a row, from the same generator;
+nginx 1.28.3 with OpenSSL 3.5.5 and `bench/nginx.conf` on the same server with the same
+files and certificate):
+
+| 64 connections that stay | k3 | nginx + OpenSSL |
+|---|---|---|
+| the page (167 bytes), requests a second | 105,247 (512 connections: 113,931) | 30,302 (512: 31,229) |
+| a file of 14,000 bytes | 10,939 a second, 148 MB/s | 22,128 a second, 300 MB/s |
+| a file of 1.5 MiB | 108 a second, 166 MB/s (8 connections: 162 MB/s) | 494 a second, 742 MB/s (8: 757 MB/s) |
+| one fetch of the 1.5 MiB, connection included | 22 to 28 ms | 9 to 15 ms |
+
+k3's 166 MB/s is 115,000 segments a second: the same ceiling of frames as everywhere
+else in this comparison, with its processors mostly idle. nginx is not under that
+ceiling here because Linux gives the card 64 KB at a time and lets it cut the segments
+(TSO). k3 sends a segment a frame. For large files nginx is four and a half times as
+fast on this server; for the pages and small files a site is mostly made of, k3 three
+times.
+
+Over a distance (the developer's connection, 11 ms away): the 1.5 MiB take 0.3 s. Over
+a round trip of 20 ms and of 100 ms (emulated: `DELAY=n` in front of tap.sh): 0.6 s and
+2.9 s, a connection included. At most 64 KB are on their way (no window scaling), so a
+large file goes at 64 KB a round trip.
+
+Held, with the afternoon's image: 60,000 TLS connections, each with the chain verified,
+and 60,000 plain ones; all opened, held and fetched over.
+
 ## Held connections
 `tools/tapc.c` from the load generator (`bench/hold.sh`; 60,000 from one address is what
 the ports allow):
@@ -147,6 +210,7 @@ the ports allow):
 
 ## Size
 - k3: 11,094 bytes, all of it: boot code, driver, TCP, TLS, the two curves, the page.
+  (The afternoon's image: 13,243 bytes and the site.)
 - nginx + OpenSSL: nginx 1.6 MB, libssl 1.1 MB, libcrypto 6.4 MB; under them the kernel
   (vmlinuz, compressed: 17.3 MB) and the rest of a Linux system.
 - nginx + BoringSSL: one binary of 3.6 MB (stripped), and the kernel.
@@ -158,10 +222,13 @@ slots, 10.8 KiB); nginx + BoringSSL about 20; nginx + OpenSSL about 5.
 
 ## What this does not say
 - nginx and Caddy are web servers: any file, any header, virtual hosts, HTTP/2, logs,
-  reloads, every cipher and curve a client may want, session resumption. k3 serves one
-  page of one segment to clients that speak TLS 1.3 with an X25519 share, and nothing
-  else. Its response is 59 bytes (a status line and one header); nginx's is 256 (a status
-  line and eight).
+  reloads, every cipher and curve a client may want, session resumption. In the night k3
+  served one page of one segment to clients that speak TLS 1.3 with an X25519 share, and
+  nothing else: its response was 59 bytes (a status line and one header), nginx's 256 (a
+  status line and eight). The afternoon's image serves a site's files with six headers
+  (179 bytes for that page), and still nothing but GET and HEAD of what was packed into
+  it.
+- Large files: see "The image that serves files". k3 has no segmentation offload.
 - No resumption was measured, because k3 has none: every connection here is a full
   handshake. A server with session tickets does a returning client's handshake for less;
   how nginx then compares with k3's full handshake was not measured.
@@ -198,3 +265,7 @@ slots, 10.8 KiB); nginx + BoringSSL about 20; nginx + OpenSSL about 5.
    (remove both, and the packages), and the generator costs by the hour (`hcloud server
    delete`). On 2026-11-12 the server was left as it was found: Ubuntu, nothing of this
    on it but `/boot/k3.bin` and its GRUB entry.
+7. Two images of k3 in turn: `./k3 deploy IP DIR --reset 'hcloud server reset k3'` for
+   each, and the rows that matter between (the afternoon used the first two of run.sh,
+   twice, 12 s each). Files: `wrk -t8 -c64 -d8s https://IP/path` on the generator
+   (`apt-get install wrk`); for nginx the site's folder goes to `/var/www/k3bench`.

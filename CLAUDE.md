@@ -1,30 +1,48 @@
-# Goal: a tiny secure HTTPS server on bare metal that stands comparison
+# Goal: a folder of static files as a bootable, sealed HTTPS server
 
 k3 is k2 (`../k2`: 3,231 bytes, QEMU with an ISA NE2000, scored in connections per KiB)
 taken off its machine contract and put on a Hetzner cloud server. Decided with the user:
 - (2026-11-10) the load is k6-style: ramp to N users in 60 s, hold, under 1% errors
-- plain HTTP on port 80 (for the connection count) and HTTPS on 443 (as fast as it will go).
-  Port 80 has none of the security below: it serves the same public page to anyone.
 - (2026-11-11) it is to be useful and competitive: the user named nginx, BoringSSL,
   Unikraft and F-Stack, and four gaps: handshakes per second per core, record speed (and
   AES-GCM), all the cores and all the RAM, and timers for the tail. **Security can never
   be lowered, only raised.** The measure is still something like connections divided by
-  the size of the binary, so a feature has to pay for its bytes. The image is one assembly
-  file (11,094 bytes): don't golf it, don't bloat it.
-- security as in k2 (below) still holds for everything behind TLS
+  the size of the binary, so a feature has to pay for its bytes: don't golf it, don't
+  bloat it.
+- (2026-11-12) the scope is the best product in its niche: "a clunky, limited but fast
+  and secure OS", with a hook strong enough to be noticed. The hook (from a review the
+  user had made and told Claude to follow): **compile a folder of static files into a
+  bootable x86-64 HTTPS server of a few KB plus the files; nothing to log into, because
+  there is no system behind it; holds millions of connections on the smallest cloud
+  server.** One command packs it, one deploys it; what is clunky (a new image for every
+  change of content or certificate) is the point, not a defect. Session tickets are
+  dropped for it: with forward secrecy kept they save the signature only, which is
+  already made while idle. (The review also said RFC 8446 forbids sending a ticket
+  before the client's Finished; it does not, 4.6.1 allows it without client
+  authentication. The decision stands on the other reasons.)
+- security as in k2 (below) holds for everything behind TLS. Port 80 has none of it: it
+  says one public thing to everyone (where the site is, or its front page).
 
 ## Where it stands
-Works, locally and on the server: boot from GRUB or a BIOS boot sector into 64-bit long
-mode, all the RAM the machine has (also above 4 GiB), all its
-processors (up to 4), modern virtio-net, ARP, a TCP that copes with loss, reordering, small
-segments and made-up clients, two hashed connection tables sized from the machine's memory
-(20 bytes per connection on port 80, 128 per TLS connection), TLS 1.3 with a verified
-certificate on 443 (ChaCha20-Poly1305 and AES-128-GCM), the same page over plain HTTP on
-80, keep-alive requests on both.
+The image is one assembly file's worth of system, 13,371 bytes, and behind it the site
+(`tools/pack.py`): every file as the HTTP response it is sent as. Works, locally and on
+the server: boot from GRUB or a BIOS boot sector into 64-bit long mode, an image of any
+length, all the RAM the machine has (also above 4 GiB), all its processors (up to 4),
+modern virtio-net, ARP, a TCP that copes with loss, reordering, small segments and
+made-up clients, two hashed connection tables sized from the machine's memory (20 bytes
+per connection on port 80, 128 per TLS connection), TLS 1.3 with a verified certificate
+(ChaCha20-Poly1305 and AES-128-GCM; a client whose key share is for another curve is
+asked for x25519, one that can't be served is told why in an alert), and behind it HTTP
+as a static site needs it: GET and HEAD by path,
+files of any size sent a record to a segment with nothing buffered, requests of up to
+4 KB in any number of segments, 404, a redirect for a folder without its slash, "no" and
+a closed connection for other methods, keep-alive. Port 80 redirects to the site, or
+serves its front page. No memory is both written and executed.
+`./k3 pack FOLDER`, `./k3 run`, `./k3 deploy HOST` (see Commands).
 
-On the server under load (2026-11-12, from a load generator 0.4 ms away; method and all
-the numbers in `bench/README.md`), next to nginx and Caddy with the same page, key and
-certificate:
+On the server (cx23, 2 shared vCPUs; from a load generator 0.4 ms away; method in
+`bench/README.md`). The night of 2026-11-11, the image that served one page, next to
+nginx and Caddy with the same page, key and certificate:
 
 | on the server (2 vCPUs) | k3 | nginx + BoringSSL | nginx + OpenSSL 3.5 | Caddy |
 |---|---|---|---|---|
@@ -34,79 +52,96 @@ certificate:
 | HTTP requests a second, connections kept | 110,000 - 128,000 | 60,000 - 71,000 | 58,000 - 68,000 | 14,000 |
 | memory for a held connection: plain, TLS | 20 B, 128 B | 3.2 KiB, 7.1 KiB | 4.0 KiB, 25.8 KiB | |
 
-- Only the first row is k3's own limit (its processors 2 to 5% idle; 460,000 cycles of
-  both processors' time per connection, nginx 1.0 and 1.9 million; the same rate when
-  the client asks as browsers do, with two key shares in 1.5 KB). In the other three
-  the server's network path is: about 130,000 frames a second each way, at which k3's
-  processors are 80 to 89% idle (2,400 cycles a plain request, 4,800 over TLS, driver
-  included). nginx and Caddy are at their processors' limit in every row.
-- With 4,096 new TLS connections in flight: median 0.33 to 0.53 s, 99% 0.8 to 1.6 s (six
-  runs), no frame lost, none over 10 s (nginx: 0.85 s and 1.8 s at the median). With
-  4,096 new plain connections in flight k3 asks more of the path than it carries: 1% take
-  a second longer (a SYN lost on the way; the same for nginx), and up to 0.02% lose it
-  four times running and take over 10 s (83 of 517,000 in the worst run; nginx, which
-  does not get to the path's limit, none).
+The afternoon of 2026-11-12, the image that serves files (the server was 10% slower at
+handshakes and a third faster at plain connections than in the night, so the two images
+were run in turn):
+
+| the same day, in turn | today's image | the night's image |
+|---|---|---|
+| new TLS connections a second (8 runs each) | 7,400 - 8,300 (mean 7,820) | 7,300 - 8,600 (mean 7,880) |
+| HTTPS requests a second, connections kept | 104,000 - 115,000 | 106,000 - 112,000 |
+| new plain connections a second | 43,000 - 46,000 | 42,000 - 47,000 |
+| HTTP requests a second, connections kept | 103,000 - 111,000 | 111,000 - 116,000 |
+
+| files, 64 connections (wrk) | k3 | nginx + OpenSSL 3.5 |
+|---|---|---|
+| a page of 167 bytes, requests a second | 105,000 - 114,000 | 30,000 - 31,000 |
+| a file of 14 KB | 10,900 a second, 148 MB/s | 22,100 a second, 300 MB/s |
+| a file of 1.5 MiB | 108 a second, 162 - 166 MB/s | 500 a second, 742 - 757 MB/s |
+
+- Small things k3 does three times as fast as nginx; large files nginx does four and a
+  half times as fast. The reason is one and the same: the server's network path carries
+  about 130,000 frames a second each way (k3's processors are four fifths idle at that
+  point), and k3 sends a segment a frame, where Linux hands the card 64 KB at a time
+  (segmentation offload). That is the first thing in the plan that is about speed.
+- Only new TLS connections are bounded by k3's processors (460,000 cycles of both
+  processors' time per connection in the night; nginx 1.0 and 1.9 million).
+- With 4,096 new TLS connections in flight: median 0.47 s, 99% 1.5 s, none over 10 s.
+  With 4,096 new plain connections in flight k3 asks more of the path than it carries: 1%
+  take a second longer (a SYN lost on the way; the same for nginx), and up to 0.05% lose
+  it four times running and take over 10 s (353 of 645,000; the night's image the same
+  day 155, in the night 83 of 517,000; nginx, which does not get to the path's limit,
+  none).
 - Held: 60,000 TLS connections (what one client address has ports for), each with the
-  chain verified, held and fetched over: 30 runs after the last change, 1.8 million
-  connections, all but one that the client could not start. 60,000 plain ones the same.
-- Chrome and Firefox fetch from it there, with our CA as a trusted root in throwaway
-  profiles (2026-11-12).
-- From the user's machine (RTT 11 ms; 2026-11-11): a verified HTTPS fetch with curl takes
-  35 ms, a keep-alive request 10 ms (one round trip), both ciphers; a handshake costs
-  375,000 to 383,000 cycles on the server when the nonces were made while idle.
+  chain verified, held and fetched over, and 60,000 plain ones: all, with today's image.
+  In the night: 30 runs, 1.8 million connections, all but one the client could not start.
+- From the user's machine (RTT 11 ms; 2026-11-12): `tools/sitecheck.py` passes against
+  the server (57 paths, every kind of client it plays); 1.5 MiB take 0.3 s; Chrome and
+  Firefox load the test site's page with its stylesheet and picture, our CA trusted in
+  throwaway profiles. `./k3 deploy --persist` survived a reset: back by itself in 90 s.
 
 | measured here (Ryzen 7 3800X, KVM) | |
 |---|---|
-| full handshakes/s over tap (`NOMARK=1 ... taprunc.sh 8000 1024 8`: 64,000, all verified) | 7,300 on one processor, 13,300 on two (140 before the night of 2026-11-11) |
-| a handshake's crypto natively (`make bench`) | 300,000 cycles: X25519, both halves, 211,000; an ECDSA signature 89,000, or 2,000 when the nonces were made while idle (16 million before) |
-| guest cycles for one whole TLS connection (`DEBUG=1`) | 430,000 |
-| guest cycles per frame, TLS keep-alive requests | 3,900 (27,000 before) |
-| TLS connections held over tap, 256 MiB VM | 144,000 of 144,000, each verified and fetched |
-| plain connections held over tap, 2 GiB VM (32-bit image) | 83,983,904 of 84,000,000 tried, each fetched twice |
+| full handshakes/s over tap (`NOMARK=1 ... taprunc.sh 8000 1024 8`: 64,000, all verified) | 7,400 on one processor, 10,700 on two (the client is the limit there); the night's image 7,700 and 10,800 |
+| a handshake's crypto natively (`make bench`) | 300,000 cycles: X25519, both halves, 211,000; an ECDSA signature 89,000, or 2,000 when the nonces were made while idle |
+| 1.5 MiB over a round trip of 20 ms, of 100 ms (`DELAY=n` in front of tap.sh) | 0.6 s, 2.9 s (a connection included; 64 KB a round trip is the most: no window scaling) |
+| guest cycles per frame, TLS keep-alive requests (the night's image) | 3,900 |
+| TLS connections held over tap, 256 MiB VM (the night's image) | 144,000 of 144,000, each verified and fetched |
+| plain connections held over tap, 2 GiB VM (32-bit image, k3's first week) | 83,983,904 of 84,000,000 tried, each fetched twice |
 | connections opened and fetched per second over tap | ~80,000-100,000 (QEMU's packet path is the limit, not the guest) |
-| guest cycles per frame, plain HTTP (`DEBUG=1`, counter 1) | 1,880 (32-bit image; under 2,800 on the server) |
-| with loss over tap (`tools/suite.sh`) | 3%, MTU 300, reordering, both ciphers, a two-segment flight, 1, 2 and 4 processors: all served, also over 12 to 24 runs of each (see "Learned the hard way" for the two bugs this found) |
-| at 5% loss, 12 runs of each | 2 fetches of 240,000 ran past tapc's 60 s: a lost SYN-ACK leaves a Linux client with a retransmission timeout of 3 s, then 6 s, and two more losses on that connection are a minute (captured). No fault of ours, but ours to shorten: the timer in the plan |
+| `tools/suite.sh`: 52 runs (loss 3%, MTU 300 and 600, reordering, both ciphers, a two-segment flight, HelloRetryRequest, sequence numbers that go round, a site of 80 files, W^X, a million raw connections) | all pass on 1 and 2 processors; on 4, all but `raw1m_20k` when the host is that busy (3 of 3 alone) |
+| the lossy runs many times over (2026-11-12: 16 x 2,000 handshakes each of seven kinds, the site test 44 times) | none failed (the end of "Workflow" has the list) |
 | emulated (KVM=0) | boots in 7 s (the tables for the curves), `measure.sh` passes |
 
-
 ## Plan
-Done of the user's four gaps: (1) the handshake but for session tickets, (2) records,
-(3) processors and RAM but for the offloads, (4) of the timers the one for SYN-ACKs. And
-it has been measured on the server under load, next to nginx and Caddy.
-
-What that showed decides the order: on the server only new TLS connections are bounded
-by k3's processors. Records, requests and plain connections are bounded by the network
-path, at a fifth of what k3 could do.
+Done of the review's four things (2026-11-12): files by path with nothing buffered; the
+gaps a browser or scanner finds (requests in several segments, HelloRetryRequest, port 80
+redirecting, HSTS, a timer for what we sent); W^X; and the one-command tool, of which
+`renew`'s part on the server (certbot) is written and not yet run: it needs a name, and
+the user's word, since it agrees to Let's Encrypt's terms in their name.
+A second review the same day found four things, all fixed: `renew` would have reset the
+server every night from cron and run into Let's Encrypt's limit of five certificates a
+week (it now does nothing while the certificate has 30 days left); the key was made on
+the server and stayed on its disk, and /boot/k3.bin was readable by all (the key is
+made here now and only a request travels; the image is root's alone); `renew` packed
+with settings of its own (it packs as the image was packed: OUT/pack.conf); and a client
+without TLS 1.3, without our cipher suites or without x25519 got a ServerHello it had
+not asked for (it gets an alert and the connection's end).
 
 **Next, in the order of what they are worth:**
-- **Session tickets** (gap 1c). A ticket sealed under a key made at boot, psk_dhe_ke only
-  (so forward secrecy stays), saves the signature and the certificate on a return visit,
-  not X25519: about a third of a handshake. It is also the one thing nginx can do that
-  the comparison left out (bench/README.md). Needs the walk through the ClientHello's
-  extensions (`handshake` has it, for the key share) to find pre_shared_key as well, the
-  binder check, the PSK key schedule and the resumption secret (which needs the client's
-  Finished: computable, it is a function of the transcript).
+- **A name and a real certificate.** The user has to say which name and point it at the
+  server. Then `./k3 renew --force` (certbot on the server's Linux for a request made
+  here, the image packed and started again), SSL Labs, and the project's own page served
+  by itself: the proof
+  the hook asks for. Let's Encrypt also gives certificates for IP addresses now, valid
+  for six days: possible without a name, at a reboot every five days.
+- **Segmentation offload** (the card offers CSUM and TSO). Large files go at a quarter
+  of nginx's speed because a frame is a segment; with TSO a frame is up to 45 records
+  (the device cuts where we would have: a record is a segment). Needs transmit buffers
+  of 64 KB, the virtio header filled in, and a pseudo-header checksum.
+- **Window scaling.** A client's window counts to 64 KB without it: that is all that can
+  be on its way, so a large file goes at 64 KB a round trip. The scale is in the SYN,
+  for which we keep nothing: it would have to go into the cookie.
+- **What a browser asks a second time**: If-None-Match (304; pack.py would add the
+  ETags), and files packed compressed for clients that say they take that.
 - **The handshake further.** Where its 430,000 cycles go: the ladder for the client's
-  share 142,000 (256 steps of 529: ten multiplications of 30, eight additions of 4, and
-  what the register machine costs around them), k G for the signature 86,000, our own
-  share 31,000, the inversion 20,000, SHA-256 about 60,000 (75 blocks of 840), the rest
-  records and TCP. OpenSSL's assembly does the ladder in 113,000 and the signature in
-  71,000 on the same machine: there is a fifth to be had. A squaring of its own, a short
-  multiplication for a24, HMAC pads kept between calls and X25519 key pairs made while
-  idle are each a few percent.
-- **A retransmission timer for data** (gap 4, the rest). A SYN-ACK is sent again (done:
-  "How TCP works here"). Everything else we sent and lost still waits for the client's
-  retransmission timeout (200 ms and up, or its tail loss probe). A queue of what was
-  sent with a fixed timeout is in time order by itself (no wheel needed); when an entry
-  comes due and its connection still lacks an ack, treat it as if the client had asked
-  (`.resend`). Like the SYN-ACKs: only when the processor has nothing waiting.
-**Later.** A real certificate (needs a name; then no `--cacert`), DHCP instead of a
-baked-in address, HelloRetryRequest, taking out the reset knock (hcloud resets the server
-now), size. Rings for the processors there are, not for four (in 4 GiB, 64 MiB go to
-rings nobody uses). Checksum offload (the card offers CSUM and GUEST_CSUM): nothing on
-the server waits for checksums, so only for a machine whose network is faster than its
-processors. Unikraft and F-Stack next to k3 (bench/README.md says what that takes).
+  share 142,000, k G for the signature 86,000, our own share 31,000, the inversion
+  20,000, SHA-256 about 60,000, the rest records and TCP. OpenSSL's assembly does the
+  ladder in 113,000 and the signature in 71,000 on the same machine: there is a fifth
+  to be had.
+**Later.** DHCP instead of a baked-in address, taking out the reset knock, rings for
+the processors there are, Unikraft and F-Stack next to k3 (bench/README.md
+says what that takes). Not planned: session tickets (see Goal).
 
 ## What "secure" means here
 A standard validating client gets server authentication, confidentiality, integrity and
@@ -115,12 +150,27 @@ forward secrecy against a network attacker, and no packet makes the server leak 
   server random too (k2 reused the client's)
 - a real ECDSA P-256 signature under a key that only exists in the image
 - a certificate chain clients verify (private CA by default, or a real chain dropped in)
-- a client record gets an answer only if its AEAD tag verifies (next sequence number); the
-  comparison looks at all 16 bytes whatever they are
+- the key is in the image and nowhere else that a network can reach: `./k3 renew` makes
+  it on the user's machine and sends the server's Linux a request for a certificate,
+  not the key; what holds it (the build folder, the certificate folder, /boot/k3.bin on
+  the server) is for its owner's eyes only
+- a client record is read only if its AEAD tag verifies (next sequence number); the
+  comparison looks at all 16 bytes whatever they are. What it decrypts to is looked at
+  after that, not before
+- only the code is executed, and it is not written; nor is the site. Everything a packet
+  can put into memory (frames, buffers, tables, the stack) is data that the processor
+  refuses to run (`start`; `tools/wxtest.sh` does each forbidden thing and expects the
+  machine's end)
+- a connection's key seals 2^24 records and the response in hand, then the connection is
+  closed (RFC 8446, 5.5: no more than 2^24.5 under AES-GCM); we never change keys
+- what we send is a function of the image and the client's acks: no request leaves
+  anything of itself in an answer (there are no reflected headers, no error pages with
+  the path in them)
 - nothing in the curve arithmetic, the table lookups (`select`) or the two ciphers
   branches on, or indexes memory with, anything secret
 - attacker-controlled lengths and indices are bounded (ClientHello size, cipher suite
-  list, record sizes, the slot a packet selects, what the NIC reports)
+  list, record sizes, the request's path, the slot a packet selects, what the NIC
+  reports)
 - ECDSA nonces are made 64 at a time and kept until used (`stock`): each is used once,
   each processor has its own stock (its own memory: see "Processors"), and nothing is
   made before the processors are started. A nonce used twice gives the key away: keep it
@@ -129,27 +179,75 @@ The image contains the private key: `build*/` and `cert*/` are secrets and are n
 Unlike k2 this one faces the internet: anything a packet can make it do is in scope.
 
 ## Commands
+- `./k3` is the tool for somebody who has a site and a server:
+  `./k3 pack FOLDER [-n NAME] [-i IP] [-c CERTDIR] [-o OUT] [--plain80] [--hsts SECONDS]
+  [--cache SECONDS] [--header 'Name: value']` makes OUT/os.bin and OUT/disk.img (port 80
+  redirects to https://NAME/ unless `--plain80`); `./k3 run [OUT]` boots it in QEMU
+  (https://127.0.0.1:8443/, http://127.0.0.1:9443/); `./k3 deploy HOST [OUT] [--persist]
+  [--reset 'COMMAND']` puts it on a server that runs Linux with GRUB and starts it (see
+  "Running it on the server"); `./k3 renew HOST [OUT] --reset 'COMMAND' [--days N]
+  [--force] [--dry-run]` gets a new certificate from Let's Encrypt when the one OUT was
+  packed with ends within N days (30), and does nothing at all before that, so cron may
+  run it daily. When it is time: a new key and a request (CSR) are made here, the server
+  is reset into Linux, certbot answers the challenge on port 80 there for that request,
+  the certificate comes back, OUT is packed again as it was packed (OUT/pack.conf: the
+  folder, name, address, certificate folder, headers, what port 80 does) and started. If
+  no certificate comes, the image as it was is started again. The key is never on the
+  server but inside the image. `--force` for the first one (the private CA's lasts until
+  2049). The part on the server is not yet run (see Plan). Everything `./k3` makes is
+  for its owner's eyes only (umask 077), and /boot/k3.bin on the server for root's.
 - `make` assembles `src/os.asm` into `build/os.bin` (loaded at 1 MiB) and `build/disk.img`
-  (`src/boot.asm` + the image; what the tests boot). `python3 tools/sizes.py build/os.lst`
-  = bytes per routine. (Of 11,094: boot, driver and the other processors 2,300, network
-  2,750, TLS handshake and key schedule 1,200, SHA-256 450, curves 2,850 with their
-  programs and constants, the two ciphers 1,170, certificate and response 330. A
-  flat binary: no padding anywhere.) `make B=dir CERT=dir NAME=n IP=a.b.c.d KNOCK=a,b`
-  builds another image: its identity, the name in a generated certificate, the address it
-  answers on, and (development only) the two ports that reset it. The scripts take `B`
-  from the environment.
+  (`src/boot.asm` + the image; what the tests boot), with the site of `www/` in it.
+  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 13,371:
+  boot, page tables, driver and the other processors 2,500, network 3,700 with the
+  timers, requests and the site's tables 600, TLS handshake and key schedule 1,530,
+  SHA-256 450, curves 2,850 with their programs and constants, the two ciphers 1,250,
+  certificate 230, and 320 of padding in front of the routines a handshake spends its
+  time in: see HOT in "How the curve code works".) `make B=dir CERT=dir NAME=n
+  IP=a.b.c.d SITE=folder P80=redirect HSTS=seconds KNOCK=a,b` builds another image: its
+  identity, the name in a generated certificate, the address it answers on, what it
+  serves, what port 80 does, and (development only) the two ports that reset it. The
+  scripts take `B` from the environment. Only the address, the site and its settings are
+  tracked: after changing another setting, `make -B`.
+- `tools/pack.py FOLDER OUT` (what `make` runs): every file becomes its response (status
+  line, headers, body), found through a hash table of paths. A folder's `index.html` is
+  served at the folder's name with a slash, the name without it redirects there,
+  `404.html` is what unknown paths get, files and folders whose names begin with a dot
+  are left out (but `.well-known`). OUT/site.json says what each path must return (for
+  the tests), OUT/page80.bin what port 80 says.
 - `tools/suite.sh [JOBS] [name...]`: everything below, a few at a time, one line each
-  (27 runs, under two minutes). `SMP=1` or `SMP=4` in front for other machines than the
+  (52 runs, three minutes). `SMP=1` or `SMP=4` in front for other machines than the
   default of 2 processors. Its verdict is strict: one failed connection is a FAIL. Under
-  a loaded host a run that overflows rings on purpose (`raw1m_20k`) can time out a few of
-  a million: run it alone before believing it.
+  a loaded host a run that overflows rings on purpose (`raw1m_20k`) can time out a few
+  hundred of a million (on 4 processors it does every time the suite runs five at once):
+  run it alone before believing it. Don't edit a script the suite is running (see
+  "Learned the hard way").
+- `tools/sitetest.sh [quick]`, and over tap `unshare -Urn tools/sitetest.sh tap [quick]`
+  with `LOSS=3`, `REORDER=25`, `MTU=600`, `SMP=n` in front: an image with the site of
+  `tools/mksite.py` in it (80 files: sizes on and around every boundary a record can
+  have, names that need escaping, a folder, one file of 1.5 MiB, so the image is over
+  1 MiB and everything else lies higher) must serve every path as pack.py made it, to
+  every kind of client `tools/sitecheck.py` plays: one connection or many, GET and HEAD,
+  clients that take small segments, that read slowly, 16 at once, curl with each cipher,
+  unknown paths, other methods, records that are no requests, requests in pieces, of
+  3 KB, of over 4 KB, two at once, a client that closes its side, clients that go away.
+  `ONLY=text` runs the checks with that in their name. `HOST=a.b.c.d PORT=443
+  B=build-hz python3 tools/sitecheck.py quick` is the same against the server.
+- Test images (make variables, each for its test): `ISNTOP=n ISNBITS=b` forces the top b
+  bits (12) of every initial sequence number, so that what we send crosses 2^31 or 2^32
+  (the suite's `*isn*` and `site_wrap*` runs); `KEYLIFE=n`: a connection's key seals 2^n
+  records (`site_keylife`); `WXTEST=n`: do one thing the page tables forbid
+  (`tools/wxtest.sh`: all five must be the machine's end); `WIN=n`: so many segments may
+  be on their way to begin with (10).
 - `./measure.sh` builds, boots the disk image in QEMU, fetches with curl (chain and name
-  verified, fresh connections + keep-alive, each of the two ciphers by name, plain HTTP on
-  port 80, and a check that curl refuses without our CA) and runs `tools/abuse.py`
-  (forged, replayed, truncated records and bad ClientHellos must be ignored and leave real
-  connections working; requests in pieces and pipelined on port 80). About a second with
-  KVM. Through slirp the guest's 443 is 127.0.0.1:`PORT` (8443) and its 80 is `HPORT`
-  (PORT + 1000).
+  verified, fresh connections + keep-alive, each of the two ciphers by name, a client
+  whose key share is for P-256, port 80, an unknown path, HEAD, and a check that curl
+  refuses without our CA) and runs `tools/abuse.py` (forged, replayed, truncated records
+  and bad ClientHellos, also in place of the second one after a HelloRetryRequest, must
+  be ignored and leave real connections working; requests in pieces and pipelined on
+  port 80). Ten seconds with KVM. Through slirp the guest's 443 is 127.0.0.1:`PORT`
+  (8443) and its 80 is `HPORT` (PORT + 1000). It reads `NAME`, `SITE`, `P80`, `HSTS`
+  from the environment like make, and checks what the image was built to do.
 - `./browsers.sh` checks Firefox and Chrome with our CA as a trusted root in throwaway
   profiles (no exceptions; Chrome's net-log must show no certificate error flags) and that
   Chrome refuses without the CA. Both take AES-128-GCM. Run after any TLS/cert/TCP/HTTP
@@ -164,8 +262,13 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   TLS_AES_128_GCM_SHA256` picks the cipher (OpenSSL's own order gets ChaCha20-Poly1305),
   `NOMARK=1` leaves out the fetches on the way (then `open_s` is the handshakes alone:
   the rate), `PLAIN=1 INFLIGHT=64` runs the same over plain HTTP to port 80, `SMP=n` and
-  `MEM=n` shape the VM (default 2 processors, 256 MiB). W can be up to 32 (10.0.2.32-63:
-  the second 16 share their low nibble with the first).
+  `MEM=n` shape the VM (default 2 processors, 256 MiB), `KEX=P-256:X25519` makes the
+  clients offer a key share we don't take (a HelloRetryRequest each). W can be up to 32
+  (10.0.2.32-63: the second 16 share their low nibble with the first).
+- Also in front of tap.sh: `DELAY=20` (what goes to the guest takes 20 ms: a round trip
+  of that length; `curl -w %{time_total}` then shows what the window does) and
+  `MON=path` (QEMU's monitor on a unix socket, with a short path: `info registers` and
+  `xp /16xw ADDRESS` say where a guest that hangs is and what its memory holds).
 - `REORDER=25` in front of tap.sh lets a quarter of the packets to the guest overtake the
   rest (held 5 ms). Timing single fetches with curl under it shows whether early segments
   are used: 9 of 60 stalled before `oohold`, none after.
@@ -181,6 +284,10 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   to do (in units of 4,096) and the time (in units of 2^24 cycles): how busy a processor
   is (`bench/busy.sh`). Not for images that are measured or kept running (and rawc, tapc
   and measure.sh's check of port 80 don't know its page).
+- `python3 tools/jcc.py build/os.lst [ROUTINE...]` lists the jumps that cross or end on
+  a 32-byte boundary (make runs it for the routines of `HOT` in the Makefile and says so
+  if there are any); `... fit ROUTINE` says where a routine would have to begin to have
+  none. See HOT in "How the curve code works".
 - `unshare -Urn ./tap.sh build/rawc N [W]` (`gcc -O2 -o build/rawc tools/rawc.c`): the
   scale test. N plain connections made of raw packets on the tap, from as many source
   addresses as it takes (12 bytes each in the client, no sockets): each is opened and
@@ -241,13 +348,24 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
 
 ## Running it on the server
 `ssh root@2.28.113.14` works from the user's machine while the server runs Linux.
-- `make B=build-hz CERT=cert-hz NAME=2.28.113.14 IP=2.28.113.14 KNOCK=$(tr ' ' , < build-hz/knock)`
-  (`-B` after changing KNOCK or IP: only the address is tracked as a dependency)
-- `B=build-hz tools/deploy.sh root@2.28.113.14` copies the image to /boot/k3.bin and
-  reboots into it ONCE through a GRUB entry ("k3" in /etc/grub.d/40_custom, loaded with
-  `multiboot`). Ubuntu stays installed and is what any later reset boots. Up after ~4 s
-  (more now: all 4 GiB are zeroed, and the curve tables take 25 ms).
+- `./k3 pack FOLDER -n 2.28.113.14 -i 2.28.113.14 -c cert-hz -o build-hz` (for the
+  comparison's page: `./k3 pack www ... -o build-hzb --plain80`), then
+  `./k3 deploy 2.28.113.14 build-hz --reset 'hcloud server reset k3'`: if Linux does not
+  answer ssh (k3 is running), the server is reset; then the image is copied to
+  /boot/k3.bin and the server reboots into it ONCE through a GRUB entry ("k3" in
+  /etc/grub.d/40_custom, loaded with `multiboot`), and the command waits for a verified
+  fetch. Ubuntu stays installed and is what any later reset boots. Up 4 s after the
+  reboot (all 4 GiB are zeroed, and the curve tables take 25 ms).
+- With `--persist`, Linux gets a unit (`k3-chain.service`) that starts k3 a minute after
+  Linux has come up, unless /run/k3.hold exists: so k3 comes back by itself after a reset
+  (90 s, measured), and `./k3 deploy`, which touches that file as soon as ssh answers,
+  still gets in. Without `--persist` the next deploy takes the unit out again. The
+  server was left without it on 2026-11-12: Linux, /boot/k3.bin (the last image
+  deployed: the test site) and its GRUB entry, nothing else of ours.
 - `curl --cacert build-hz/ca.pem https://2.28.113.14/` and `curl http://2.28.113.14/`
+- By hand, with the reset knock (development only): `make B=build-hz CERT=cert-hz
+  NAME=2.28.113.14 IP=2.28.113.14 KNOCK=$(tr ' ' , < build-hz/knock)` and
+  `B=build-hz tools/deploy.sh root@2.28.113.14`.
 - For a first look at anything new, add `DEBUG=1 LIFE=8` to that `make`: the page on
   port 80 then starts with how many processors take frames (less 1) and which one
   answered, and the machine resets itself after about 8 minutes whatever happens (a
@@ -286,8 +404,10 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
 
 ## The certificate (`tools/gen.py`, `cert/`)
 - `cert/server.key` (ECDSA P-256) and `cert/server.pem` (leaf, then intermediates) are the
-  identity that gets baked in. Nothing renews. To use a real certificate, put those two files
-  there (and no `ca.pem`); `tools/mkchain.py DIR` makes a realistic test chain.
+  identity that gets baked in. Nothing renews by itself: `./k3 renew` is the command to
+  run from cron (Commands; a minute or two without a server when it is time, nothing
+  before). To use a certificate from elsewhere, put those two files there (and no
+  `ca.pem`); `tools/mkchain.py DIR` makes a realistic test chain.
 - If they are missing, gen.py makes a 210-byte leaf for `NAME` (default 127.0.0.1; an IP
   address or a DNS name) and its CA, `cert/ca.pem`. There is no CA key: the leaf's signature
   is chosen first (r = 5, s = 1) and the CA's public key is solved from the verification
@@ -300,19 +420,23 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
   A handshake buffer is 4 KiB, or the next power of two that holds the chain.
 
 ## Layout
-- `src/os.asm`: everything after the loader. 64-bit long mode, interrupts off, no IDT (a
-  fault resets the machine), one polling loop per processor. Start-up, in 32-bit code as
-  the loader leaves us: page tables for the first 16 MiB, long mode. Then: the memory map
-  into page tables (below), zero from 2 MiB to the end of it, the table space divided,
+- `src/os.asm`: everything after the loader, and at its end the site (`incbin`). 64-bit
+  long mode, interrupts off, no IDT (a fault resets the machine), one polling loop per
+  processor. Start-up, in 32-bit code as the loader leaves us: everything of ours below
+  the table space zeroed, page tables for it (who may write and execute what), long
+  mode. Then: the memory map into page tables (below), the table space zeroed and divided,
   SHA-256 constants, `ecinit` (fields, constants and tables for the curves, the programs
   unpacked), the start of the key schedule, virtio-net, the key for `prf`, the other
   processors.
   Code is 32-bit in style where it came from k2 (`pushad` is a macro for the eight old
   registers; r8-r15 belong to the crypto and are nobody's to keep). Addresses below 4 GiB
   live in 32-bit registers; a connection's slot does not (`rbp`).
-- `src/boot.asm`: BIOS boot sector: reads 64 sectors, asks the BIOS for its memory map
-  (int 15h, E820), protected mode, copies the image to 1 MiB, enters it like a multiboot
-  loader (the map in a multiboot information structure at ebx, as GRUB passes it).
+- `src/boot.asm`: BIOS boot sector: reads the image, however long, 64 sectors at a time
+  and copies each piece to where it goes from 1 MiB up (from real mode, with segments
+  that reach all of memory: set anew for every piece, the BIOS may put them back), asks
+  the BIOS for its memory map (int 15h, E820), protected mode, enters the image like a
+  multiboot loader (the map in a multiboot information structure at ebx, as GRUB passes
+  it). `tools/mkdisk.py` writes the image's length into it.
 - virtio-net: `pcird` reads PCI configuration; the driver finds 1af4:1041 or :1000 on any
   bus, walks its capabilities for the common, notify and device structures (a BAR may be
   64-bit and anywhere: each structure is mapped at a place of ours), negotiates only
@@ -325,36 +449,54 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
 - `tcp`: ARP requests for OURIP get a reply; then only IPv4 without options, unfragmented,
   TCP, to OURIP, with the TCP checksum right and a length that fits the frame, port 443 or
   80 gets further. `tcp_send` cuts an answer into segments, `tcp_seg` builds and sends one.
-- `handshake`, `thash` (the transcript's hash, continued, not restarted), `keys`, `hmac`,
-  `expand`; `sha256`/`shablk`; `seal` with `chacha`, Poly1305, `aeskey`, `aesblk`, GHASH.
+  In it: `.walk` (records, whole or put together), `.tx` (a response on its way).
+- `record` (a client's record: authentic? a request? for which response), `geom` (how the
+  response in hand is cut), `sendseg` (one segment of it), `tarm`/`tqrun` (who waits for
+  an ack), `sm` (is this a connection past its handshake).
+- `handshake`, `hrrmsg`, `thash` (the transcript's hash, continued, not restarted),
+  `keys`, `hmac`, `expand`; `sha256`/`shablk`; `seal` with `chacha`, Poly1305, `aeskey`,
+  `aesblk`, GHASH.
 - `xdh`, `sign`, `stock`, `binv`, `comb`, `select`, `vm`, `fas`, `fmul`, `inv`, `ecinit`:
   the curves, see below.
 - `tools/ec.py`: the curve code's other half: the programs, and a model of the arithmetic
   that the asm must match number for number. Read its docstring before touching either.
-- `tools/gen.py`: certificate, HTTP response, curve programs and constants ->
-  `build/*.inc`. `tools/ip.py`, `tools/mkdisk.py`: the baked-in address, the disk image.
+- `tools/gen.py`: certificate, curve programs and constants -> `build/*.inc`.
+  `tools/pack.py`: the site -> `build/site.bin`, `site.inc`. `tools/ip.py`,
+  `tools/mkdisk.py`: the baked-in address, the disk image. `k3`: the tool on top.
+- `tools/mksite.py`, `tools/sitecheck.py`, `tools/sitetest.sh`, `tools/wxtest.sh`,
+  `tools/jcc.py`, `tools/tlsprobe.sh`, `tools/k3test.sh`: the test site and its checker,
+  the W^X test, the jumps on boundaries, a scanner's questions, the tool's own test.
 - `tools/vm.sh`: QEMU command line and curl options, sourced by the test scripts
 - `tools/bench.c`, `bench/`: the comparison with other servers (see Commands)
 - `tools/ffcheck.py`, `tools/nssdb.py`, `tools/certerr.py`: the browser checks' helpers
 
 ## Memory
-What the page tables say (2 MiB pages; `start`):
+What the page tables say (`start`):
 - The first 16 MiB as they are: the frame being handled at address 0 (`FR`: it stays as
   it came, so its fields are the packet's variables, `P_SEQ` and so on, a byte away from
-  ebx = 0); the image at 1 MiB; page tables from 0x110000; buffers and variables from
-  2 MiB (`BSS`; `OB` is our answer to one packet; the stack comes down from 4 MiB); virtio
-  rings at 4 MiB (`VQ`), receive and transmit buffers at 5 and 7 MiB (`RXB`, `TXB`: 2 KiB
-  each, descriptor i is buffer i, a 12-byte virtio header in front); the other processors'
-  page tables at 9 MiB and their memory from 10 MiB.
+  ebx = 0); the image at 1 MiB, up to 1 MiB of it; buffers and variables from 2 MiB
+  (`BSS`; `OB` is our answer to one packet; the stack comes down from 4 MiB); virtio
+  rings at 4 MiB (`VQ`) and behind them the page tables; receive and transmit buffers at
+  5 and 7 MiB (`RXB`, `TXB`: 2 KiB each, descriptor i is buffer i, a 12-byte virtio header
+  in front); the other processors' page tables at 9 MiB and their memory from 10 MiB.
+- An image of more than 1 MiB (a site with large files) pushes all of that up, in whole
+  pages of 2 MiB (`LOW`, known when it is assembled: pack.py says how long the site is):
+  "2 MiB" in this file and in the source means 2 MiB + LOW. An image can have 768 MiB.
+- Who may do what: the first 2 MiB are in pages of 4 KiB: low memory is data (written,
+  never executed) but for the page the other processors start in (code); of the image
+  the pages with code are executed and not written, the rest only read. Everything from
+  BSS up, in pages of 2 MiB, is data. `CR0.WP` is set once start-up has made its last
+  write to a page that is not to be written (the copy of `tramp`).
 - Behind that, from 16 MiB up, **the table space**: every 2 MiB of RAM that the loader's
   memory map calls available, one after the other, wherever it is. On the server that is
   the rest of the 2 GiB below 4 GiB and then what is above. Boot divides it: n handshake
   buffers and n places of 2 KiB for early segments (n a power of two: about 1/32 and 1/64
   of it; one mask, `HSMASK`), 4 n SYNs of late (128 bytes each, and a dword for when:
-  `tnote`), four rings of n frames (2 KiB each: one ring per processor, `drain`), then
-  the table for TLS (an eighth of the rest: `TSHARE`), then the table for port 80. In a
-  4 GiB machine n is 16,384, and the buffers, places, SYNs and rings take 232 MiB of it;
-  on the server (3,982 MiB of table space) that leaves 3.8 million TLS slots and 172
+  `tnote`), for each of four processors a ring of n frames (2 KiB each: `drain`) and a
+  queue of 4 n connections that wait for an ack (64 bytes each: `tarm`), then the table
+  for TLS (an eighth of the rest: `TSHARE`), then the table for port 80. In a 4 GiB
+  machine n is 16,384, and the buffers, places, SYNs, rings and queues take 248 MiB of
+  it; on the server (3,982 MiB of table space) that leaves 3.8 million TLS slots and 172
   million for port 80.
 - The card's structures (and the local APIC), each in 4 MiB of its own in GiB 505.
 Variables in BSS are reached relative to the instruction pointer (`BSS equ mb + ...`:
@@ -382,7 +524,8 @@ and while it waits for the transmit lock or a free transmit buffer).
   its slot with one `lock cmpxchg` on the slot's first 8 bytes, against what `find` saw
   there; if another processor was quicker, the packet is as good as lost and comes
   again); handshake buffers (each processor has every n-th: `hsnew`); the places for
-  early segments (a place's low bits are its processor).
+  early segments (a place's low bits are its processor). The queue of connections that
+  wait for an ack is each processor's own.
 - They are started with INIT and SIPI to "all but self" (`tramp`, copied to 0x8000: from
   real mode straight to long mode); each takes a number with `lock xadd`. Frames go to
   the largest power of two of them (`NCPUM`). With one processor nothing changes but the
@@ -392,12 +535,72 @@ and while it waits for the transmit lock or a free transmit buffer).
   on its own processor in the same microsecond.
 
 ## How TCP works here
-One timer (for SYN-ACKs, below) and no copy of what was sent, except the handshake
-flight. Our side of a connection is a function of its keys: the flight, then one record
-of `RL` bytes per request answered. A connection knows the next byte it expects
-(`C_NXT`), our next byte (`C_SND`) and the client's last ack (`C_ACK`); a TLS connection
-also how many requests it has answered (`C_ST`), from which follows where its records
-start.
+No copy of what was sent, except the handshake flight: everything else is made again
+from what does not change. A connection knows the next byte it expects (`C_NXT`), our
+next byte (`C_SND`) and the client's last ack (`C_ACK`). There are two ways of sending.
+The old one, for the flight and for port 80 (whose answer is one response, the same for
+every request): build all of it, send it at once, and build the end again when the
+client turns out to lack it (`.resend`; the bullets from "In-order data" on). And the
+one for files:
+
+**A response on its way (`tcp.tx`).** A TLS connection past its flight (`sm`) has one
+response in hand: which (`C_AS`: a number in the site; a bit for "only its head"), where
+it began in our sequence numbers (`C_RS`), and the number of its first record (`C_SR`).
+The response is a stretch of the image, cut into records of as many bytes as the
+client's segments take (`geom`: 216, 536, 1220 or 1440, less 22 of record), so a
+segment is a record, and segment number i of a response can be made at any time from
+those three and i: nothing is kept, a file of a gigabyte costs a connection its 128
+bytes.
+- The client's acks let the next segments go. So many may be on their way as the client
+  takes (its window: 64 KB at most, we have no window scaling) and as `C_CW` says: 10 to
+  begin with, as many more as are acknowledged while nothing was ever lost (twice as
+  many each round trip), half as many after a loss (2 at least), and from then on one
+  more for every 16 KiB acknowledged. That is TCP's congestion control in a byte and a
+  bit; without it (a fixed 10, the first version) 1.5 MiB took 2.2 s over a round trip
+  of 20 ms, with it 0.6 s.
+- Lost, says: an ack that repeats, once if no more than two segments are on their way
+  (more such acks can't come), else three times (swapped neighbours look the same once
+  or twice); then, an ack that moves on by no more than the segment sent again (the next
+  one is lost too: had it arrived, the ack would have gone past it); the client sending
+  old data again; and time (below). What goes again is the one segment at the client's
+  ack, once per ack that asks.
+- **The timer for what we sent** (`tarm`, `tqrun`). A connection that is owed something
+  (an ack is outstanding, or the client's window is shut) is in its processor's queue,
+  once: the first 64 bytes of a frame of its client's, the time, the ack. A polling loop
+  with nothing else to do takes the oldest: not 2^29 cycles old yet (a quarter second
+  on the server; twice as long for every time in vain, up to 16 s): to the back. Old
+  enough: if the client has everything by now, that is that; if its ack has moved,
+  back into the queue; if not, the segment at its ack goes again (and half as many may
+  be on their way). As with SYN-ACKs: only when idle.
+- A request for the next response is taken only when the client has acknowledged all of
+  this one. One that comes earlier (two requests at once) is as good as not arrived, and
+  what follows it in its segment too: the client sends it again (`.busy`).
+- A response that goes at once and takes several segments does not acknowledge the last
+  byte of the request until the client has all of it, as in the old way (`F_DEFER`):
+  then even with every timer of ours lost, the client asks again. One that is longer
+  than that is acknowledged at once: a client that waited minutes for an ack would give
+  the connection up (Windows after five tries).
+- The client's FIN (or a method we don't serve: `record` closes after its answer) makes
+  the connection closed: nothing more is taken from the client, our FIN goes with the
+  last segment of what it still has to get, and the slot is free when that is
+  acknowledged.
+- Sequence numbers go round: which of two is further on is the sign of their difference
+  (`js`/`jns` after a `sub`), never a signed comparison (`jl`, `jle`: they look at the
+  overflow as well). One `jle` stopped a response for ever where it crossed 2^31
+  ("Learned the hard way"); the suite's `*isn*` and `site_wrap*` runs make every
+  connection cross.
+
+**Requests (`tcp.walk`, `record`).** What comes in on 443 is records. One that lies whole
+in a segment is looked at where it is; one that does not (and every ClientHello) is put
+together in a handshake buffer, up to 4 KB; one that says it is longer gets a reset. A
+record counts if its tag is right for the client's next sequence number (`C_ST`); then
+it is decrypted, and if it holds application data that begins with `GET ` or `HEAD `,
+the path (up to a space, `?` or the line's end) is looked up in the site's table: the
+response for it, or the one that says 404. What begins with another word in capitals
+and a space gets the 405 and the end of the connection; anything else that is authentic
+(an alert, a header line in a record of its own) counts and gets nothing.
+
+The old way, and what both share:
 - In-order data is taken (a segment that overlaps what we have is trimmed), data from
   further on is kept (see below) and gets an ack of what we expect, a keep-alive probe
   gets an ack.
@@ -430,7 +633,24 @@ start.
   names it. The slot lets go when the client's ack says it has the flight, so a buffer is
   busy for a round trip, not until 1,024 others have come. A connection whose buffer went
   to another and that needs it (the rest of its ClientHello arrives, or its flight has to
-  go out again) is reset.
+  go out again) is reset. Later a connection takes one again for every record that comes
+  in pieces, until the record is whole.
+- A ClientHello without an x25519 key share gets a HelloRetryRequest as its whole flight
+  (`hrrmsg`), and the connection goes on waiting for a ClientHello: all it keeps is the
+  hash of the first one, where its keys will be (the transcript begins with that hash and
+  with the request, which is made again from the second ClientHello: same session id,
+  same suite). Clients send a ChangeCipherSpec record in front of the second one: while
+  we wait for a ClientHello, a record that is not a handshake record is passed over.
+- A client we can't serve gets seven bytes and our FIN: a fatal alert, "protocol version"
+  if TLS 1.3 is not among the versions it offers (extension 43; a client of TLS 1.2 has
+  none), "handshake failure" if neither of our cipher suites is among its, if x25519 is
+  not among its groups (extension 10: then there is nothing to ask for), or if it sent no
+  x25519 share after being asked. The alert is its connection's flight (kept, sent again
+  if lost), and the connection is closed from our side (`handshake` sets F_CLOSED,
+  `tcp.fin` sends the FIN). Before 2026-11-12 such a client got a ServerHello with a
+  suite it had not offered, or with its own random as a key share: scanners call that
+  intolerance, and it cost a handshake's work for every piece of junk. `tools/tlsprobe.sh
+  HOST[:PORT] [CA]` asks what a scanner asks, one thing at a time.
 - A segment from further on than we expect is kept (`oohold`) and used as soon as what
   comes before it has arrived (`.reply`). There are n places of 2 KiB for such segments; a
   client's place is picked by its hash and holds one segment, the earliest; two clients
@@ -451,18 +671,19 @@ start.
   while frames wait in a processor's ring, the client's answer may be one of them (it
   ran on every frame at first, and under load the clients counted thousands of second
   SYN-ACKs for connections they had made long ago: `TcpInErrs` in nstat).
-- Port 80 is the same machine without keys: its "records" are the bare response, all the
-  same, and its requests are found by counting line ends (`.plain`: two in a row, CRs
-  ignored, end a request; a request body would be read as more request lines).
-- A record header split over segments is carried in the slot (`C_HDRN` bytes of it, in
-  `C_LEN`); a record split over segments is still skipped, not read (see Shortcuts).
+- Port 80 has no keys and no files: every request gets the same response (pack.py:
+  where the site is, or its front page), and requests are found by counting line ends
+  (`.plain`: two in a row, CRs ignored, end a request; a request body would be read as
+  more request lines).
 
 ## The connection tables
 - Two tables, one per port, so that a connection to port 80 costs 20 bytes (address, port,
-  a byte of flags, a byte of time, `C_NXT`, `C_SND`, `C_ACK`) and a TLS connection 128 (the
-  same, then `C_ST`, `C_LEN`, its handshake buffer, and 96 bytes of keys). They fill the
-  table space behind the buffers: the TLS table gets an eighth (`TSHARE`), port 80 the
-  rest.
+  a byte of flags, a byte of time, `C_NXT`, `C_SND`, `C_ACK`) and a TLS connection 128: the
+  same, then the number of the client's next record (`C_ST`), the response in hand
+  (`C_SR`, `C_RS`, `C_AS`: ten bytes), its handshake buffer and how much of a record is
+  in it, a byte of flags and counts (`C_FL2`), a byte of window (`C_CW`), and 88 bytes of
+  keys (two of 32 with their 12 of iv; which cipher is a flag). They fill the table
+  space behind the buffers: the TLS table gets an eighth (`TSHARE`), port 80 the rest.
 - A connection is in one of two buckets of 16 slots, picked by two words of `prf(addresses,
   ports)`; a new one goes into the bucket with more free slots (`find`). A slot is free
   when its address is 0. With two buckets to choose from the table fills to 85% before
@@ -541,53 +762,87 @@ model that asserts every bound.
   agree); the client's u has its top bit cleared (RFC 7748).
 - r and s go out as DER INTEGERs of whatever length they have (`derint`); nothing is
   retried.
+- `HOT n` in front of a routine puts it n bytes behind a 32-byte boundary: the routines a
+  handshake spends its time in (the hash, the ladder, the register machine, the field
+  arithmetic, the ciphers) each lie where none of their jumps crosses such a boundary
+  or ends on one. On Intel's processors from Skylake to Cascade Lake (the server's is
+  one) such a jump is decoded again every time, and all that shares its 32 bytes with
+  it. Where the jumps fall depends on every byte in front, so two builds differed by 6%
+  in handshakes a second there, and by nothing here (Zen 2). It costs 320 bytes of
+  padding. `tools/jcc.py` finds such jumps (make says so if one of these routines has
+  one) and, with `fit`, the n for a routine that has been changed.
 
 ## Records
-`seal` makes a record, or the record a client should have sent (whose tag `tcp` then
-compares). The key block of a direction is 32 bytes of key, 4 that say the cipher, 12 of
-iv: for ChaCha20 the 4 are its block counter and 0; a 1 means AES-128-GCM (`keys` writes
-it, from `SUITE`, which `handshake` sets: the first of the client's suites that is one of
-ours).
+`seal` makes a record for some bytes and the byte that says what they are (handshake
+messages, application data); or, the other way round (carry set), decrypts what a
+client's record held and puts behind it the tag that record should have had, which
+`record` compares before it looks at anything. The key block of a direction is 32 bytes
+of key and 12 of iv; which cipher, `CIPH` says (0 ChaCha20-Poly1305, else AES-128-GCM:
+from `SUITE` in the handshake, which is the first of the client's suites that is one of
+ours, and from the connection's flag after it).
 - ChaCha20: the state's four rows in xmm registers, a quarter round on all four columns
   at once (SSE2). Poly1305: 64-bit limbs, `mul`.
 - AES-128-GCM: the key schedule is made again for every record (`aeskey`: 176 bytes would
   not fit a slot), four counter blocks at a time through the same loop that xors
   ChaCha20's key stream, GHASH with pclmulqdq (H kept times x, two folds by 0xC2..00;
   the steps were checked in a model against pyca first).
-- A response of this page: about 900 cycles either way.
+- A record of a small page: about 900 cycles either way; a full one (1,418 bytes of a
+  file): some 8,000, a block at a time. Faster ciphers (several blocks at once) would
+  show only where the network is not the limit.
 
 ## Shortcuts that remain
-From k2, where they saved bytes. Ask before removing the ones about TLS.
+From k2, where they saved bytes, and from the first version that served files. Ask before
+removing the ones about TLS.
 - TLS 1.3 only, two suites: TLS_CHACHA20_POLY1305_SHA256 and TLS_AES_128_GCM_SHA256,
-  X25519, ecdsa_secp256r1_sha256. A ClientHello without an x25519 share gets a useless
-  answer (no HelloRetryRequest). Of the ClientHello only the cipher suites and the x25519
-  key share are looked at (`handshake` walks the extensions to the key shares and those
-  to ours; every length on the way is bounded by the ClientHello's end).
+  X25519, ecdsa_secp256r1_sha256; who has none of these is told so (an alert) and
+  nothing else. Of the ClientHello the cipher suites, the versions, the groups and the
+  x25519 key share are looked at (`handshake` walks the extensions; every length on the
+  way is bounded by the ClientHello's end, and what is looked at inside an extension by
+  that extension's): no name (SNI), no ALPN (we speak HTTP/1.1 whatever the client
+  offers), no signature algorithms (ours is ecdsa_secp256r1_sha256, which every TLS 1.3
+  client must have).
 - The client's Finished is not checked as such: it carries handshake keys, fails the tag
-  check like any forgery, and is skipped. The first request proves the same thing.
-- Client data is authenticated but never decrypted: every authentic record gets one HTTP
-  response, a close_notify included. A bad record is skipped, not answered with an alert.
-- A client record must arrive whole in one TCP segment to count (requests up to ~1.4 KB).
-- No check for an all-zero X25519 result (a client can only weaken its own connection).
-- No alerts, no close_notify, no KeyUpdate, no session tickets. No ChangeCipherSpec for
+  check like any forgery, and is passed over. The first request proves the same thing.
+- A bad record is passed over, not answered with an alert. No close_notify, no KeyUpdate
+  (a client that changes its keys is not understood after that; a connection of ours
+  ends before its key has sealed too much), no session tickets, no ChangeCipherSpec for
   middleboxes.
-- After 2^32 requests on one connection its counter wraps to "no ClientHello yet": the
+- A client record of more than 4 KB (a request with that many headers and cookies) ends
+  the connection.
+- No check for an all-zero X25519 result (a client can only weaken its own connection).
+- After 2^32 records from the client its counter wraps to "no ClientHello yet": the
   connection is dead, the nonces never repeat.
-- TCP: no SACK, timestamps or window scaling, no timer but the one for SYN-ACKs, we
-  never close first (not even for `Connection: close`: the client has the
-  Content-Length). The IP header's checksum is not looked at: what we use of that header
-  is fixed or goes into TCP's checksum, which is. Bare-LF HTTP response.
-- HTTP: any request, whatever it asks for, gets the page; a request body is not understood.
+- HTTP: GET and HEAD, the path compared byte for byte with what pack.py made of the file
+  names (so `/a%20b.txt`, not `/a b.txt`; a query is cut off; no `..` to resolve: a path
+  is in the table or it is not). A request is a record that begins with its request
+  line: the line in pieces over several records is not found, and of two requests in
+  one record the second is not seen. The request's headers are not read: no Host (one
+  site), no If-None-Match (a browser gets the file again when its copy is too old), no
+  Range, no Accept-Encoding (files go as they are), no `Connection: close` (the client
+  has the Content-Length; we close first only after a 405). No Date header: there is no
+  clock.
+- Two requests at once: the second waits for the client's retransmission timer (0.2 s).
+- TCP: no SACK, timestamps or window scaling (so 64 KB at most on their way), a first
+  timeout of 2^29 cycles whatever the round trip is (a path slower than that gets a
+  segment twice), and the old way (`tcp_send`) for the flight and port 80: all at once,
+  no window. The IP header's checksum is not looked at: what we use of that header is
+  fixed or goes into TCP's checksum, which is.
+- Port 80: one response, whatever is asked; a request body is not understood.
 - `keys` writes 20 junk bytes after an IV: the handshake makes both key blocks in `KA` and
   copies them into the slot.
 - The handshake's scratch (transcript, key schedule, curve registers) is one per
   processor: one handshake at a time on each, start to finish, inside one call of `tcp`.
 - Secrets are not wiped after use: the last handshake's are overwritten by the next, and
-  unused nonces wait in the stock. (The private key is in the same memory.)
+  unused nonces wait in the stock. (The private key is in the same memory, which is
+  data: read, written, never executed.)
+- The first page with data behind the code can be executed (code and what follows share
+  it: 4 KiB at most, of constants, among them the key).
 Gone since k2: the ground server random (it is random now), r and s forced to 32 bytes by
 retrying, the tag compared with `repe cmpsb`, the calls through interrupt gates, the key
-share found by searching the ClientHello for its first four bytes (see "Learned the hard
-way").
+share found by searching the ClientHello for its first four bytes. Gone on 2026-11-12:
+client data authenticated but never read, one page for every request, a record having to
+arrive in one segment, no HelloRetryRequest, no timer but the one for SYN-ACKs, bare
+line feeds in the response, memory that is written and executed.
 
 ## Learned the hard way
 - Under KVM the NE2000 cost a VM exit per byte of port I/O (39 handshakes/s); virtio-net
@@ -710,6 +965,60 @@ way").
   command line of the shell that runs it (over ssh or here) kills that shell. `pkill -f
   "holdloo[p]"`.
 
+- Sequence numbers are compared by the sign of their difference, not with a signed
+  jump. `sub ebx, [C_SND]` / `jle` is wrong when the subtraction overflows, which it does
+  exactly where a segment straddles 2^31: C_SND never moved on, the loop that sends
+  never ended, and the machine sent one segment 110,000 times a second for ever. One
+  download of 1.6 MB in 2,700 hits it (initial sequence numbers are random). It showed
+  as a site test that stalled once in a few runs, looked like a matter of one processor
+  and reordering (it was neither), and was found by capturing the storm: the same
+  segment over and over, and its sequence number was 2147483206. Print the numbers as
+  they are, not relative ones. `make ISNTOP=n` now puts every connection there.
+- That test knob first forced all of the initial sequence number's upper bits, and under
+  loss one handshake in 1,300 then failed, at 2^31 and anywhere else: the SYN cookie no
+  longer said that a packet was the client's first, so the second segment of a
+  ClientHello could begin a connection whose first was lost. A control (the same knob far
+  from 2^31) told the knob's fault from the code's. It forces 12 bits now, and 17 only
+  where nothing is lost.
+- Where a jump lies can cost 6%, on one kind of processor and not on another (HOT in "How
+  the curve code works"). The afternoon's image was 6% behind the night's at handshakes
+  on the server, in every pair of runs, and equal to it here; its cycle counts per frame
+  were the same, its crypto natively too. It was 130 bytes of new code in front of the
+  SHA-256 loop. A regression that shows on one machine only may be where the code lies.
+- The server is not the same machine from hour to hour (shared processors, and the
+  network path: plain connections went from 35,000 a second in the night to 45,000 in
+  the afternoon, handshakes from 9,000 to 8,000). Two images are compared in turn, in
+  one session, several times each (`./k3 deploy --reset` makes that a loop).
+- Clients send a ChangeCipherSpec record in front of their second ClientHello. Taking the
+  first record for the ClientHello, as it had always been, made a handshake of those six
+  bytes.
+- `XEND` is an instruction (so are `XBEGIN`, `XTEST`): not a name for a constant. make
+  can't have file names with spaces as prerequisites: the site's files are listed into a
+  file whose change is what make sees.
+- A script that bash is running must not be rewritten in place: bash reads on from where
+  it was, in the new text (`ntf: command not found`, and a suite's last runs lost). Tools
+  that edit write a new file and rename it; better still, don't edit what a background
+  run uses.
+- Through QEMU's own network (slirp) one connection in 20 waits a second when connections
+  follow each other faster than 2 ms apart: QEMU takes them one at a time, and the host
+  drops the SYN. It looked like a slow server (abuse.py's 1,565 ClientHellos took a
+  minute); the night's image did the same.
+- Claude's shell refuses long commands with a here-document it can't check ("could not be
+  checked for dangerous rm operations"), also when nothing is removed: write the script
+  with the Write tool and run that.
+
+- A tool that is "to be run from cron" must be a no-op on most days, and must say so
+  itself. `./k3 renew` reset the server and asked for a certificate every time it ran:
+  every night without a server, and Let's Encrypt's limit (five of the same certificate
+  in seven days) on the sixth. And where a key is made is where it stays: certbot's own
+  key lands in /etc/letsencrypt on the server's disk, in a Linux that is supposed to
+  hold nothing. A request (CSR) travels instead. Both were found by a review, not by a
+  test: what never ran against the real thing has not been tested, however often its
+  other half has.
+- A ClientHello's extensions come in any order (Chrome shuffles them), and the short ones
+  can be the last: a walk that wants 36 bytes behind every header, as the search for the
+  key share did, would not see a `supported_versions` at the end.
+
 ## Tried and rejected
 - Compressed EC point in the leaf: Firefox says SEC_ERROR_UNSUPPORTED_EC_POINT_FORM.
 - subjectAltName not critical with the empty subject: Chrome says INVALID.
@@ -733,17 +1042,47 @@ way").
   wait in our ring. Not done.
 - A flood of small UDP packets to see what packet rate Linux takes on the same server: it
   would look like an attack to the provider. Not done.
+- Session tickets: see Goal. Dropped by the user on 2026-11-12.
+- A fixed number of segments on their way (10, what a connection may begin with) instead
+  of congestion control: safe, and 14 KB a round trip for ever.
+- The timer for what we sent in the SYNs' table (a place per client, picked by its
+  hash): a SYN flood would have pushed the timers of real connections out. It has a
+  queue of its own, in which a connection is once.
+- Holding back the ack of the request's last byte for the whole of a long response (so
+  that the client asks again whatever we lose): a client gives a connection up when its
+  data stays unacknowledged for long (Windows after five tries, some ten seconds).
+- Putting ACME, DNS or a clock into the image: the certificate is renewed from outside
+  (`./k3 renew`), by packing a new image.
 
 ## Workflow
-`./measure.sh` after every change (a second; also once each with `DEBUG=1`, `KNOCK=` and
-`LIFE=` images after touching boot or the loops: those builds move everything); `make
-test` after touching crypto or ec.py
-(the model first: change `tools/ec.py`, run it, then the asm); `tools/suite.sh` after
-anything else, and with `SMP=1` after touching what the processors share. After touching
-`.resend`, `tcp_send`, the handshake buffers or the cookie rules, also the lossy runs
-many times over (a loop of `B=build-real LOSS=3 ... taprunc.sh 500 1024 4`, 16 or more):
-what is wrong there is wrong once in thousands. Then the server (deploy, fetch, knock)
-for anything that could behave differently on a real machine, and `bench/run.sh` from a
-load generator (bench/README.md) for anything that could change what it does under load.
+`./measure.sh` after every change (ten seconds; also once each with `DEBUG=1`, `KNOCK=`
+and `LIFE=` images after touching boot or the loops: those builds move everything); `make
+test` after touching crypto or ec.py (the model first: change `tools/ec.py`, run it, then
+the asm); `tools/suite.sh` after anything else, and with `SMP=1` and `SMP=4` after
+touching what the processors share or how the machine starts. make says if a routine a
+handshake spends its time in has a jump on a 32-byte boundary: then `tools/jcc.py ... fit`
+and a new number after `HOT`. After touching `.resend`, `.tx`, `sendseg`, `tcp_send`, the
+handshake buffers or the cookie rules, also the lossy runs many times over (a loop of
+`B=build-real LOSS=3 ... taprunc.sh 500 1024 4`, 16 or more, and the site test under loss
+a few times): what is wrong there is wrong once in thousands. And a control: the same
+runs on the last commit (`git worktree add`), or with the one thing changed back. Then
+the server (`./k3 deploy`, `tools/sitecheck.py` against it, a browser) for anything that
+could behave differently on a real machine, and `bench/run.sh` from a load generator
+(bench/README.md), in turn with the image before, for anything that could change what it
+does under load.
 Commit when the user asks. (The night of 2026-11-11 was worked on a branch, `night`, with
 a commit per step, because nobody was there to ask.)
+
+The lossy runs of 2026-11-12, after the last change to the code:
+- handshakes, 16 runs of 2,000 each (`... taprunc.sh 500 1024 4`): the two-segment flight
+  at 3% loss; AES-128-GCM at 3%; the two-segment flight with a HelloRetryRequest at 3%;
+  MTU 300 at 3%; the two-segment flight with reordering; the same across 2^31 at 3%;
+  and at 5% loss with two minutes to wait. 224,000 handshakes, none failed.
+- the site test over tap (`sitetest.sh tap quick`): 8 runs each at 3% loss, with
+  reordering, with MTU 600 at 3% loss, and across 2^31 at 3% loss; 6 on one processor
+  at 5% loss and 6 on four at 3%. 44 runs, every check of every run passed.
+- after `handshake` learned to say no (the same day, later): the two-segment flight at 3%
+  loss, the same with a HelloRetryRequest, MTU 300 with AES-128-GCM at 3%, and the
+  two-segment flight with reordering, 16 runs of 2,000 each: none of 128,000 failed. And
+  300 clients that can't be served (TLS 1.2), 20 at a time, at 10% and at 25% loss: each
+  got its alert.

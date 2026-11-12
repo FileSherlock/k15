@@ -4,7 +4,10 @@
   1. forged, truncated and replayed records inside a real TLS connection are ignored, and
      the connection still serves the next real request (so they moved no sequence number)
   2. a ClientHello without an x25519 key share gets no working session, and one with bytes
-     that look like the start of one in another extension is served all the same
+     that look like the start of one in another extension is served all the same; a
+     client that can't be served (no TLS 1.3, none of our cipher suites, no x25519, no
+     share for it after being asked) gets a fatal alert that says why, and the end of
+     the connection: nothing that only looks like an answer
   3. junk instead of a ClientHello, an oversized "ClientHello", and a real one cut short
      anywhere or with any of its lengths gone wrong, do no harm
   4. after all of that a normal client is still served
@@ -26,6 +29,7 @@ HPORT = int(os.environ.get("HPORT", PORT + 1000))
 BUILD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", os.environ.get("B", "build"))
 NAME = open(os.path.join(BUILD, "name")).read()
 EXPECT = open(os.path.join(BUILD, "..", "www", "index.html"), "rb").read()
+P80 = open(os.path.join(BUILD, "page80.bin"), "rb").read()      # what port 80 says to every request
 REQ = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"
 
 
@@ -184,6 +188,109 @@ def main():
     decoy.set_alpn_protocols(["\x00\x1d\x00 " + "k" * 32])
     good &= check("the key share is found behind an extension that looks like its start", served(decoy))
 
+    # 2c. A ClientHello without an x25519 share is asked for another one (HelloRetryRequest).
+    # What comes instead must do no harm: the same again, junk, nothing but the
+    # ChangeCipherSpec records clients put in front of a second ClientHello.
+    hello = client_hello()
+    p = 38
+    p += 1 + hello[p]
+    p += 2 + int.from_bytes(hello[p:p + 2], "big")
+    p += 1 + hello[p] + 2
+    shareless = bytearray(hello)
+    while p + 4 <= len(hello):
+        kind, n = int.from_bytes(hello[p:p + 2], "big"), int.from_bytes(hello[p + 2:p + 4], "big")
+        if kind == 51:
+            q = p + 6
+            while q + 4 <= p + 4 + n:
+                if hello[q:q + 2] == b"\x00\x1d":
+                    shareless[q:q + 2] = b"\x01\x00"        # (a group we don't have)
+                q += 4 + int.from_bytes(hello[q + 2:q + 4], "big")
+        p += 4 + n
+    shareless = bytes([22, 3, 1]) + len(shareless).to_bytes(2, "big") + bytes(shareless)
+    ccs = bytes([20, 3, 3, 0, 1, 1])
+    asked = True
+    for second in (shareless, ccs + shareless, os.urandom(600), ccs * 500, bytes([22, 3, 3, 0, 0]), b""):
+        s = socket.create_connection((HOST, PORT), timeout=5)
+        try:
+            s.sendall(shareless)
+            got = s.recv(4096)
+            asked &= got[:1] == b"\x16" and got[11:43] == bytes.fromhex(
+                "cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c")
+            s.sendall(second)
+            s.shutdown(socket.SHUT_WR)
+            s.settimeout(1)
+            while s.recv(4096):
+                pass
+        except OSError:
+            pass
+        s.close()
+    good &= check("a ClientHello without an x25519 share is asked for another", asked)
+    good &= check("still serving after six that sent something else instead", served())
+
+    # 2d. Clients we can't serve: each gets seven bytes, a fatal alert with the reason, and
+    # then the connection's end.
+    def said(first, second=None):
+        """What the server sends for these records, up to its closing the connection."""
+        s = socket.create_connection((HOST, PORT), timeout=5)
+        got = b""
+        try:
+            s.sendall(first)
+            if second is not None:
+                got = s.recv(4096)                  # (the HelloRetryRequest)
+                s.sendall(second)
+                got = b""
+            while True:
+                more = s.recv(4096)
+                if not more:
+                    break
+                got += more
+        except OSError as e:
+            got += b" %r" % e
+        s.close()
+        return got
+
+    def record(body):
+        return bytes([22, 3, 1]) + len(body).to_bytes(2, "big") + bytes(body)
+
+    PROTOCOL_VERSION, HANDSHAKE_FAILURE = bytes.fromhex("15030300020246"), bytes.fromhex("15030300020228")
+    old = context()
+    old.maximum_version = ssl.TLSVersion.TLSv1_2
+    inc, out = ssl.MemoryBIO(), ssl.MemoryBIO()
+    tls = old.wrap_bio(inc, out, server_hostname=NAME)
+    try:
+        tls.do_handshake()
+    except ssl.SSLWantReadError:
+        pass
+    good &= check("a client without TLS 1.3 is told \"protocol version\", and that is all",
+                  said(out.read()) == PROTOCOL_VERSION)
+    other = bytearray(hello)                    # our two cipher suites become one we don't have
+    p = 38
+    p += 1 + hello[p]
+    for q in range(p + 2, p + 2 + int.from_bytes(hello[p:p + 2], "big"), 2):
+        if hello[q:q + 2] in (b"\x13\x01", b"\x13\x03"):
+            other[q:q + 2] = b"\x13\x02"
+    good &= check("one that names none of our cipher suites is told \"handshake failure\"",
+                  said(record(other)) == HANDSHAKE_FAILURE)
+    groupless = bytearray(shareless[5:])        # x25519 is not among its groups either
+    p = 38
+    p += 1 + hello[p]
+    p += 2 + int.from_bytes(hello[p:p + 2], "big")
+    p += 1 + hello[p] + 2
+    while p + 4 <= len(hello):
+        kind, n = int.from_bytes(hello[p:p + 2], "big"), int.from_bytes(hello[p + 2:p + 4], "big")
+        if kind == 10:
+            for q in range(p + 6, p + 4 + n, 2):
+                if hello[q:q + 2] == b"\x00\x1d":
+                    groupless[q:q + 2] = b"\x01\x00"
+        p += 4 + n
+    good &= check("one that has no x25519 is told \"handshake failure\"",
+                  said(record(groupless)) == HANDSHAKE_FAILURE)
+    good &= check("one that was asked for an x25519 share and sent none is told \"handshake failure\"",
+                  said(shareless, ccs + shareless) == HANDSHAKE_FAILURE)
+    good &= check("junk in a handshake record is told \"protocol version\"",
+                  said(record(os.urandom(300))) == PROTOCOL_VERSION)
+    good &= check("and a normal client is served after them", served())
+
     # 3. junk and oversized hellos
     for name, data in (("random bytes", os.urandom(3000)),
                        ("a 16 KB ClientHello record", bytes([22, 3, 1, 0x40, 0]) + os.urandom(9000)),
@@ -215,6 +322,7 @@ def main():
         except OSError:
             pass
         s.close()
+        time.sleep(0.002)   # (QEMU takes connections one at a time: faster than this, one in 20 waits a second)
     good &= check(f"still serving after {len(variants)} ClientHellos cut short or with a length gone wrong", served())
     good &= check("and the one they were made from is served", served())
 
@@ -233,7 +341,7 @@ def main():
         except OSError as e:
             buf = b"error %r" % e
         s.close()
-        return buf.count(EXPECT) == want and buf.count(b"HTTP/1.1 200") == want
+        return buf == P80 * want
 
     good &= check("port 80: a request gets a response", plain([REQ], 1))
     good &= check("port 80: a request in three pieces gets one", plain([REQ[:5], REQ[5:-2], REQ[-2:]], 1))
