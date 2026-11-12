@@ -85,6 +85,7 @@ TXLOCK  equ 0x9F00          ; held from `txbuf` to `txgo` (not in the page of TR
 NCPUM   equ 0x9F04          ; is code); how many processors take frames, less 1 (a power of two, less 1)
 KST     equ 0x9F08          ; reset knock: 1 after the first port (development builds)
 NOIDT   equ 0x9F10          ; ten zero bytes: an IDT with nothing in it (`reset`)
+TXCNT   equ 0x9F20          ; how many frames have ever been queued for sending (a qword: `txgo`)
 %ifndef HOST
 APMEM   equ 0x900000 + LOW  ; for each other processor 32 KiB: four page tables, its page 0,
 APBSS   equ 0xA00000 + LOW  ; and 2 MiB: its BSS
@@ -177,13 +178,23 @@ TQB     equ NV + 172        ; this processor's connections that wait for an ack 
 TQH     equ NV + 176        ;   the queue is, how many have been taken out,
 TQT     equ NV + 180        ;   how many put in,
 TQTRY   equ NV + 184        ;   and (a byte) how often the one in hand has been sent again in vain
+TSO     equ NV + 188        ; not 0: the card cuts a frame of ours into segments and sums them
+BIGN    equ NV + 192        ; so many such frames this processor has made (`txbig`),
+BIGQ    equ BSS + 0x0F100   ;   and for each of its buffers a count of frames queued (TXCNT)
+                            ;   that is past the one it last held (qwords)
 HKS     equ BSS + 0x0F400   ; the eleven round keys of `prf`, made at boot
 HKO     equ HKS + 176       ;   and its output
 KA      equ BSS + 0x0F300   ; application keys as `keys` makes them (2 x 44 bytes + 20 of junk)
 %ifndef HOST
 RXB     equ 0x500000 + LOW  ; receive buffers, 2 KiB each (12-byte virtio header + frame)
 TXB     equ 0x700000 + LOW  ; transmit buffers, the same
+BIGB    equ 0x1000000 + LOW ; and for each processor BIGS buffers of 64 KiB, for frames that
+%endif                      ; the card cuts into segments (`txbig`, `sendrun`)
+%ifndef BIGSH
+%define BIGSH 3             ; (make BIGSH=n, for tests: 2^n of them)
 %endif
+BIGS    equ 1 << BIGSH
+BIGPAY  equ 0xFF00          ; such a frame holds so many bytes of segments at most
 %ifndef OURIP
 %define OURIP 0x0F02000A    ; 10.0.2.15, as it is on the wire (make IP=a.b.c.d)
 %endif
@@ -209,7 +220,7 @@ T_ACK   equ 42              ;   of a frame of its client, and in place of its se
 T_TRY   equ 46              ;   ack and header length: since when, for which ack, the how
                             ;   manieth time
 %ifndef HOST
-TABV    equ 0x1000000 + LOW ; The table space: from 16 MiB up (see the top of this file). Boot
+TABV    equ (BIGB + (MAXCPU * BIGS << 16) + 0x1FFFFF) & ~0x1FFFFF ; The table space: from 18 MiB up (see the top of this file). Boot
                             ; divides it: n handshake buffers, n places of 2 KiB for early
                             ; segments (n a power of two: about 1/32 and 1/64 of it), 4 n
                             ; SYNs of late (`tnote`), a ring of n frames and a queue of 4 n
@@ -238,7 +249,7 @@ BUCKET  equ 16              ; slots in a bucket (see `find`)
 %ifndef IDLE
 %define IDLE 64             ; a connection that has been quiet for longer than this (in units of
 %endif                      ; 2^37 cycles: 40 to 70 minutes) may be replaced when a new one finds no room
-HINT    equ 0x3FC           ; see the cookie in `tcp`
+HINT    equ 0x3FC0          ; see the cookie in `tcp`
 OBMAX   equ 0x40000         ; room for one answer at OB
 
 S_Z     equ -128            ; slot offsets from ebp = SLOTS + 128
@@ -254,10 +265,13 @@ S_D1    equ 96              ; (constant: what the handshake secret is extracted 
 C_IP    equ 0               ; the client's address (0: the slot is free)
 C_PORT  equ 4               ; and port (a word)
 C_FLG   equ 6               ; a byte: F_CLOSED, F_DEFER, which segment size the client takes
-F_CLOSED equ 1              ;   (bits 2-3: MSSTAB), on port 80 whether a line has just ended (bit 7)
-F_DEFER equ 2               ; F_CLOSED: FINs exchanged, but the client lacks something
-F_DEFER_BIT equ 1           ; F_DEFER: its data is not acknowledged before it has our answer
-F_SYN   equ 16              ; F_SYN: a SYN has come for it since its last ack that fitted
+F_CLOSED equ 1              ;   (bits 2-3: MSSTAB), F_SYN; on port 80 whether a line has just
+F_DEFER equ 2               ;   ended (bit 7); on 443, in bits 5-6, how many acks in a row have
+F_DEFER_BIT equ 1           ;   said the same (F_DUP3: three, and we have sent again what they
+F_SYN   equ 16              ;   ask for). F_CLOSED: FINs exchanged, but the client lacks
+F_DUP   equ 0x20            ;   something. F_DEFER: its data is not acknowledged before it has
+F_DUP3  equ 0x60            ;   our answer. F_SYN: a SYN has come for it since its last ack
+                            ;   that fitted
 C_AGE   equ 7               ; when its last packet came (NOW; a byte, so after 256 units of
                             ; silence a connection looks young again for a while)
 C_NXT   equ 8               ; next sequence number we expect from the client
@@ -273,12 +287,13 @@ C_AS    equ 32              ;   and which it is (a word: its number in the site;
                             ;   its head)
 C_HS    equ 34              ; its handshake buffer + 1 (a word; if that still says so itself)
 C_LEN   equ 36              ; a word: so many bytes of a record that came in pieces are in that buffer
-C_FL2   equ 38              ; a byte: F_AES, F_FIN, F_ARMED, and in the top two bits how many
-F_AES   equ 1               ;   acks in a row have said the same (3: we have sent again what
-F_FIN   equ 2               ;   they ask for). F_AES: its cipher is AES-128-GCM. F_FIN: our FIN
-F_ARMED equ 4               ;   has gone out. F_ARMED: it is in the queue of `tarm`. F_HRR
-F_HRR   equ 8               ;   (before the handshake): we have asked for a second ClientHello;
-F_CA    equ 8               ;   F_CA (after it): something was lost on this connection once.
+C_FL2   equ 38              ; a byte: F_AES, F_FIN, F_ARMED, and in the top four bits by how
+F_AES   equ 1               ;   many bits the client's window is to be shifted (what its SYN
+F_FIN   equ 2               ;   said: window scaling). F_AES: its cipher is AES-128-GCM. F_FIN:
+F_ARMED equ 4               ;   our FIN has gone out. F_ARMED: it is in the queue of `tarm`.
+F_HRR   equ 8               ;   F_HRR (before the handshake): we have asked for a second
+F_CA    equ 8               ;   ClientHello; F_CA (after it): something was lost on this
+                            ;   connection once.
 C_CW    equ 39              ; a byte: so many segments of a response may be on their way (`tcp.tx`)
 C_KIV   equ 40              ; our application key | iv (44 bytes), then the client's
 TSLOT   equ 128
@@ -692,10 +707,20 @@ shaconst:
         xor eax, eax
         inc eax
         mov [rbp+8], eax        ; features, word 1: VERSION_1 (bit 32), nothing else:
-        mov [rbp+12], eax       ; plain frames behind a 12-byte header
+        mov [rbp+12], eax       ; frames behind a 12-byte header
         dec eax
-        mov [rbp+8], eax
+        mov [rbp+8], eax        ; Word 0: that the card sums what we send (CSUM, bit 0) and
+        mov [rbp], eax          ; cuts a frame of up to 64 KiB into segments (HOST_TSO4, bit
+%ifndef NOTSO                   ; 11), if it offers both: then a response goes many records
+        mov eax, [rbp+4]        ; to a frame (`sendrun`). (make NOTSO=1: never.)
+        and eax, 0x801
+        cmp eax, 0x801
+        je .tso
+        xor eax, eax
+.tso:
+%endif
         mov [rbp+12], eax
+        mov [TSO], eax
         mov byte [rbp+20], 11   ; FEATURES_OK
         mov rsi, [VCAP+32]      ; device configuration: the MAC comes first
         mov edi, MAC
@@ -789,7 +814,7 @@ shaconst:
         mov cr0, rax            ; write)
         mov edi, TXLOCK         ; (what is shared down there starts as zero: that memory
         xor eax, eax            ; is whatever the loader left in it)
-        mov cl, 4
+        mov cl, 5
         rep stosq
         mov ebx, 1
 .cpu:   mov r8d, ebx
@@ -1121,20 +1146,58 @@ txbuf:  pushad
         popad
         ret
 
-; txgo: queue the frame of ecx bytes that was built where txbuf said (it goes out with txkick)
+; txgo: queue the frame of ecx bytes at ebx: built where txbuf said, or in a buffer of the
+; caller's own (`txbig`), after txbuf has made the ring ours. It goes out with txkick.
 txgo:   pushad
-        mov ebx, [Q1+4]
-        movzx eax, word [rbx+2]
+        mov edx, [Q1+4]
+        movzx eax, word [rdx+2]
         and eax, [Q1+12]
-        mov [rbx+4+rax*2], ax
+        mov [rdx+4+rax*2], ax
         shl eax, 4
         add eax, [Q1]
+        sub ebx, 12             ; (in front of a frame, 12 bytes for the device: all zero, or
+        mov [rax], rbx          ; what `tcp_big` says there)
         add ecx, 12
-        mov [rax+8], ecx        ; length with the header (12 zero bytes: nobody writes there)
-        inc word [rbx+2]
+        mov [rax+8], ecx
+        inc word [rdx+2]
+        inc qword [abs TXCNT]
         mov byte [TXK], 1
         mov byte [abs TXLOCK], 0
         popad
+        ret
+
+; txbig: ebx = where this processor may build a frame of up to 64 KiB (for `tcp_big`): the
+; next of its BIGS buffers, in a circle, once the device has sent what the buffer last held.
+; That it has when it has sent as many frames as had been queued by the time the buffer
+; after this one was asked for (BIGQ has that count; the device sends in the order of the
+; ring). Until then: wait, and let what comes in go on to the rings. (Clobbers eax, edx,
+; esi, edi.)
+txbig:  mov eax, [BIGN]
+        inc dword [BIGN]
+        lea rsi, [BIGQ]
+        mov rdx, [abs TXCNT]
+        lea edi, [rax-1]
+        and edi, BIGS - 1
+        mov [rsi+rdi*8], rdx    ; (the buffer before this one: its frame is queued by now)
+        and eax, BIGS - 1
+.wait:  mov edx, [Q1+8]
+        movzx edi, word [rdx+2] ; How many frames the device has sent (a word of that count;
+        mov rdx, [abs TXCNT]    ; read before the count of those queued, of which it is then
+        neg edi                 ; never ahead):
+        add edi, edx
+        movzx edi, di           ; so many it still has,
+        sub rdx, [rsi+rax*8]    ; and so many were queued after this buffer's
+        cmp rdx, rdi
+        jae .free
+        call txkick.now
+        call bdrain
+        pause
+        jmp .wait
+.free:  mov ebx, [CPUN]
+        shl ebx, BIGSH
+        add ebx, eax
+        shl ebx, 16
+        add ebx, BIGB + 12
         ret
 
 ; txkick: tell the device that there are frames to send, if there are some it has not been
@@ -1311,10 +1374,12 @@ tcp:
         ; client received it (`.miss`), so only clients that really are at their address can
         ; take up slots. For that our initial sequence number is a "cookie", made of W, a
         ; keyed hash of the client's address and ports (`prf`):
-        ;   bits 10-31: W xor the low bits of the client's initial sequence number, so that
+        ;   bits 14-31: W xor the low bits of the client's initial sequence number, so that
         ;               the packet that follows the SYN-ACK is recognised as the first;
-        ;   bits 2-9:   W (HINT): tells a packet that acknowledges a SYN-ACK of ours, first
+        ;   bits 6-13:  W (HINT): tells a packet that acknowledges a SYN-ACK of ours, first
         ;               or not, from one of a connection we don't know;
+        ;   bits 2-5:   by how many bits the client shifts its window (window scaling:
+        ;               what its SYN said, 14 at most; 0: it does not);
         ;   bits 0-1:   which of four segment sizes the client takes (MSSTAB).
         inc eax
         jz .nos
@@ -1322,11 +1387,12 @@ tcp:
         jmp .syn                ; over, see `.odd`)
 .nos:   test rbp, rbp
         jz .deny                ; (no room where this connection would go: say so now)
-.syn:   movzx ecx, byte [rbx+46] ; its options: how much the client takes in one segment
-        shr ecx, 4
+.syn:   movzx ecx, byte [rbx+46] ; its options: how much the client takes in one segment,
+        shr ecx, 4              ; and whether it scales its window
         lea ecx, [rcx*4-20]
         lea esi, [rbx+54]
         mov edx, 536            ; (what one that doesn't say must take)
+        xor r8d, r8d
 .opt:   cmp ecx, 2
         jl .optd
         lodsb
@@ -1340,20 +1406,28 @@ tcp:
         cmp edi, ecx
         ja .optd
         cmp al, 2
-        jne .onx
+        jne .ows
         cmp edi, 3
         jne .onx
         movzx edx, word [rsi+1]
         xchg dl, dh
+.ows:   cmp al, 3               ; (window scale: a shift, of which 14 is the most there is)
+        jne .onx
+        cmp edi, 2
+        jne .onx
+        movzx r8d, byte [rsi+1]
+        cmp r8d, 14
+        jbe .onx
+        mov r8b, 14
 .onx:   add esi, edi
         sub ecx, edi
         jmp .opt
 .optd:  call tnote
         mov eax, [rbx+P_SEQ]
         lea edi, [rax+1]        ; (the SYN takes a sequence number, and so does ours)
-        shl eax, 10
+        shl eax, 14
         xor eax, [HKO+8]
-        and al, 0xFC
+        and al, 0xC0
 %ifdef ISNTOP                   ; (make ISNTOP=n ISNBITS=b, for tests: the top b bits of
         and eax, ISNLOW         ; every initial sequence number are n's, so that what we
         or eax, ISNTOP & ~ISNLOW ; send crosses 2^31 or 2^32 soon. The cookie then says
@@ -1364,11 +1438,15 @@ tcp:
         sbb eax, -1
         cmp edx, 1440
         sbb eax, -1
+        lea eax, [rax+r8*4]
         xchg eax, edx
-        mov al, 0x12            ; SYN|ACK, with what we take in one segment as its only option
-        mov esi, SYNOPT
-        push 4
+        mov al, 0x12            ; SYN|ACK. Its options: what we take in one segment, and, if
+        mov esi, SYNOPT         ; the client scales its window, that we know (and don't
+        push 4                  ; scale ours: 64 KB at a time is more than any request)
         pop rcx
+        test r8d, r8d
+        jz .seg
+        mov cl, 8
 .seg:   call tcp_seg
         ret
 .deny:  count 2
@@ -1430,12 +1508,15 @@ tcp:
         mov eax, [rbx+P_SEQ]
         mov [rbp+C_NXT], eax
         mov eax, [rbx+P_ACK]
+        lea edx, [rax-1]        ; What the SYN-ACK noted in our sequence number: the client's
+        shl edx, 2              ; window shift (the top four bits of C_FL2; in a slot for
+        mov dh, dl              ; port 80, which ends before that, rdi is at a byte of C_ACK
+        and dh, 0xF0            ; here, which is set next) and its segment size
+        mov [rdi-2], dh
+        and dl, 0x0C
+        mov [rbp+C_FLG], dl
         mov [rbp+C_SND], eax
         mov [rbp+C_ACK], eax
-        dec eax
-        and al, 3
-        shl al, 2
-        mov [rbp+C_FLG], al     ; (the segment size the SYN-ACK noted)
 
 .est:   mov al, [NOW]
         mov [rbp+C_AGE], al
@@ -1765,36 +1846,44 @@ tcp:
         jz .adv
         test eax, eax
         jz .pump
-        cmp byte [rbp+C_FL2], 0xC0
+        cmp byte [rbp+C_FLG], F_DUP3
         jae .pump               ; (what it asks for has gone again already)
-        add byte [rbp+C_FL2], 0x40
+        add byte [rbp+C_FLG], F_DUP
         mov ecx, [TXM]
         add ecx, ecx
         cmp eax, ecx
         jbe .loss
-        cmp byte [rbp+C_FL2], 0xC0
+        cmp byte [rbp+C_FLG], F_DUP3
         jb .pump
         jmp .loss
 .adv:   mov ecx, [rbx+P_ADV]
-        jrcxz .pump
-        cmp byte [rbp+C_FL2], 0xC0
+        test ecx, ecx
+        jz .pump
+        cmp byte [rbp+C_FLG], F_DUP3
         jb .clr
-        test eax, eax
-        jz .clr
-        cmp ecx, [TXM]
-        jbe .rtx
-.clr:   and byte [rbp+C_FL2], 0x3F
-        test byte [rbp+C_FL2], F_CA ; The ack moved on, and nothing seems lost: more may
-        jnz .ai                 ; be on its way. As long as nothing ever was lost: as many
-        xchg eax, ecx           ; segments more as were acknowledged (twice as many each
-        xor edx, edx            ; round trip);
+        test eax, eax           ; (After a loss: its ack has moved on, but not to the end of
+        jnz .rtx                ; what was on its way then, and nothing has been sent
+                                ; since: what it asks for now was lost as well)
+.clr:   and byte [rbp+C_FLG], ~F_DUP3
+        movzx edi, byte [rbp+C_CW] ; The ack moved on, and nothing seems lost: more may
+        imul edi, [TXM]         ; be on its way. As long as nothing ever was lost, and less
+        shr edi, 16             ; than 64 KB may be: as many segments more as were
+        jnz .ai                 ; acknowledged (twice as many each round trip);
+        test byte [rbp+C_FL2], F_CA
+        jnz .ai
+        xchg eax, ecx
+        xor edx, edx
         div dword [TXM]
         jmp .grow
-.ai:    mov eax, [rbp+C_ACK]    ; after that, one more for every 16 KiB acknowledged
-        mov edx, eax
-        sub edx, ecx
-        xor eax, edx
+.ai:    mov eax, [rbp+C_ACK]    ; after that, one more for every 16 KiB acknowledged; and
+        mov edx, eax            ; above 64 KB, for every 64 KiB (a segment or a few more
+        sub edx, ecx            ; each round trip: where that is one too many, few are
+        xor eax, edx            ; lost, and each of those takes a round trip to make good)
         shr eax, 14
+        test edi, edi
+        jz .a16
+        shr eax, 2
+.a16:   test eax, eax
         setnz al
         movzx eax, al
 .grow:  movzx edx, byte [rbp+C_CW]
@@ -1809,13 +1898,21 @@ tcp:
         jae .ca
         mov byte [rbp+C_CW], 2
 .ca:    or byte [rbp+C_FL2], F_CA
-.rtx:   or byte [rbp+C_FL2], 0xC0
+.rtx:   or byte [rbp+C_FLG], F_DUP3
         count 4
         mov eax, [rbp+C_ACK]
         call sendseg
 .pump:  movzx eax, word [rbx+P_WIN]
-        xchg al, ah             ; what the client takes beyond its ack,
-        mov ecx, [TXM]
+        xchg al, ah             ; what the client takes beyond its ack (shifted as its SYN
+        mov cl, [rbp+C_FL2]     ; said; but once something has been lost on a connection,
+        shr cl, 4               ; no more than 64 KB, which was all there could be before
+        shl eax, cl             ; windows were scaled: beyond it we only feel our way
+        test byte [rbp+C_FL2], F_CA ; while nothing is lost),
+        jz .wf
+        mov edx, 0xFFFF
+        cmp eax, edx
+        cmova eax, edx
+.wf:    mov ecx, [TXM]
         movzx edx, byte [rbp+C_CW]
         imul edx, ecx           ; and what we let be on its way
         cmp eax, edx
@@ -1839,15 +1936,31 @@ tcp:
         sub edx, [rbp+C_RS]
         cmp edx, ecx
         jbe .pl
+        cmp edx, 0xFFFF         ; (and no more than 64 KB: a longer one is on its way for
+        ja .pl                  ; longer than a client waits for an ack before it asks again)
         or byte [rbp+C_FLG], F_DEFER
-.pl:    mov eax, [rbp+C_SND]
+.pl:    cmp byte [rbp+C_FLG], F_DUP3 ; (While the client lacks something that was on its
+        jae .pa                 ; way, nothing new goes: so its ack says when it has it all)
+        mov eax, [rbp+C_SND]
         mov edx, eax
         sub edx, [TXEND]
         jns .pd                 ; (all of it has gone)
         mov edx, eax
         sub edx, [TXLIM]
         jns .pa                 ; (the client takes no more for now)
-        call sendseg
+        cmp byte [TSO], 0       ; Where the card cuts frames for us, a frame should be worth
+        je .go                  ; it. If what may go now is less than a third of what may
+        neg edx                 ; be on its way at all, and not the response's end, it
+        lea ecx, [rdx+rdx*2]    ; waits for the acks that are to come. (A small frame
+        mov edi, [TXLIM]        ; brings a small ack, which lets a small frame go: with
+        sub edi, [rbp+C_ACK]    ; that, a full window sends three segments at a time, and
+        cmp ecx, edi            ; as many frames a second as without any of this.)
+        jae .go
+        mov ecx, [TXEND]
+        sub ecx, eax
+        cmp ecx, edx
+        ja .pa
+.go:    call sendrun
         jmp .pl
 .pd:    jnz .pa
         test byte [rbp+C_FLG], F_CLOSED
@@ -2031,6 +2144,8 @@ sendseg:
         jb .data
         mov edi, edx            ; behind them: nothing but our FIN can go
         xor ecx, ecx
+        push 1
+        pop rsi                 ; (and nothing of a frame of our own: see `.seg`)
         mov al, 0x10
         test byte [rbp+C_FLG], F_CLOSED
         jnz .close
@@ -2061,7 +2176,7 @@ sendseg:
         sub ecx, OB
         sub ecx, esi            ; so many bytes go,
         add esi, OB
-        lea edi, [rdx+rcx]      ; and up to here
+.fl:    lea edi, [rdx+rcx]      ; and up to here
         mov al, 0x10
         cmp edi, [TXEND]
         jne .go
@@ -2071,16 +2186,92 @@ sendseg:
 .close: or al, 1                ; our FIN, which takes a number too
         or byte [rbp+C_FL2], F_FIN
         inc edi
-.go:    mov ebx, edi            ; C_SND moves on if this is further. (Sequence numbers go
-        sub ebx, [rbp+C_SND]    ; round: which of two is further says the sign of their
-        dec ebx                 ; difference, not a comparison. A `jle` here stopped a
-        js .seg                 ; response for ever where it crossed 2^31.)
+.go:    push rdi                ; C_SND moves on if this is further. (Sequence numbers go
+        sub edi, [rbp+C_SND]    ; round: which of two is further says the sign of their
+        dec edi                 ; difference, not a comparison. A `jle` here stopped a
+        pop rdi                 ; response for ever where it crossed 2^31.)
+        js .seg
         mov [rbp+C_SND], edi
 .seg:   call ackno
-        call tcp_seg
-        or byte [abs P_EV], E_SENT
+        test esi, esi
+        jnz .one
+        call tcp_big            ; (many records in a frame of our own, from `sendrun`: the
+        call txkick             ; device is told at once, there is a round trip's worth in it)
+        jmp .sent
+.one:   call tcp_seg
+.sent:  or byte [abs P_EV], E_SENT
         popad
         ret
+
+; sendrun: more of the response in hand goes out, from eax = C_SND on. If the card cuts
+; frames into segments for us (TSO): all the records that begin before TXLIM, which is as
+; far as the client takes it for now, up to as many as a frame of 64 KiB holds, in one
+; frame. A record is a segment, so the card cuts where we would have, and what is lost on
+; the way is one record, made again as ever (`sendseg`). If it does not, or there is only
+; one record to go: `sendseg`. Keeps all registers.
+sendrun:
+        cmp byte [TSO], 0
+        je sendseg
+        pushad
+        mov ecx, [TXM]
+        mov esi, eax            ; From here on:
+        mov eax, [TXLIM]
+        sub eax, esi            ; what the client takes for now,
+        mov edx, BIGPAY + 1
+        sub edx, ecx
+        cmp eax, edx
+        cmova eax, edx          ; or what a frame holds,
+        dec eax
+        xor edx, edx
+        div ecx
+        inc eax
+        imul eax, ecx           ; in whole records,
+        mov edx, [TXEND]
+        sub edx, esi
+        cmp eax, edx
+        cmova eax, edx          ; or what is left of the response
+        cmp eax, ecx
+        ja .many
+        popad                   ; (one record: as ever)
+        jmp sendseg
+.many:  push rax                ; (so many bytes)
+        call txbig              ; ebx = a frame of this processor's own
+        mov eax, [rbp+C_SND]
+        sub eax, [rbp+C_RS]
+        xor edx, edx
+        div ecx                 ; The first of them is this record of the response (we
+        mov esi, eax            ; send whole records: C_SND is where one begins),
+        imul esi, [TXP]
+        add esi, [TXBLOB]       ; its bytes are here,
+        add eax, [rbp+C_SR]
+        xchg eax, edx           ; and this is its number
+        lea edi, [rbx+54]
+        pop rcx
+        push rbx
+        add ecx, edi
+        push rcx                ; (where the frame will end)
+        lea rbx, [rbp+C_KIV]
+.rec:   mov ecx, [rsp]
+        sub ecx, edi            ; What is left to fill: a record of it,
+        mov eax, [TXM]
+        cmp ecx, eax
+        cmova ecx, eax
+        sub ecx, 22             ; of which so many bytes are the response's
+        mov al, 23
+        clc
+        call seal               ; (edi moves on)
+        add esi, ecx
+        inc edx
+        call bdrain             ; (a frame of records takes its time: what comes in meanwhile
+        cmp edi, [rsp]          ; goes on to the rings)
+        jb .rec
+        pop rcx
+        pop rbx                 ; The frame,
+        sub ecx, ebx
+        sub ecx, 54             ; how many bytes lie in it,
+        mov edx, [rbp+C_SND]    ; and their sequence number
+        xor esi, esi            ; (nothing is to be copied)
+        jmp sendseg.fl
 
 ; record: one record from the client of connection rbp, at rsi (edx bytes with its header).
 ; If it is not what the client's next record would be under its key, it is nothing to us:
@@ -2142,7 +2333,8 @@ record: pushad
         imul edi, edi, 0x01000193
         inc edx
         jmp .pc
-.pe:    mov eax, edi            ; The site's table of paths (tools/pack.py): from the place
+.pe:    mov r9d, ecx            ; (what is left of the request, the path included)
+        mov eax, edi            ; The site's table of paths (tools/pack.py): from the place
 .pr:    and eax, PT_MASK        ; the hash names on, until one is empty
         mov ecx, [SITE+rax*8+4]
         jrcxz .nf
@@ -2158,7 +2350,11 @@ record: pushad
         je .hit
 .nx:    inc eax
         jmp .pr
-.hit:   movzx eax, word [SITE+rcx]
+.hit:   movzx eax, word [SITE+rcx] ; The response for that path. Of its forms, the one for
+        add esi, edx            ; this client: the header lines behind the path say which
+        mov ecx, r9d
+        sub ecx, edx
+        call pick
         jmp .have
 .other: xor edx, edx            ; Not a request we answer. One that begins like a request
 .word:  mov al, [rsi+rdx]       ; (a word in capitals, a space) is told so
@@ -2186,11 +2382,14 @@ record: pushad
         mov [rbp+C_AS], ax
         mov ecx, [rbp+C_SND]
         mov [rbp+C_RS], ecx     ; and it begins where we are
-        and byte [rbp+C_FL2], 0x3F
+        and byte [rbp+C_FLG], ~F_DUP3
         cmp byte [rbp+C_CW], WIN ; (and it starts with no fewer segments on their way
-        jae .win                ; than any connection may start with)
+        jae .win                ; than any connection may start with,
         mov byte [rbp+C_CW], WIN
-.win:   and eax, 0x7FFF
+.win:   cmp byte [rbp+C_CW], 44 ; and no more than 64 KB of them, whatever the one before
+        jbe .w44                ; got to: all at once, they would be lost in heaps)
+        mov byte [rbp+C_CW], 44
+.w44:   and eax, 0x7FFF
         shl eax, 4
         test byte [SITE+AT_OFF+rax+12], 1
         jnz .last               ; One after which we close. And so we do when our key has
@@ -2204,6 +2403,100 @@ record: pushad
 .wait:  stc
         popad
         ret
+
+; pick: the form of response eax that the client who asks for it is to get. A file can be
+; in the site several times (tools/pack.py; its flags say how): as it is, and compressed,
+; for a client whose Accept-Encoding names the way (brotli before gzip); and behind each
+; of these, the answer for a client that has it already: one whose If-None-Match names
+; its ETag, which that answer has at a known place. The request's header lines are the ecx
+; bytes at rsi. Returns eax. (Header names are looked for at the start of a line, their
+; letters small or capital; what a name's line holds is looked through as far as it goes.)
+pick:   pushad
+        mov ebp, eax
+        shl eax, 4
+        mov bl, [SITE+AT_OFF+rax+12]
+        mov r10d, esi
+        mov r11d, ecx
+        test bl, 6
+        jz .inm
+        mov edi, H_AE
+        push H_INM - H_AE
+        pop rdx
+        call .line
+        jc .inm
+        test bl, 4
+        jz .gz
+        mov edi, T_BR
+        mov dl, 2
+        call .tok
+        jc .gz
+        add ebp, 4
+        jmp .inm
+.gz:    mov edi, T_GZ
+        mov dl, 4
+        call .tok
+        jc .inm
+        inc ebp
+        inc ebp
+.inm:   test bl, 8
+        jz .done
+        mov edi, H_INM
+        push T_BR - H_INM
+        pop rdx
+        call .line
+        jc .done
+        lea eax, [rbp+1]        ; (the "not modified" of the form picked: the ETag in it)
+        shl eax, 4
+        mov edi, [SITE+AT_OFF+rax]
+        add edi, SITE + ETAG_AT
+        mov dl, ETAG_LEN
+        mov bh, 10
+        call seek
+        jc .done
+        inc ebp
+.done:  mov [rsp+56], ebp
+        popad
+        ret
+.line:  mov esi, r10d           ; (rsi, ecx = what follows the header name at rdi, if the
+        mov ecx, r11d           ; request has a line that begins with it; else CF)
+        mov bh, 0
+        jmp seek
+.tok:   push rsi                ; (CF unless the line at rsi names the way of compressing
+        push rcx                ; at rdi, and not as one it does not want: "q=0")
+        mov bh, 10
+        call seek
+        jc .t
+        cmp dword [rsi], ";q=0"
+        clc
+        jne .t
+        stc
+.t:     pop rcx
+        pop rsi
+        ret
+
+; seek: CF unless the edx bytes at rdi are among the ecx bytes at rsi, before a byte bh (a
+; line's end; 0: none). The bytes at rsi count with their bit 5 set, so that a letter is
+; found small or capital (and a line end as the "*" the header names begin with). If
+; found: rsi = behind them, ecx = how many bytes follow. (Clobbers al, r8.)
+seek:   cmp ecx, edx
+        jb .ret
+        xor r8d, r8d
+.c:     mov al, [rsi+r8]
+        or al, 0x20
+        cmp al, [rdi+r8]
+        jne .nx
+        inc r8d
+        cmp r8d, edx
+        jb .c
+        add esi, edx
+        sub ecx, edx
+.ret:   ret
+.nx:    cmp [rsi], bh
+        stc
+        je .ret
+        inc esi
+        dec ecx
+        jmp seek
 
 ; tarm: connection rbp is owed something: an ack is outstanding, or it has more to get than
 ; its client takes for now. It joins this processor's queue of such connections, as the
@@ -2504,7 +2797,7 @@ prf:    movdqu xmm0, [rsi+P_IP-FR]  ; the addresses and ports, and four bytes be
 ckx:    push rdx                ; (ebx = 0)
         mov eax, [rbx+P_SEQ]
         dec eax
-        shl eax, 10
+        shl eax, 14
         xor eax, [HKO+8]
 %ifdef ISNTOP                   ; (test builds: as `.syn` made it)
         and eax, ISNLOW
@@ -2513,7 +2806,7 @@ ckx:    push rdx                ; (ebx = 0)
         mov edx, [rbx+P_ACK]
         dec edx
         xor eax, edx
-        and eax, -4
+        and eax, -64            ; (the low six bits are what the SYN-ACK noted, not W)
         pop rdx
         ret
 
@@ -2686,28 +2979,39 @@ tcp_send:
         ret
 
 ; tcp_seg: send one segment to the sender of the frame in FR: ecx bytes at esi, flags al,
-; sequence number edx, ack edi
-tcp_seg:
-        pushad
+; sequence number edx, ack edi.
+; tcp_big: the same for ecx bytes that lie in a frame of the caller's own already (`txbig`:
+; at ebx, behind the place of the headers), and are more than a segment: the card cuts them
+; into segments of TXM bytes, gives each these headers (the flags to the last), and sums
+; each. (r8: the caller's frame, or 0.)
+tcp_big: mov r8d, ebx
+        jmp tcp_seg.in
+tcp_seg: xor r8d, r8d
+.in:    pushad
         mov ebp, ecx            ; payload length
-        call txbuf              ; ebx = the frame
+        call txbuf              ; ebx = a frame for it; and the ring is ours until `txgo`
+        test r8d, r8d
+        cmovnz ebx, r8d
         bswap edx
         mov [rbx+38], edx
         bswap edi
         mov [rbx+42], edi
-        mov byte [rbx+46], 0x50
+        mov dl, 0x50
         test al, 2
         jz .nopt
-        mov byte [rbx+46], 0x60 ; a SYN's "payload" is 4 bytes of options
-.nopt:  mov [rbx+47], al
+        lea edx, [rdx+rcx*4]    ; (a SYN's "payload" is its options: so much longer its header)
+.nopt:  mov [rbx+46], dl
+        mov [rbx+47], al
         xor eax, eax
         mov [rbx+50], eax       ; checksum (for now), nothing urgent
         dec eax
         mov [rbx+48], ax        ; window: we take whatever comes, at once
+        test r8d, r8d
+        jnz .hdr
         lea edi, [rbx+54]
         rep movsb
         mov [rdi], cl           ; zero pad byte for an odd length checksum
-        mov edi, ebx
+.hdr:   mov edi, ebx
         call ethhdr
         mov eax, 0x00450008     ; IPv4, a header of 20 bytes, nothing special
         stosd
@@ -2728,8 +3032,23 @@ tcp_seg:
         stosd
         lea esi, [rbx+22]
         lea ecx, [rbp+32]
+        test r8d, r8d
+        jz .sum
+        ; A frame for the card to cut up. The 12 bytes in front of it say so: its sums are
+        ; to be made (1), it is TCP segments over IPv4 (1) behind 54 bytes of headers, TXM
+        ; bytes each; a sum covers what follows byte 34 and goes 16 bytes behind that.
+        ; Where the sum goes we put what is ours to add: the pseudo header's, as it is.
+        mov dword [rbx-12], 0x00360101
+        mov eax, [TXM]
+        mov [rbx-8], ax
+        mov dword [rbx-6], 0x00100022
+        push 12
+        pop rcx
         call csum
-        mov [rbx+50], ax
+        not eax
+        jmp .sumd
+.sum:   call csum
+.sumd:  mov [rbx+50], ax
         lea ecx, [rbp+40]
         xchg cl, ch
         mov [rbx+16], cx        ; IP total length
@@ -3093,7 +3412,8 @@ handshake:
         pop rcx
         rep movsd
         mov cl, [SUITE]
-        mov [rbp+C_FL2], cl     ; (F_AES, or nothing)
+        and byte [rbp+C_FL2], 0xF0 ; (F_AES, or nothing; the window's shift stays)
+        or [rbp+C_FL2], cl
         xchg eax, edi
         ret
 
@@ -4322,7 +4642,7 @@ chacha: movdqa xmm0, [ST]
         por xmm1, xmm4
         ret
 
-        HOT 18
+        HOT 13
 ; seal: a TLS 1.3 record at rdi for the ecx bytes at rsi and, behind them inside it, the
 ; byte al that says what they are; key | iv at rbx (32 and 12 bytes), number edx; the
 ; cipher is the one CIPH names. Returns rdi = the record's end.
@@ -4383,10 +4703,12 @@ seal:
         xor rdx, rcx
         movq xmm5, rax
         pinsrq xmm5, rdx, 1
-        movdqa xmm0, [NB]
+        movdqa xmm4, [NB]       ; (xmm4: the counter block; the counter itself goes in ebx)
+        movdqa xmm0, xmm4
         call aesblk
         movdqa [TAGM], xmm0     ; what the hash is masked with
-        mov byte [NB+15], 2
+        push 2
+        pop rbx
 .sb:    mov edi, SB             ; SB = header, 0 pad | ciphertext, 0 pad | lengths
         mov eax, 0x030317
         stosd
@@ -4420,12 +4742,11 @@ seal:
         inc dword [ST+48]       ; next counter
         call chacha
         jmp .kd
-.aks:   movdqa xmm0, [NB]       ; four counter blocks
-        mov eax, [NB+12]
-        bswap eax
-        inc eax
-        bswap eax
-        mov [NB+12], eax
+.aks:   movdqa xmm0, xmm4       ; Four counter blocks. (Each from registers alone: made by
+        mov eax, ebx            ; way of memory, one block had to wait for the one before,
+        bswap eax               ; and they took twice as long)
+        pinsrd xmm0, eax, 3
+        inc ebx
         call aesblk
         stosq                   ; (16 bytes on: the block itself comes next)
         stosq
@@ -4433,15 +4754,24 @@ seal:
         test edi, 63
         jnz .aks
 .kd:    pop rdi
-.x:     lodsb
-        xor al, [rdx]
-        inc edx
-        stosb
-        dec ecx
+.x:     cmp ecx, 16             ; 16 bytes at a time while there are that many,
+        jb .xb
+        movdqu xmm0, [rsi]
+        pxor xmm0, [rdx]
+        movdqu [rdi], xmm0
+        add esi, 16
+        add edx, 16
+        add rdi, 16
+        sub ecx, 16
         jz .d
         test dl, 63
         jnz .x
         jmp .ks
+.xb:    lodsb                   ; and the last few one by one
+        xor al, [rdx]
+        inc edx
+        stosb
+        loop .xb
 .d:     pop rcx                 ; n (with the byte we added)
         lea edi, [rcx+SB+16+15]
         and edi, -16            ; SB+16 is 16-aligned
@@ -4647,7 +4977,12 @@ GDT:    dq 0
 GDTR:   dw 23
         dd GDT
 %include "gen.inc"
+H_AE:   db "*accept-encoding:"   ; header names as `seek` sees them, the line end in front
+H_INM:  db "*if-none-match:"
+T_BR:   db "br"
+T_GZ:   db "gzip"
 SYNOPT: db 2, 4, 1460 >> 8, 1460 & 255 ; maximum segment size: what fits an Ethernet frame
+        db 1, 3, 3, 0           ; (padding,) window scale: ours is not shifted
 MSSTAB: dw 216, 536, 1220, 1440 ; the sizes we cut our segments to (the client's, rounded down)
 SHTAIL: db 0x13, 0x03, 0x00, 0x00, 0x2e, 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04
         db 0x00, 0x33, 0x00, 0x24, 0x00, 0x1d, 0x00, 0x20

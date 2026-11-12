@@ -3,7 +3,8 @@
 stylesheet, a picture, files whose sizes sit on and around every boundary the server cuts
 at (a record holds 194, 514, 1198 or 1418 bytes of a response, by the client's segment
 size), a folder with an index, names that need escaping, an empty file, a 404 page, a
-hidden file that must not be served, and one large file (BIG_MIB, default 1.5 MiB)."""
+hidden file that must not be served, one large file (BIG_MIB, default 1.5 MiB), and text
+that gets shorter when compressed: a stylesheet, and a long list (200 KB)."""
 import hashlib
 import os
 import sys
@@ -28,6 +29,7 @@ def main(root, big):
         ".well-known/security.txt": b"Contact: mailto:security@example.org\n",
         "big.bin": noise("big", int(big * (1 << 20))),
         "mid.bin": noise("mid", 40000),
+        "docs/list.txt": b"".join(b"%d: %s\n" % (i, hashlib.sha256(b"item %d" % i).hexdigest()[:24].encode()) for i in range(6600)),
     }
     for p in (194, 514, 1198, 1418):
         for n in (p - 1, p, p + 1, 2 * p - 1, 2 * p, 2 * p + 1, 10 * p, 10 * p + 1, 11 * p):

@@ -7,7 +7,10 @@ clients that take small segments (so that the server cuts its records smaller), 
 that reads slowly (so that its window closes), from many at once. Then what is not a file:
 unknown paths, queries, other methods (told no, and the connection closed), requests that
 come in pieces or are too large, two requests at once, a client that closes its side or
-goes away in the middle. Exit 0 if all of it holds.
+goes away in the middle. And what a request's headers change: a file that was packed
+compressed too comes that way to a client whose Accept-Encoding names the way, and one
+whose If-None-Match names what it would get is told "not modified". Exit 0 if all of it
+holds.
 
 Environment: B (build directory, default build), HOST and PORT (default 127.0.0.1:8443;
 over tap: HOST=10.0.2.15 PORT=443), SRC (address to connect from), T (seconds to wait
@@ -22,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+import zlib
 
 B = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", os.environ.get("B", "build"))
 HOST = os.environ.get("HOST", "127.0.0.1")
@@ -108,7 +112,7 @@ class Conn:
                 raise ConnectionError("closed before a response's head was there: %r" % self.buf[:60])
         head, self.buf = self.buf.split(b"\r\n\r\n", 1)
         head += b"\r\n\r\n"
-        n = 0 if head_only else int(head.split(b"Content-Length: ")[1].split(b"\r\n")[0])
+        n = 0 if head_only or head.startswith(b"HTTP/1.1 304") else int(head.split(b"Content-Length: ")[1].split(b"\r\n")[0])
         while len(self.buf) < n:
             if not self.more(pause):
                 raise ConnectionError("closed in a body: %d of %d" % (len(self.buf), n))
@@ -211,6 +215,68 @@ def main():
         return ok
 
     check("to a client that reads slowly", slow)
+
+    # What a request's headers change (tools/pack.py: a file's forms)
+    formed = {p: w["forms"] for p, w in paths.items() if "forms" in w}
+    packed = [p for p in formed if len(formed[p]) > 1]
+
+    def encodings():
+        c = Conn()
+        for p in packed:
+            f = formed[p]
+            best = "br" if "br" in f else "gzip"
+            for said, coding in ((b"Accept-Encoding: gzip\r\n", "gzip"), (b"Accept-Encoding: gzip, deflate, br, zstd\r\n", best),
+                                 (b"accept-encoding: br\r\n", "br" if "br" in f else "plain"),
+                                 (b"ACCEPT-ENCODING: deflate, gzip;q=1.0, *;q=0.5\r\n", "gzip"),
+                                 (b"Accept-Encoding: br;q=0, gzip\r\n", "gzip"), (b"Accept-Encoding: gzip;q=0\r\n", "plain"),
+                                 (b"Accept-Encoding: identity\r\n", "plain"), (b"Accept-Language: br, gzip\r\n", "plain"),
+                                 (b"X-Accept-Encoding: gzip\r\nUser-Agent: Not?A_Brand gzip\r\n", "plain")):
+                c.get(p, extra=said)
+                if not same(c.response(), f[coding]):
+                    raise AssertionError("%s with %r" % (p, said))
+            c.get(p, extra=b"Accept-Encoding: gzip\r\n")       # what is packed is the file
+            if hashlib.sha256(zlib.decompress(c.response()[1], 31)).hexdigest() != paths[p]["sha256"]:
+                raise AssertionError("%s: gzip does not hold the file" % p)
+            c.get(p, "HEAD", b"Accept-Encoding: br, gzip\r\n")
+            if c.response(head_only=True)[0] != f[best]["head"].encode("latin-1"):
+                raise AssertionError("HEAD " + p)
+        c.get("/")
+        ok = same(c.response(), paths["/"])
+        c.close()
+        return ok
+
+    if packed:
+        check(f"{len(packed)} files that were packed compressed too, to clients that take that", encodings)
+
+    def conditional():
+        c = Conn()
+        for p in list(formed)[:40]:
+            f = formed[p]
+            for coding, form in f.items():
+                said = b"" if coding == "plain" else b"Accept-Encoding: " + coding.encode() + b"\r\n"
+                tag = form["etag"].encode()
+                other = [g["etag"].encode() for k, g in f.items() if k != coding]
+                for inm, want in ((tag, 304), (b"W/" + tag, 304), (b'"x", ' + tag, 304), (b'"0123456789abcdef"', 200),
+                                  (tag[:-2] + b'"', 200), (other[0] if other else b'"x"', 200)):
+                    c.get(p, extra=said + (b"if-none-match: " if want == 304 and inm == tag else b"If-None-Match: ") + inm + b"\r\n")
+                    head, body = c.response()
+                    if want == 304 and (head != form["not_modified"].encode("latin-1") or body):
+                        raise AssertionError("%s (%s) with If-None-Match: %r: %r" % (p, coding, inm, head[:40]))
+                    if want == 200 and not same((head, body), form):
+                        raise AssertionError("%s (%s) with If-None-Match: %r" % (p, coding, inm))
+                c.get(p, "HEAD", said + b"If-None-Match: " + tag + b"\r\n")
+                if c.response(head_only=True)[0] != form["not_modified"].encode("latin-1"):
+                    raise AssertionError("HEAD %s (%s) with its ETag" % (p, coding))
+                c.get(p, extra=said + b"If-Match: " + tag + b"\r\nIf-Range: " + tag + b"\r\n")    # (other headers with it in)
+                if not same(c.response(), form):
+                    raise AssertionError("%s (%s) with If-Range" % (p, coding))
+        c.get("/nope", extra=b"If-None-Match: " + next(iter(formed.values()))["plain"]["etag"].encode() + b"\r\n")
+        ok = same(c.response(), nf)
+        c.close()
+        return ok
+
+    if formed:
+        check("a client that has a file already is told so (If-None-Match), each form by its own ETag", conditional)
 
     def many(n):
         res = []

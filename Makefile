@@ -25,14 +25,18 @@ DEBUGDEF := $(if $(DEBUG),-DDEBUG=$(DEBUG),) $(if $(LIFE),-DLIFE=$(LIFE),)
 # SITE: the folder of files that is served (tools/pack.py makes them part of the image).
 # P80=redirect: port 80 sends everybody to https://NAME/ (default: it serves the page at /)
 # HSTS=seconds, CACHE=seconds, HEADERS='Name: value': headers for every file (tools/pack.py)
+# COMPRESS=0: no file is also packed compressed
 SITE ?= www
 P80 ?= page
 HSTS ?=
 CACHE ?= 600
 HEADERS ?=
+COMPRESS ?= 1
 # WIN=n: so many segments of a response may be on their way to a client at once
+# NOTSO=1 (tests): a segment a frame, also where the card would cut frames into segments
+# BIGSH=n (tests): each processor has 2^n buffers for the frames the card cuts up (default 3)
 WIN ?=
-WINDEF := $(if $(WIN),-DWIN=$(WIN),) $(if $(WXTEST),-DWXTEST=$(WXTEST),) $(if $(ISNTOP),-DISNTOP=$(ISNTOP),) $(if $(ISNBITS),-DISNBITS=$(ISNBITS),) $(if $(KEYLIFE),-DKEYLIFE=$(KEYLIFE),)
+WINDEF := $(if $(WIN),-DWIN=$(WIN),) $(if $(WXTEST),-DWXTEST=$(WXTEST),) $(if $(ISNTOP),-DISNTOP=$(ISNTOP),) $(if $(ISNBITS),-DISNBITS=$(ISNBITS),) $(if $(KEYLIFE),-DKEYLIFE=$(KEYLIFE),) $(if $(NOTSO),-DNOTSO,) $(if $(BIGSH),-DBIGSH=$(BIGSH),)
 
 # the routines a handshake spends its time in: none of their jumps may lie on a 32-byte
 # boundary (tools/jcc.py; of `seal` only the loops count, which that list can't say)
@@ -75,13 +79,13 @@ $(GEN) &: tools/gen.py tools/ec.py $(ID) $(B)/names.conf
 # It is made again when $(B)/site.conf changes, which lists the settings and the files
 # (names, sizes, times: file names are not for make to read).
 PACKED := $(B)/site.inc $(B)/site.bin
-PACKSET := $(SITE) $(P80) $(HSTS) $(CACHE) $(HEADERS)
+PACKSET := $(SITE) $(P80) $(HSTS) $(CACHE) $(HEADERS) $(COMPRESS)
 $(B)/site.conf: FORCE
 	@mkdir -p $(B)
 	@{ echo '$(PACKSET)'; find $(SITE) -type f -printf '%p %s %T@\n' | sort; } > $@.$$$$; \
 	 if cmp -s $@.$$$$ $@; then rm $@.$$$$; else mv $@.$$$$ $@; fi
 $(PACKED) &: tools/pack.py $(B)/site.conf $(GEN)
-	P80=$(P80) HSTS=$(HSTS) CACHE=$(CACHE) HEADERS='$(HEADERS)' python3 tools/pack.py $(SITE) $(B)
+	P80=$(P80) HSTS=$(HSTS) CACHE=$(CACHE) HEADERS='$(HEADERS)' COMPRESS=$(COMPRESS) python3 tools/pack.py $(SITE) $(B)
 
 $(B)/os.bin: src/os.asm $(GEN) $(PACKED) $(B)/ip
 	nasm -f bin -DOURIP=$(OURIP) $(KNOCKDEF) $(TABLEDEF) $(DEBUGDEF) $(WINDEF) -I$(B)/ -o $@ -l $(B)/os.lst src/os.asm

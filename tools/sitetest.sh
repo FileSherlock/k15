@@ -13,12 +13,13 @@
 # bits sooner, but then not with loss (the SYN cookie checks that many bits less, and a
 # connection whose first segment was lost can be begun by its second). KEYLIFE=n: an image
 # whose connections may seal 2^n records (make KEYLIFE=n), and the check that they don't
-# seal more.
+# seal more. NOTSO=1: an image that sends a segment a frame also over tap, where the card
+# would cut frames into segments for it (a control for the runs that do).
 cd "$(dirname "$0")/.." || exit 1
 export B=${B:-build-site}
 mkdir -p "$B"
 python3 tools/mksite.py "$B/www" ${BIG:-1.5} >/dev/null || exit 1
-make -s B="$B" SITE="$B/www" CERT="${CERT:-cert}" ISNTOP="${ISNTOP:-}" ISNBITS="${ISNBITS:-}" KEYLIFE="${KEYLIFE:-}" >/dev/null || { echo "BUILD FAILED"; exit 1; }
+make -s B="$B" SITE="$B/www" CERT="${CERT:-cert}" ISNTOP="${ISNTOP:-}" ISNBITS="${ISNBITS:-}" KEYLIFE="${KEYLIFE:-}" NOTSO="${NOTSO:-}" BIGSH="${BIGSH:-}" >/dev/null || { echo "BUILD FAILED"; exit 1; }
 if [[ ${1:-} == tap ]]; then
   shift
   exec ./tap.sh env HOST=10.0.2.15 PORT=443 SRC=10.0.2.32 T="${T:-40}" python3 tools/sitecheck.py "$@"

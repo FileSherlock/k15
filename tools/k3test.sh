@@ -7,7 +7,9 @@
 # not (or with --force) makes a new key and a request here and would then go to the
 # server (--dry-run stops it there): the old key is still in its place. A second name
 # (--san) is served if the certificate is for it, is asked for by renew, and is in the
-# certificate that is made when there is none.
+# certificate that is made when there is none. A file that gets shorter by it is packed
+# compressed as well and goes that way to a client that says it takes that; one that has
+# the file already is told so; with --no-compress there is none of the first.
 # (./k3 deploy, and renew's part on the server, need a server: CLAUDE.md, "Running it on
 # the server".)
 cd "$(dirname "$0")/.." || exit 1
@@ -51,6 +53,14 @@ check "the same under its second name" "$(curl -s --max-time 5 --cacert $CERT/se
   "https://also.k3cli.test:$PORT/docs/" | cmp -s - $OUT/www/docs/index.html && echo ok)"
 check "and not under one the certificate is not for" "$(curl -s --max-time 5 --cacert $CERT/server.pem --connect-to "other.k3cli.test:$PORT:127.0.0.1:$PORT" \
   -o /dev/null "https://other.k3cli.test:$PORT/docs/"; [[ $? == 60 ]] && echo ok)"
+H=$("${CURL[@]}" -H 'Accept-Encoding: gzip' -D - -o /dev/null "https://k3cli.test:$PORT/docs/list.txt" | tr -d '\r')
+check "a file that packs smaller goes compressed to a client that takes that" "$([[ $H == *"Content-Encoding: gzip"*"Vary: Accept-Encoding"* ]] &&
+  "${CURL[@]}" --compressed "https://k3cli.test:$PORT/docs/list.txt" | cmp -s - $OUT/www/docs/list.txt && echo ok)"
+check "and as it is to one that does not say so" "$("${CURL[@]}" -D $OUT/list.head "https://k3cli.test:$PORT/docs/list.txt" | cmp -s - $OUT/www/docs/list.txt &&
+  ! grep -q Content-Encoding $OUT/list.head && echo ok)"
+E=$(sed -n 's/^ETag: //p' <<<"$H")
+check "a client that has it already is told so ($E)" "$([[ -n $E && $("${CURL[@]}" -H 'Accept-Encoding: gzip' -H "If-None-Match: $E" -o /dev/null -w '%{http_code} %{size_download}' \
+  "https://k3cli.test:$PORT/docs/list.txt") == "304 0" ]] && echo ok)"
 R=$(curl -s --max-time 5 -o /dev/null -w '%{http_code} %{redirect_url}' "http://127.0.0.1:$((PORT + 1000))/docs/")
 check "port 80 sends everybody to the name ($R)" "$([[ $R == "301 https://k3cli.test/" ]] && echo ok)"
 P="$(stat -c %a $OUT/os.bin) $(stat -c %a $OUT/disk.img) $(stat -c %a $OUT/regs.inc) $(stat -c %a $CERT/server.key) $(stat -c %a $OUT)"
@@ -87,4 +97,8 @@ check "a certificate made here is for all its names ($(cat $OUT2/name 2>/dev/nul
   openssl verify -CAfile $OUT2/ca.pem -verify_ip 192.0.2.7 $CERT2/server.pem >/dev/null 2>&1 &&
   ! openssl verify -CAfile $OUT2/ca.pem -verify_hostname other.k3priv.test $CERT2/server.pem >/dev/null 2>&1 && echo ok)"
 rm -f $OUT2.out
+# --no-compress: every file once, as it is; and renew would pack it that way again
+./k3 pack $OUT/www -n k3priv.test -c $CERT2 -o $OUT2 --no-compress > /dev/null 2>&1
+check "with --no-compress nothing is packed twice" "$(! grep -q 'Content-Encoding' $OUT2/site.json && grep -q '^compress=0$' $OUT2/pack.conf &&
+  grep -q 'Content-Encoding' $OUT/site.json && grep -q '^compress=1$' $OUT/pack.conf && [[ $(stat -c %s $OUT2/site.bin) -lt $(stat -c %s $OUT/site.bin) ]] && echo ok)"
 exit $bad

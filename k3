@@ -2,7 +2,7 @@
 # k3: a folder of static files becomes a bootable HTTPS server, and gets onto a machine.
 #
 #   k3 pack SITE [-n NAME] [--san NAME]... [-i IP] [-c CERTDIR] [-o OUT] [--plain80]
-#                [--hsts SECONDS] [--cache SECONDS] [--header 'Name: value']
+#                [--hsts SECONDS] [--cache SECONDS] [--header 'Name: value'] [--no-compress]
 #       OUT/os.bin (the image: what a multiboot loader such as GRUB starts) and OUT/disk.img
 #       (the same behind a boot sector: what a BIOS starts from a disk). NAME is what the
 #       certificate is for and what port 80 redirects to (a DNS name or an IP address;
@@ -13,6 +13,8 @@
 #       CERTDIR holds server.key (ECDSA P-256) and server.pem (the chain); if it has
 #       neither, a certificate for NAME under a private CA is made there (OUT/ca.pem is
 #       then what clients must trust). OUT defaults to build-NAME, CERTDIR to cert-NAME.
+#       Files that get shorter by it are packed compressed as well (gzip, brotli), for
+#       clients that say they take that: --no-compress leaves that out (a smaller image).
 #       How it was packed is kept in OUT/pack.conf, for `k3 renew`.
 #   k3 run [OUT] [-p PORT]
 #       Boot OUT/disk.img in QEMU: https://127.0.0.1:8443/ and http://127.0.0.1:9443/
@@ -65,11 +67,11 @@ lacks() {
   done
 }
 
-# build SITE NAME IP CERT OUT P80 HSTS CACHE HEADERS SANS: make the image, and note how
+# build SITE NAME IP CERT OUT P80 HSTS CACHE HEADERS SANS COMPRESS: make the image, and note how
 build() {
-  make -s B="$5" SITE="$1" CERT="$4" NAME="$2" SAN="${10}" IP="$3" P80="$6" HSTS="$7" CACHE="$8" HEADERS="$9" >/dev/null
-  printf 'site=%q\nname=%q\nip=%q\ncert=%q\np80=%q\nhsts=%q\ncache=%q\nheaders=%q\nsans=%q\n' \
-    "$1" "$2" "$3" "$4" "$6" "$7" "$8" "$9" "${10}" > "$5/pack.conf"
+  make -s B="$5" SITE="$1" CERT="$4" NAME="$2" SAN="${10}" IP="$3" P80="$6" HSTS="$7" CACHE="$8" HEADERS="$9" COMPRESS="${11:-1}" >/dev/null
+  printf 'site=%q\nname=%q\nip=%q\ncert=%q\np80=%q\nhsts=%q\ncache=%q\nheaders=%q\nsans=%q\ncompress=%q\n' \
+    "$1" "$2" "$3" "$4" "$6" "$7" "$8" "$9" "${10}" "${11:-1}" > "$5/pack.conf"
   chmod -R go= "$5" "$4"
   local total site_bytes name
   total=$(stat -c %s "$5/os.bin")
@@ -93,7 +95,7 @@ build() {
 }
 
 pack() {
-  local site=${1:-} name=127.0.0.1 ip=10.0.2.15 cert= out= p80=redirect hsts= cache=600 headers= sans=
+  local site=${1:-} name=127.0.0.1 ip=10.0.2.15 cert= out= p80=redirect hsts= cache=600 headers= sans= compress=1
   [[ -n $site ]] || die "pack: which folder?"
   site=$(abs "$site")
   [[ -d $site ]] || die "pack: no such folder: '$site'"
@@ -102,14 +104,14 @@ pack() {
     case $1 in
       -n) name=$2; shift 2;; -i) ip=$2; shift 2;; -c) cert=$2; shift 2;; -o) out=$2; shift 2;;
       --plain80) p80=page; shift;; --hsts) hsts=$2; shift 2;; --cache) cache=$2; shift 2;;
-      --header) headers+="$2;;"; shift 2;;
+      --header) headers+="$2;;"; shift 2;; --no-compress) compress=0; shift;;
       --san) [[ $2 == *[[:space:],]* || -z $2 ]] && die "pack: --san takes one name"; sans+="${sans:+ }$2"; shift 2;;
       *) die "pack: what is '$1'?";;
     esac
   done
   out=$(abs "${out:-build-$name}")
   cert=$(abs "${cert:-cert-$name}")
-  build "$site" "$name" "$ip" "$cert" "$out" "$p80" "$hsts" "$cache" "$headers" "$sans"
+  build "$site" "$name" "$ip" "$cert" "$out" "$p80" "$hsts" "$cache" "$headers" "$sans" "$compress"
 }
 
 run() {
@@ -259,7 +261,7 @@ renew() {
   done
   out=$(abs "${out:-build}")
   [[ -f $out/pack.conf ]] || die "renew: $out/pack.conf is not there (k3 pack makes it: how the image is to be packed again)"
-  local site name ip cert p80 hsts cache headers sans=
+  local site name ip cert p80 hsts cache headers sans= compress=1
   # shellcheck disable=SC1091
   source "$out/pack.conf"
   # Is it time? If not, this was all: nothing is reset, nobody is asked for anything.
@@ -314,7 +316,7 @@ renew() {
   mv "$new/server.pem" "$cert/server.pem"
   rm -f "$cert/ca.pem"            # (a public chain: nothing for clients to add)
   drop
-  build "$site" "$name" "$ip" "$cert" "$out" "$p80" "$hsts" "$cache" "$headers" "$sans"
+  build "$site" "$name" "$ip" "$cert" "$out" "$p80" "$hsts" "$cache" "$headers" "$sans" "$compress"
   start "$host" "$out" keep
 }
 

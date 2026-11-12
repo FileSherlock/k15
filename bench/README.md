@@ -190,6 +190,96 @@ large file goes at 64 KB a round trip.
 Held, with the afternoon's image: 60,000 TLS connections, each with the chain verified,
 and 60,000 plain ones; all opened, held and fetched over.
 
+## Large files: many records to a frame (2026-11-12, night)
+The image of the afternoon sent a segment a frame, and the path to it carries about
+130,000 frames a second: 166 MB/s. Since then:
+- **the card cuts the frames** (virtio's CSUM and HOST_TSO4, where it offers them): a
+  frame of ours is up to 45 records of a response, sealed into a buffer of 64 KiB, each a
+  segment once the card has cut it and summed it. What is lost on the way is still one
+  record, made again from the image;
+- **a record is sealed faster**: the key stream was xored on a byte at a time, which cost
+  more than making it. 16 bytes at a time, and the AES counter kept in registers: a full
+  record (1,418 bytes) takes 3,900 cycles under AES-128-GCM (it took 11,600) and 11,800
+  under ChaCha20-Poly1305 (17,900), a small one (180 bytes) 940 and 2,200 (1,900 and
+  3,000); `make bench`, on the development machine;
+- **windows are scaled**, so more than 64 KB can be on their way (below);
+- files that get shorter by it are **packed compressed as well** (gzip, brotli), and a
+  client that has a file is told so (ETag, 304).
+
+14,245 bytes of system, with the site of `tools/mksite.py` behind it, built as `./k3 pack
+build-hzn/www -n IP -i IP -c cert-hz --plain80`. From the same generator, the same night,
+one server after the other (`bench/files.sh`: wrk, 8 s a row, 64 connections that stay
+unless it says otherwise). wrk's OpenSSL puts AES-256-GCM first, then ChaCha20-Poly1305,
+then AES-128-GCM: nginx takes the first, k3 has no AES-256 and takes the second.
+Browsers put AES-128-GCM first: the rows that say so were asked that way.
+
+| | this image (22:02) | the afternoon's image (20:40) | nginx + OpenSSL 3.5 (20:50) |
+|---|---|---|---|
+| the page (167 bytes), requests a second | 108,685 (512 connections: 105,523) | 110,284 (117,966) | 33,880 (34,142) |
+| 14,000 bytes, OpenSSL's order | 30,393 a second, 411 MB/s | 13,692, 185 MB/s | 26,654, 362 MB/s |
+| 14,000 bytes, AES-128-GCM | 35,332 a second, 478 MB/s | 14,861, 201 MB/s | 23,851, 324 MB/s |
+| 1.5 MiB, OpenSSL's order | 307 a second, 466 MB/s | 114, 177 MB/s | 611, 0.90 GB/s |
+| the same, 8 connections | 292 a second, 439 MB/s | 113, 170 MB/s | 632, 0.93 GB/s |
+| 1.5 MiB, AES-128-GCM | 624 a second, 0.92 GB/s | 108, 167 MB/s | 667, 0.98 GB/s |
+| the same, 8 connections | 514 a second, 772 MB/s | 104, 157 MB/s | 689, 1.01 GB/s |
+| the same, 1 connection | 97 to 107 a second, 145 to 160 MB/s | 43, 64 MB/s | 261, 392 MB/s |
+| 200 KB of text, as it is | 4,673 a second, 0.89 GB/s | | |
+| the same to a client that takes brotli (99 KB) | 10,189 a second | | |
+| the page to a client that has it (304) | 111,756 a second | | |
+
+No request failed or took over 2 s in any row. So:
+- a file of 14 KB now goes faster than from nginx (it was half as fast), and so does
+  anything smaller;
+- a large file goes 5.5 times as fast as it did when browsers ask (AES-128-GCM), which
+  is 94% of nginx's rate at 64 connections and three quarters at 8; and 2.6 times as
+  fast under ChaCha20-Poly1305, which is half of what nginx does with AES-256-GCM;
+- nginx itself was a third faster than in the afternoon (742 MB/s then): the same server
+  is not the same machine from hour to hour.
+What limits k3 now is, as far as can be told from outside, sealing: 0.92 GB/s are
+650,000 records a second, which is all the time two processors of 2.1 GHz have at 6,500
+cycles a record (a record under AES-128-GCM takes 3,900 on the development machine;
+its frame, its acks and the hash of the tag come on top; how busy the processors were
+was not measured). The next thing would be the ciphers again: AES four blocks abreast
+and GHASH four at a time; ChaCha20 two or four blocks abreast, which wants AVX2.
+
+The rows of `bench/run.sh`, this image and the afternoon's in turn (22:10; 10 s a row):
+
+| | this image | the afternoon's |
+|---|---|---|
+| new TLS connections a second, 64 / 512 / 4,096 in flight | 7,717 / 7,705 / 8,791 | 7,434 / 6,524 / 7,233 |
+| the same with two key shares, 512 | 7,478 | 7,350 |
+| https, connections kept, 64 / 512 | 106,428 / 119,630 | 101,473 / 105,753 |
+
+(A full run of this image at 22:07: 7,150, 7,479 and 7,939 new TLS connections a
+second, 95,916 and 113,255 requests on kept ones; plain: 39,713, 45,439 and 43,930
+new connections, 101,612 and 108,237 requests.)
+
+**Over a distance.** With windows scaled, more than 64 KB can be on their way. How much
+more is the question: a window that doubles every round trip up to 367 KB brought 1.5
+MiB over a round trip of 100 ms in 1.1 s (2.9 s before), and through a path that holds
+less than that it lost 91 segments at once and took 23.6 s for 6 MiB where the old
+image took 5.2: what is lost is found a segment a round trip without SACK, and what
+SACK says can't be kept in a slot of 128 bytes (Linux, besides, says it once a
+millisecond, not once a segment). So the window doubles up to 64 KB as before, grows by
+a segment for every 64 KiB acknowledged beyond that, a response begins with 64 KB at
+most, and a connection that has lost anything once stays at 64 KB. Several losses in
+one window are mended a round trip each instead of a timer each. 6 MiB through emulated
+paths (`tools/bneck.sh`; an image without TSO, so that a frame is a segment):
+
+| the path | the afternoon's image | this one |
+|---|---|---|
+| 20 Mbit/s, a queue of 60 packets, 50 ms there and back | 5.2 s | 4.3 s |
+| no limit, 100 ms | 10.2 s | 5.5 s |
+| 100 Mbit/s, a queue of 100, 20 ms | 2.05 s | 1.2 s |
+| 50 Mbit/s, a queue of 50, 10 ms | 1.12 s | 1.15 s |
+| 5 Mbit/s, a queue of 30, 100 ms | 13.1 s | 12.4 s |
+| 20 Mbit/s, a queue of 200, 1% lost | 21 to 24 s | 14 to 19 s |
+| 20 Mbit/s, a queue of 10, 50 ms | 39 s | 34 s |
+
+1.5 MiB with a connection, over a round trip of 20 ms and of 100 ms (`DELAY=n` in front
+of tap.sh): 0.37 s and 1.8 s (0.6 s and 2.9 s). The last row is what neither does well:
+a queue of ten packets and a sender that does not pace.
+
 ## Held connections
 `tools/tapc.c` from the load generator (`bench/hold.sh`; 60,000 from one address is what
 the ports allow):
@@ -228,7 +318,7 @@ slots, 10.8 KiB); nginx + BoringSSL about 20; nginx + OpenSSL about 5.
   status line and eight). The afternoon's image serves a site's files with six headers
   (179 bytes for that page), and still nothing but GET and HEAD of what was packed into
   it.
-- Large files: see "The image that serves files". k3 has no segmentation offload.
+- Large files: see "Large files: many records to a frame".
 - No resumption was measured, because k3 has none: every connection here is a full
   handshake. A server with session tickets does a returning client's handshake for less;
   how nginx then compares with k3's full handshake was not measured.
@@ -267,5 +357,7 @@ slots, 10.8 KiB); nginx + BoringSSL about 20; nginx + OpenSSL about 5.
    on it but `/boot/k3.bin` and its GRUB entry.
 7. Two images of k3 in turn: `./k3 deploy IP DIR --reset 'hcloud server reset k3'` for
    each, and the rows that matter between (the afternoon used the first two of run.sh,
-   twice, 12 s each). Files: `wrk -t8 -c64 -d8s https://IP/path` on the generator
-   (`apt-get install wrk`); for nginx the site's folder goes to `/var/www/k3bench`.
+   twice, 12 s each). Files: `./files.sh IP [all]` on the generator (`apt-get install
+   wrk`; `bench/files.sh` beside run.sh); for nginx the site's folder goes to
+   `/var/www/k3bench`. While 15kb.org lives on the server, every such deploy takes it
+   down: `./k3 deploy IP build-15kb.org --persist --reset ...` puts it back.

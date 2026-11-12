@@ -85,13 +85,19 @@ T[site_tap]='unshare -Urn tools/sitetest.sh tap'
 T[site_loss3]='LOSS=3 unshare -Urn tools/sitetest.sh tap'
 T[site_mtu600_loss3]='MTU=600 LOSS=3 unshare -Urn tools/sitetest.sh tap quick'
 T[site_reorder]='REORDER=25 unshare -Urn tools/sitetest.sh tap'
+# the same where the card does not cut frames into segments for us (as through QEMU's own
+# network, but over tap, with loss): a segment a frame
+T[site_notso_loss3]='NOTSO=1 B=build-site-notso LOSS=3 unshare -Urn tools/sitetest.sh tap quick'
+# a large file through a path narrower than the window: no slower than a window of 64 KB was
+T[bneck]='tools/bnecktest.sh'
 ORDER="measure measure_tcg browsers tls tls_loss3 tls_mtu300_loss3 tls_reorder aes aes_loss3
   aes_mtu300_loss3 aes_reorder twice twice_reorder plain plain_loss3 plain_mtu300_loss3
   plain_reorder raw1m raw1m_20k raw_4g tls_4g churn churn_idle real_measure real_loss3
   real_mtu300_loss3 real_reorder hrr hrr_loss3 hrr_mtu300_loss3
   hrr_reorder real_hrr_loss3 redirect raw_redirect tls_isn31 tls_isn32 tls_isn31_loss3
   plain_isn32_loss3 real_isn31_loss3 real_isn32_reorder site_wrap31 site_wrap32 site_wrap31_loss3
-  site_wrap32_loss3 site_keylife k3 wx site site_tap site_loss3 site_mtu600_loss3 site_reorder"
+  site_wrap32_loss3 site_keylife k3 wx site site_tap site_loss3 site_mtu600_loss3 site_reorder
+  site_notso_loss3 bneck"
 
 # the images and clients first (not in parallel)
 [[ -f cert-real/server.pem ]] || python3 tools/mkchain.py cert-real >/dev/null || exit 1
@@ -108,6 +114,7 @@ for w in "wrap31 0x7FFF8000 17" "wrap32 0xFFFF8000 17" "wrapl31 0x7FF00000 12" "
 done
 mkdir -p build-keylife && python3 tools/mksite.py build-keylife/www >/dev/null && make -s B=build-keylife SITE=build-keylife/www KEYLIFE=10 >/dev/null || { echo "BUILD FAILED (keylife)"; exit 1; }
 mkdir -p build-site && python3 tools/mksite.py build-site/www >/dev/null && make -s B=build-site SITE=build-site/www >/dev/null || { echo "BUILD FAILED (site)"; exit 1; }
+mkdir -p build-site-notso && python3 tools/mksite.py build-site-notso/www >/dev/null && make -s B=build-site-notso SITE=build-site-notso/www NOTSO=1 >/dev/null || { echo "BUILD FAILED (site, no TSO)"; exit 1; }
 [[ -x build/rawc && build/rawc -nt tools/rawc.c ]] || gcc -O2 -o build/rawc tools/rawc.c || exit 1
 for b in build build-real build-small build-small-idle build-isn31 build-isn32 build-real-isn31 build-real-isn32; do
   [[ -x $b/tapc && $b/tapc -nt tools/tapc.c ]] || gcc -O2 -o $b/tapc tools/tapc.c -lssl -lcrypto || exit 1
@@ -123,7 +130,8 @@ verdict() {  # name, exit code -> one line
        note="$note; $(grep -o '[0-9]* reset, [0-9]* timed out' "$f" | tr '\n' ';')";;
     churn*) [[ $rc == 0 ]] && v=ok; note=$(tail -1 "$f");;
     wx) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 6 ok; $(grep -m1 '^FAIL' "$f")";;
-    k3) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 20 ok; $(grep -m1 '^FAIL' "$f")";;
+    bneck) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 4 ok; $(grep -m1 '^FAIL' "$f" | cut -c1-80)";;
+    k3) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 24 ok; $(grep -m1 '^FAIL' "$f")";;
     site*) [[ $rc == 0 ]] && grep -q '^all ok' "$f" && v=ok; note="$(grep -c '^ok' "$f") checks ok; $(grep -m2 '^FAIL' "$f" | cut -c1-90 | tr '\n' ';')";;
     *) note=$(grep '^SCORE' "$f"); [[ $note == SCORE* && $note != "SCORE 0.0"* ]] && ! grep -q FAILED "$f" && v=ok
        note="${note#*= }; $(grep -c FAILED "$f") failed; $(grep -m1 -o 'open_s [0-9.]*' "$f")";;

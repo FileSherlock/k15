@@ -8,7 +8,7 @@ typedef unsigned char u8;
 #define SCRATCH "memory", "cc", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", \
                 "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"
 #define ASMCALL(fn, ...) __asm__ volatile("call " #fn : __VA_ARGS__ : : SCRATCH)
-extern u8 E[], REGS[];
+extern u8 E[], REGS[], CIPH[];
 static double now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+t.tv_nsec/1e9;}
 #define TIME(name, n, ...) do { double t_ = now(); unsigned long long c_ = __rdtsc(); \
     for (i = 0; i < (n); i++) { __VA_ARGS__; } \
@@ -25,6 +25,15 @@ int main(void){
     TIME("ecdsa: one more nonce, or 64 /", 6500, __asm__ volatile("call hstock" ::: SCRATCH));
     TIME("sha256 of 64 bytes (2 blocks)", 20000, { u8 *o = h, *mm = m; unsigned n = 64; ASMCALL(sha256, "+D"(o), "+S"(mm), "+c"(n)); });
     TIME("sha256 of 3000 bytes", 2000, { u8 *o = h, *mm = m; unsigned n = 3000; ASMCALL(sha256, "+D"(o), "+S"(mm), "+c"(n)); });
+    /* a record: of a small page, and a full one of a file (a segment of 1,440 bytes), under each cipher */
+    static u8 kiv[44], rec[2048];
+    for (int c = 0; c < 2; c++) for (int len = 180; len <= 1418; len += 1238) {
+        char t[64];
+        CIPH[0] = c;
+        sprintf(t, "%s record of %d bytes", c ? "AES-128-GCM" : "ChaCha20-Poly1305", len);
+        TIME(t, 20000, { u8 *o = rec, *mm = m, *k = kiv; unsigned n = len, seq = i, type = 23;
+            __asm__ volatile("clc\n\tcall seal" : "+D"(o), "+S"(mm), "+c"(n), "+b"(k), "+d"(seq), "+a"(type) : : SCRATCH); });
+    }
     /* the pieces: one multiplication, one addition, one ladder step, one inversion */
     static const char *const fn[] = {"2^255-19", "P-256 p", "P-256 n"};
     extern u8 X_STEP25519[], X_MADDED[], X_MADD256[];
