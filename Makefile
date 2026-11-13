@@ -40,7 +40,7 @@ WINDEF := $(if $(WIN),-DWIN=$(WIN),) $(if $(WXTEST),-DWXTEST=$(WXTEST),) $(if $(
 
 # the routines a handshake spends its time in: none of their jumps may lie on a 32-byte
 # boundary (tools/jcc.py; of `seal` only the loops count, which that list can't say)
-HOT := shablk xdh cswap comb select vm fas addk fmul inv chacha aeskey aesblk
+HOT := shablk xdh cswap comb select vm fas addk fmul inv chacha ks64 gh1 aeskey aes4
 
 # (the image, its listing and the disk hold the private key: for their owner's eyes only)
 # The image: hand-written assembly (src/os.asm) -> flat binary, loaded at 1 MiB; and a

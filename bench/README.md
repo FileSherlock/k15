@@ -241,7 +241,9 @@ What limits k15 now is, as far as can be told from outside, sealing: 0.92 GB/s a
 cycles a record (a record under AES-128-GCM takes 3,900 on the development machine;
 its frame, its acks and the hash of the tag come on top; how busy the processors were
 was not measured). The next thing would be the ciphers again: AES four blocks abreast
-and GHASH four at a time; ChaCha20 two or four blocks abreast, which wants AVX2.
+and GHASH four at a time; ChaCha20 two or four blocks abreast, which wants AVX2. (Done
+for AES-128-GCM on 2026-11-13, evening: a 1,418-byte record is down to 1,780 cycles on
+the development machine; not yet measured on the server.)
 
 The rows of `bench/run.sh`, this image and the afternoon's in turn (22:10; 10 s a row):
 

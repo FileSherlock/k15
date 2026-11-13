@@ -10,7 +10,8 @@ typedef unsigned int u32;
 /* The asm keeps the eight old registers (or says what it returns in them); r8-r15 and the
  * SSE registers are scratch. */
 #define SCRATCH "memory", "cc", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", \
-                "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"
+                "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", \
+                "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15"
 #define ASMCALL(fn, ...) __asm__ volatile("call " #fn : __VA_ARGS__ : : SCRATCH)
 
 static void sha(u8 *out, u8 *m, u32 n) { ASMCALL(sha256, "+D"(out), "+S"(m), "+c"(n)); }
@@ -73,15 +74,15 @@ int main(void)
     ex(h, m, "\x20\x07" "derived", m + 100);
     hex("expand", h, 32);
     for (i = 0; i < 32; i++) kiv[i] = m[300 + i], kiv[32 + i] = m[400 + i];
-    for (i = 0; i < 12; i++) {       /* ChaCha20-Poly1305, then AES-128-GCM (CIPH says) */
-        u32 n = (u32[]){1, 100, 1500, 15, 16, 17}[i % 6], L;
+    for (i = 0; i < 20; i++) {       /* ChaCha20-Poly1305, then AES-128-GCM (CIPH says) */
+        u32 n = (u32[]){1, 100, 1500, 15, 16, 17, 63, 64, 65, 128}[i % 10], L;
         char t[32];
-        CIPH[0] = i >= 6;
+        CIPH[0] = i >= 10;
         L = sl(out, m, n, kiv, i * 77);
-        sprintf(t, "%s%u_%u", i >= 6 ? "gcm" : "seal", n, i * 77);
+        sprintf(t, "%s%u_%u", i >= 10 ? "gcm" : "seal", n, i * 77);
         hex(t, out, L);
         L = op(tmp, out + 5, L - 21, kiv, i * 77);    /* and back: the plaintext, then the tag */
-        sprintf(t, "%s%u_%u", i >= 6 ? "ungcm" : "unseal", n, i * 77);
+        sprintf(t, "%s%u_%u", i >= 10 ? "ungcm" : "unseal", n, i * 77);
         hex(t, tmp, L);
     }
     /* X25519 with our scalar e (unclamped): key share, and the secret with the public key

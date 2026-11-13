@@ -43,11 +43,19 @@ taken off its machine contract and put on a Hetzner cloud server. Decided with t
   over 20 ms and in 1.8 s over 100 ms is fast enough for a static site, and keeping a
   client's SACK blocks in a borrowed handshake buffer would tie what a lossy client
   costs to what a flood of ClientHellos leaves of those buffers.
+- (2026-11-13, evening) decided with the user: post-quantum key exchange
+  (X25519MLKEM768) is off the plan (k15 serves a public static site), and two things
+  from "Later" are built: bulk record sealing (`aes4` four counter blocks abreast,
+  four-block delayed-reduction GHASH, 64-byte full-block loops in `seal`: a 1,418-byte
+  AES-128-GCM record is down from 3,900 to 1,780 cycles natively) and a clock calibrated
+  against the 8254 timer 2 at boot (`TSCM`, `clock`: ticks of 1/2048 s, so the 0.25 s
+  retransmission timeout, `IDLE`, `LIFE` and the AP startup wait do not shrink on faster
+  processors).
 - security as in k2 (below) holds for everything behind TLS. Port 80 has none of it: it
   says one public thing to everyone (where the site is, or its front page).
 
 ## Where it stands
-The image is one assembly file's worth of system, 14,277 bytes, and behind it the site
+The image is one assembly file's worth of system, 14,683 bytes, and behind it the site
 (`tools/pack.py`): every file as the HTTP response it is sent as (and, where that is
 shorter, as the same compressed with gzip and brotli, and for each of these the 304
 that says "you have it"). Works, locally and on
@@ -162,7 +170,7 @@ after the other within an hour and a half):
 |---|---|
 | full handshakes/s over tap (`NOMARK=1 ... taprunc.sh 8000 1024 8`: 64,000, all verified) | 7,400 on one processor, 10,700 on two (the client is the limit there); the night's image 7,700 and 10,800 |
 | a handshake's crypto natively (`make bench`) | 300,000 cycles: X25519, both halves, 211,000; an ECDSA signature 89,000, or 2,000 when the nonces were made while idle |
-| a record natively (`make bench`) | of 1,418 bytes: 3,900 cycles under AES-128-GCM, 11,800 under ChaCha20-Poly1305 (11,600 and 17,900 before 2026-11-12, night); of 180 bytes: 940 and 2,200 (1,900 and 3,000) |
+| a record natively (`make bench`) | of 1,418 bytes: 1,780 cycles under AES-128-GCM, 11,000 under ChaCha20-Poly1305 (3,900 and 11,800 before four-block AES/GHASH; 11,600 and 17,900 before 2026-11-12, night); of 180 bytes: 660 and 2,100 (940 and 2,200; 1,900 and 3,000) |
 | 1.5 MiB over a round trip of 20 ms, of 100 ms (`DELAY=n` in front of tap.sh) | 0.37 s, 1.8 s (a connection included; 0.6 s and 2.9 s while 64 KB a round trip was the most) |
 | 6 MiB through a bottleneck (`tools/bneck.sh`: 20 Mbit/s, a queue of 60, 50 ms there and back) | 4.3 s (5.2 s with a window of 64 KB; 23.6 s with one that doubles up to 367 KB: bench/README.md has seven such paths) |
 | guest cycles per frame, TLS keep-alive requests (the night's image) | 3,900 |
@@ -202,19 +210,12 @@ a window that grows past 64 KB only slowly; small frames held back while acks ar
 still to come.
 On 2026-11-13, by the user's word (Goal): which of our two ciphers a client gets is
 ours to say (AES-128-GCM, unless it puts ChaCha20-Poly1305 first), and SACK is off
-the plan.
+the plan. In the evening: post-quantum key exchange (X25519MLKEM768) is off the plan
+as well, `seal` seals 64 bytes at a time with four-block AES (`aes4`) and four-block
+GHASH (`H^1..H^4`), and `clock` calibrates `rdtsc` against timer 2 at boot so timeouts
+are wall-clock time on any processor.
 
 **Next, in the order of what they are worth:**
-- **Post-quantum key exchange (X25519MLKEM768).** Not for a grade (it is not what keeps
-  the A+ away: "Where it stands"), but every browser offers that share first today, we
-  take their second one (x25519), so what is recorded now is as safe as that curve
-  stays. Security goes up with it, never down: the secret is both halves' together.
-  On our side it is ML-KEM-768's encapsulation against the client's key (FIPS 203:
-  Keccak, the transform, sampling, packing; no key of ours, no decapsulation), 1,088
-  bytes of ciphertext in front of our 32 in the ServerHello (a flight a segment
-  longer; with today's chain a handshake buffer of 8 KiB), and a HelloRetryRequest
-  only when a client has neither share. It costs bytes and cycles a handshake: both
-  to be measured, the model first, as with the curves.
 - **The chain** is the user's to shorten or not. Let's Encrypt sends four certificates
   (3,391 bytes: the leaf; YE1 or YE2; Root YE signed by ISRG Root X2; ISRG Root X2
   signed by ISRG Root X1). Leaf and intermediate alone verify nowhere: Root YE is in no
@@ -232,16 +233,13 @@ the plan.
   to be had.
 **Later.** DHCP instead of a baked-in address, taking out the reset knock, rings for
 the processors there are, Unikraft and F-Stack next to k15 (bench/README.md
-says what that takes), a retransmission timer that knows the round trip (it is 2^29
-cycles whatever the path: 0.26 s on the server, 0.14 s on a machine of 3.9 GHz, where
-a path of 150 ms there and back then gets every segment twice), zstd beside brotli
-(Python has it since 3.14; Safari does not take it). The ciphers further: a record of 1,418 bytes
-takes 3,900 cycles under AES-128-GCM (the counter blocks four abreast and GHASH four
-at a time should each halve their part) and 11,800 under ChaCha20-Poly1305, which
-only a client that puts it first gets now (some 9,600 of them 24 blocks of ChaCha20
-made one at a time: two or four abreast want AVX2). Pacing, or what stands in for it:
-through a queue of ten packets a large file takes 34 s where the link would do it in
-3. Not planned: session tickets and SACK (see Goal).
+says what that takes), a retransmission timer that knows the round trip (it is 0.25 s
+whatever the path), zstd beside brotli (Python has it since 3.14; Safari does not
+take it). ChaCha20 further (a 1,418-byte record takes 11,000 cycles, which only a
+client that puts it first gets now: two or four blocks abreast want AVX2). Pacing, or
+what stands in for it: through a queue of ten packets a large file takes 34 s where
+the link would do it in 3. Not planned: session tickets, SACK, and post-quantum key
+exchange (see Goal).
 
 ## What "secure" means here
 A standard validating client gets server authentication, confidentiality, integrity and
@@ -305,14 +303,14 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   for its owner's eyes only (umask 077), and /boot/k15.bin on the server for root's.
 - `make` assembles `src/os.asm` into `build/os.bin` (loaded at 1 MiB) and `build/disk.img`
   (`src/boot.asm` + the image; what the tests boot), with the site of `www/` in it.
-  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 14,277,
-  about: boot, page tables, driver and the other processors 2,650, network 4,250 with
-  the timers, requests and the forms of a file 700, TLS handshake and key schedule
-  1,600, SHA-256 450, curves 3,000 with their programs and constants, the two ciphers
-  1,300, certificate 230; among them some 300 of padding in front of the routines a
-  handshake spends its time in: see HOT in "How the curve code works". Of the 874 that
-  the night of 2026-11-12 added: frames for the card to cut 450, window scaling and
-  what goes with it 130, the forms of a file 290; `seal` got faster in the same
+  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 14,683,
+  about: boot, clock calibration, page tables, driver and the other processors 2,700,
+  network 4,250 with the timers, requests and the forms of a file 700, TLS handshake
+  and key schedule 1,600, SHA-256 450, curves 3,000 with their programs and constants,
+  the two ciphers 1,650, certificate 230; among them some 250 of padding in front of the
+  routines a handshake spends its time in: see HOT in "How the curve code works". Of the
+  874 that the night of 2026-11-12 added: frames for the card to cut 450, window scaling
+  and what goes with it 130, the forms of a file 290; `seal` got faster in the same
   bytes.) `make B=dir CERT=dir NAME=n IP=a.b.c.d SITE=folder P80=redirect HSTS=seconds
   COMPRESS=0 KNOCK=a,b` builds another image: its identity, the name in a generated
   certificate (`SAN='a b'`: its further names), the address it answers on, what it
@@ -640,10 +638,10 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
   `seek` (which form of it, by the request's Accept-Encoding and If-None-Match), `geom`
   (how the response in hand is cut), `sendseg` (one segment of it), `sendrun` (all the
   records that may go, in one frame for the card to cut), `tarm`/`tqrun` (who waits for
-  an ack), `sm` (is this a connection past its handshake).
+  an ack), `tsc`/`clock` (the calibrated clock), `sm` (is this a connection past its handshake).
 - `handshake`, `hrrmsg`, `thash` (the transcript's hash, continued, not restarted),
-  `keys`, `hmac`, `expand`; `sha256`/`shablk`; `seal` with `chacha`, Poly1305, `aeskey`,
-  `aesblk`, GHASH.
+  `keys`, `hmac`, `expand`; `sha256`/`shablk`; `seal` with `ks64`, `chacha`, Poly1305,
+  `aeskey`, `aes4`, `gh1` and four-block GHASH.
 - `xdh`, `sign`, `stock`, `binv`, `comb`, `select`, `vm`, `fas`, `fmul`, `inv`, `ecinit`:
   the curves, see below.
 - `tools/ec.py`: the curve code's other half: the programs, and a model of the arithmetic
@@ -788,11 +786,12 @@ bytes.
 - **The timer for what we sent** (`tarm`, `tqrun`). A connection that is owed something
   (an ack is outstanding, or the client's window is shut) is in its processor's queue,
   once: the first 64 bytes of a frame of its client's, the time, the ack. A polling loop
-  with nothing else to do takes the oldest: not 2^29 cycles old yet (a quarter second
-  on the server; twice as long for every time in vain, up to 16 s): to the back. Old
-  enough: if the client has everything by now, that is that; if its ack has moved,
-  back into the queue; if not, the segment at its ack goes again (and half as many may
-  be on their way). As with SYN-ACKs: only when idle.
+  with nothing else to do takes the oldest: not a quarter second old yet (512 ticks of
+  1/2048 s, from `clock`, which scales `rdtsc` by `TSCM` calibrated against timer 2 at
+  boot; twice as long for every time in vain, up to 16 s): to the back. Old enough: if
+  the client has everything by now, that is that; if its ack has moved, back into the
+  queue; if not, the segment at its ack goes again (and half as many may be on their
+  way). As with SYN-ACKs: only when idle.
 - A request for the next response is taken only when the client has acknowledged all of
   this one. One that comes earlier (two requests at once) is as good as not arrived, and
   what follows it in its segment too: the client sends it again (`.busy`).
@@ -885,10 +884,10 @@ The old way, and what both share:
 - The one thing sent unasked is a SYN-ACK again. A SYN gets no slot, so the SYNs of late
   are kept on the side (`tnote`: 4 n places, a client's picked by its hash, the frame as
   it came), and a connection made takes its SYN out. A polling loop that has no frame to
-  handle goes round the places (`tidle`, 8 a turn); a SYN still there after 2^29 cycles
-  (a quarter second on the server) goes through `tcp` once more, three times at most,
-  one a tick (2^20 cycles) at most: a flood of SYNs gets at most 2,000 SYN-ACKs a second
-  and processor on top of its own. Without it a lost SYN-ACK costs the client a second,
+  handle goes round the places (`tidle`, 8 a turn); a SYN still there after a quarter
+  second goes through `tcp` once more, three times at most, one a tick (1/2048 s) at
+  most: a flood of SYNs gets at most 2,048 SYN-ACKs a second and processor on top of its
+  own. Without it a lost SYN-ACK costs the client a second,
   and a retransmission timeout of 3 s for the rest of the connection. Only when idle:
   while frames wait in a processor's ring, the client's answer may be one of them (it
   ran on every frame at first, and under load the clients counted thousands of second
@@ -947,7 +946,7 @@ The old way, and what both share:
   (`.deny`), or if room ran out after the SYN-ACK, its first packet does. Connections that
   are held are not given up for new ones. The exception keeps the table from silting up
   with clients that vanished: a slot whose connection has been quiet for more than `IDLE`
-  (64 units of 2^37 cycles, about an hour; `C_AGE` is a byte of that clock) is taken if
+  (64 units of 64 s, 68 minutes; `C_AGE` is a byte of that clock) is taken if
   there is no free one. (It was "the quietest of 16 goes": that pushed out held
   connections from half full on.)
 - A slot is freed by a RST with the expected sequence number, and by a FIN: it gets our
@@ -1014,17 +1013,17 @@ flag after it).
 - ChaCha20: the state's four rows in xmm registers, a quarter round on all four columns
   at once (SSE2). Poly1305: 64-bit limbs, `mul`.
 - AES-128-GCM: the key schedule is made again for every record (`aeskey`: 176 bytes would
-  not fit a slot), four counter blocks at a time through the same loop that xors
-  ChaCha20's key stream, GHASH with pclmulqdq (H kept times x, two folds by 0xC2..00;
-  the steps were checked in a model against pyca first).
-- The key stream is xored on 16 bytes at a time (a byte at a time, with source and
-  destination the same, it cost more than making the key stream: 6,500 cycles of a
-  record of 1,418 bytes), and each AES counter block is made from registers (made by
-  way of memory, a block had to wait for the store of the one before).
-- What a record costs (`make bench`, Ryzen 7 3800X): 1,418 bytes of a file 3,900 cycles
-  under AES-128-GCM and 11,800 under ChaCha20-Poly1305; 180 bytes 940 and 2,200. (This
-  file said "some 8,000" for a full one until it was measured: 11,600 and 17,900.)
-  Since the card cuts our frames, this is what large files wait for: see "Later".
+  not fit a slot), four counter blocks interleaved across the ten AES rounds (`aes4`,
+  sharing the 64-byte key-stream path `ks64` with `chacha`), and GHASH four blocks at a
+  time with one reduction (`HTAB` holds H^1..H^4 times x; `gh1` handles single blocks and
+  the powers).
+- Full 64-byte blocks are xored directly in xmm0-xmm3 without bouncing through memory,
+  with a 16-byte/byte tail for what remains (a byte at a time, with source and
+  destination the same, cost 6,500 cycles of a record of 1,418 bytes).
+- What a record costs (`make bench`, Ryzen 7 3800X): 1,418 bytes of a file 1,780 cycles
+  under AES-128-GCM and 11,000 under ChaCha20-Poly1305; 180 bytes 660 and 2,100 (3,900
+  and 11,800, 940 and 2,200 before four-block AES and GHASH; 11,600 and 17,900 before
+  2026-11-12, night).
 
 ## Shortcuts that remain
 From k2, where they saved bytes, and from the first version that served files. Ask before
@@ -1068,7 +1067,7 @@ removing the ones about TLS.
 - Two requests at once: the second waits for the client's retransmission timer (0.2 s).
 - TCP: no SACK and no timestamps (so what is lost is found a segment a round trip, and
   a window past 64 KB opens slowly: "How TCP works here"), no pacing (what an ack lets
-  go goes at once), a first timeout of 2^29 cycles whatever the round trip is (a path
+  go goes at once), a first timeout of 0.25 s whatever the round trip is (a path
   slower than that gets a segment twice), and the old way (`tcp_send`) for the flight
   and port 80: all at once, no window. Our own window is 64 KB, unscaled. The IP header's checksum is not looked at: what we use of that header is
   fixed or goes into TCP's checksum, which is.
@@ -1312,10 +1311,10 @@ segment a frame, no window scaling, no compression, no conditional requests.
   full lets out what each ack frees, three segments, whose ack frees three. 518 MB/s
   on the server where 920 were to be had. Linux waits for a third of the window
   (`tcp_tso_win_divisor`); so do we now.
-- The retransmission timer is 2^29 cycles: 0.14 s on a machine of 3.9 GHz. Emulating a
-  round trip of 150 ms here made every segment time out (19 KB/s): that was the
-  timer, and the variable: `DELAY=` in front of a script inside tap.sh is tap.sh's
-  own delay as well (tools/bneck.sh has `BDELAY`).
+- While the retransmission timer was 2^29 cycles (0.14 s on a machine of 3.9 GHz),
+  emulating a round trip of 150 ms here made every segment time out (19 KB/s):
+  calibrating `clock` against timer 2 fixed the timer, and `DELAY=` in front of a
+  script inside tap.sh is tap.sh's own delay as well (tools/bneck.sh has `BDELAY`).
 - `tcpdump` in tap.sh's namespace is under an AppArmor profile that lets no signal
   from this shell reach it, `kill -9` included, and it keeps the pipe of whoever
   started it open (a `| tail` then never ends). It goes when its interface goes:

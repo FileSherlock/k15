@@ -25,7 +25,7 @@ For a site that is meant to stay (`--reset`: how the server gets back into its L
 
 What you get, and what you don't:
 
-- **Small.** The system is 14,277 bytes. The image is that plus your files, each stored
+- **Small.** The system is 14,683 bytes. The image is that plus your files, each stored
   as the response it is sent as (and, where that makes it shorter, once more compressed
   with gzip and with brotli, for clients that take that).
 - **Nothing to break into.** No kernel, no shell, no file system, no user accounts, no
