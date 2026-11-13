@@ -73,8 +73,8 @@ It needs a 64-bit processor with rdrand, AES-NI, PCLMULQDQ, SSE4.1, BMI2 and ADX
 since Broadwell, AMD since Zen), a BIOS or GRUB to start it, and a virtio-net card: a
 cloud server, or QEMU.
 
-It is work in progress. `CLAUDE.md` has the state, the plan, how everything works and
-everything measured so far.
+It is work in progress. `CLAUDE.md` has the rules and the state, `docs/` how everything
+works, the commands, the server, and what went wrong before.
 
 ## Working on it
 

@@ -10,8 +10,7 @@
 # certificate that is made when there is none. A file that gets shorter by it is packed
 # compressed as well and goes that way to a client that says it takes that; one that has
 # the file already is told so; with --no-compress there is none of the first.
-# (./k15 deploy, and renew's part on the server, need a server: CLAUDE.md, "Running it on
-# the server".)
+# (./k15 deploy, and renew's part on the server, need a server: docs/server.md.)
 cd "$(dirname "$0")/.." || exit 1
 PORT=${PORT:-8513}
 OUT=build-k15test CERT=cert-k15test

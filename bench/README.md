@@ -312,7 +312,7 @@ the ports allow):
   connections, every one opened, verified and served but for one that the client could
   not start (its port was taken). The same with 60,000 plain connections. (Some 17 such
   runs earlier in the night had two failed handshakes between them: that is how the bug in
-  finding the key share was found, see CLAUDE.md, "Learned the hard way".)
+  finding the key share was found, see docs/pitfalls.md.)
 - A held connection costs k15 20 bytes on port 80 and 128 bytes on 443, by construction:
   on this server there is room for 172 million and 3.8 million.
 - nginx: the same 60,000, and what the server's `MemAvailable` loses while they are held:
@@ -357,7 +357,7 @@ slots, 10.8 KiB); nginx + BoringSSL about 20; nginx + OpenSSL about 5.
 - BoringSSL was measured inside nginx only, not by itself.
 
 ## Doing it again
-1. A load generator next to the server (CLAUDE.md, "Running it on the server"). On it:
+1. A load generator next to the server (docs/server.md). On it:
    `apt-get install -y gcc libssl-dev`, a directory with `tools/bench.c`, `tools/tapc.c`,
    `www/`, `bench/run.sh`, `bench/busy.sh`, `bench/hold.sh`, and in `build/` the server's
    `ca.pem` and `name` (from `build-hz/`); `gcc -O2 -o build/bench tools/bench.c -lssl

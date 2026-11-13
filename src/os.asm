@@ -12,7 +12,7 @@
 ; HTTP: GET and HEAD for the files of the site the image ends with (tools/pack.py); see `record`.
 ; Like k2, and unlike k1, this one is meant to be secure: a fresh X25519 key and a fresh ECDSA nonce per
 ; handshake (rdrand), a real certificate chain, client records are authenticated before
-; they are read, and no memory is both written and executed. See CLAUDE.md for the
+; they are read, and no memory is both written and executed. See docs/internals.md for the
 ; shortcuts that remain.
 ;
 ; Convention: a routine keeps the eight registers of old (pushad/popad: macros here) unless
