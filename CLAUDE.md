@@ -55,7 +55,7 @@ taken off its machine contract and put on a Hetzner cloud server. Decided with t
   says one public thing to everyone (where the site is, or its front page).
 
 ## Where it stands
-The image is one assembly file's worth of system, 14,683 bytes, and behind it the site
+The image is one assembly file's worth of system, 14,747 bytes, and behind it the site
 (`tools/pack.py`): every file as the HTTP response it is sent as (and, where that is
 shorter, as the same compressed with gzip and brotli, and for each of these the 304
 that says "you have it"). Works, locally and on
@@ -74,7 +74,8 @@ for clients that scale theirs, requests of up to 4 KB in any number of segments,
 compressed form of a file for a client whose Accept-Encoding takes it, 304 for one
 whose If-None-Match names what it would get, 404, a redirect for a folder without its
 slash, "no" and a closed connection for other methods, keep-alive. Port 80 redirects to
-the site, or serves its front page. No memory is both written and executed.
+the site, or serves its front page. No memory is both written and executed, and a fault
+is the machine's end on every processor.
 `./k15 pack FOLDER`, `./k15 run`, `./k15 deploy HOST` (see Commands).
 
 On the server (cx23, 2 shared vCPUs; from a load generator 0.4 ms away; method in
@@ -144,13 +145,19 @@ after the other within an hour and a half):
   from Let's Encrypt for both names that `./k15 renew --force` got (65 s from the
   command to a verified fetch, the server away for about a minute of it), HSTS for a
   year, `--persist`. curl with the system's roots, Chrome and Firefox with their own,
-  `tlsprobe.sh` and `sitecheck.py` pass against it. The image is 24,614 bytes (since
-  2026-11-13, with the cipher that is ours to choose): 17,473 of system, of which
-  3,400 are the chain as Let's Encrypt sends it (four certificates), 7,141 of site:
+  `tlsprobe.sh` and `sitecheck.py` pass against it. The image is 25,084 bytes (since
+  late on 2026-11-13: four-block sealing, the calibrated clock, and that night's four
+  fixes): 17,943 of system, of which 3,400 are the chain as Let's Encrypt sends it
+  (four certificates), 7,141 of site:
   the page three times (1,738 bytes as it is, 943 with gzip, 698 with brotli, which is
   what a browser gets: one segment), the ETags and the answers that say "not
-  modified". (`--no-compress` would make it 21,927; the image before, 24,645 bytes,
-  is kept in `build-15kb.org-prev`, those before that, 24,376 and 20,114 bytes, in
+  modified". (`--no-compress` would make it 22,397; the image before, 24,614 bytes,
+  with the cipher that is ours to choose, is kept in `build-15kb.org-prev`: only its
+  os.bin, fetched back from the server's /boot/k15.bin. That evening `build-15kb.org`
+  and `build-15kb.org-prev` were gone from this folder, and every other `build-*` with
+  them, though the renewal timer had still found its pack.conf at 04:40; who removed
+  them is not known. `build-15kb.org` was packed again from `site/` and
+  `cert-15kb.org`, which were untouched. Older images, 24,376 and 20,114 bytes, are in
   `../k3`: `build-15kb.org` and `build-15kb.org-old`.)
 - **SSL Labs gives it an A** (2026-11-12; results kept off its boards): trusted in all
   five stores it looks at, no chain issues, TLS 1.3 only, forward secrecy, HSTS "with
@@ -177,7 +184,7 @@ after the other within an hour and a half):
 | TLS connections held over tap, 256 MiB VM (the night's image) | 144,000 of 144,000, each verified and fetched |
 | plain connections held over tap, 2 GiB VM (32-bit image, k15's first week) | 83,983,904 of 84,000,000 tried, each fetched twice |
 | connections opened and fetched per second over tap | ~80,000-100,000 (QEMU's packet path is the limit, not the guest) |
-| `tools/suite.sh`: 55 runs (loss 3%, MTU 300 and 600, reordering, both ciphers, a two-segment flight, HelloRetryRequest, sequence numbers that go round, a site of 80 files with and without TSO, a bottleneck, W^X, a million raw connections) | all pass on 1 and 2 processors; on 4, all but `raw1m_20k` when the host is that busy (3 of 3 alone) |
+| `tools/suite.sh`: 57 runs (loss 3%, MTU 300 and 600, reordering, both ciphers, a two-segment flight, HelloRetryRequest, sequence numbers that go round, a site of 80 files with and without TSO, a bottleneck, W^X and what else must be the machine's end, a client that vanishes, quiet connections that give way, a million raw connections) | all pass on 1 and 2 processors; on 4, all but `raw1m_20k` when the host is that busy (3 of 3 alone) |
 | the lossy runs many times over (2026-11-12, and again that night after the last change: 16 x 2,000 handshakes each of seven kinds, the site test 44 times) | none failed (the end of "Workflow" has the list) |
 | emulated (KVM=0) | boots in 7 s (the tables for the curves), `measure.sh` passes |
 
@@ -214,8 +221,37 @@ the plan. In the evening: post-quantum key exchange (X25519MLKEM768) is off the 
 as well, `seal` seals 64 bytes at a time with four-block AES (`aes4`) and four-block
 GHASH (`H^1..H^4`), and `clock` calibrates `rdtsc` against timer 2 at boot so timeouts
 are wall-clock time on any processor.
+Late on 2026-11-13 the user asked what Claude thought of the project, then said: run the
+suite, the live server may be used for it, and "if you find anything to improve do
+that". Found by reading the code beside its notes, each fixed with a test that fails
+without the fix:
+- "there is no IDT" was not so. Nobody had told the processors: each had the table the
+  BIOS left or the one it starts up with, at address 0, where the frame in hand lies.
+  Every processor is now given one of length nothing (`GDT`).
+- every secret came from `rdrand` unlooked-at. Each draw is now compared with the one
+  before (`rand`); a generator that is stuck is the machine's end.
+- a client that vanished in the middle of a response was sent to every 16 s for ever
+  and kept its place in the timer's queue. It is given up after a minute or two
+  (`tqrun`).
+- the race for a quiet slot ("Processors") is closed for everything a packet does; what
+  is left of it needs a processor with no idle moment for an hour.
+And the README says "IPv4" where it lists what there is not.
 
 **Next, in the order of what they are worth:**
+- **What the evening of 2026-11-13 does under load on the server** has not been
+  measured (Claude's to do or the user's to say no to: it costs a load generator for
+  an hour and the site its hour). Large files stood at 0.92 GB/s with sealing as the
+  limit, and a record is sealed in less than half the cycles now: `bench/files.sh`, in
+  turn with an image of commit 74fb37b packed for the address. And whether the `xchg`
+  that every packet of a connection now costs (some 20 cycles) shows in `bench/run.sh`.
+- **Evidence from outside** (Claude's suggestion of 2026-11-13; the user has not ruled
+  on it). Every test here was written beside the code it tests, and the four things of
+  that night were found by reading, none by a test. Wycheproof's vectors for X25519,
+  AES-GCM, ChaCha20-Poly1305 and HKDF against the host build (a download; for X25519
+  the scalar has to be clamped by the test, ours is used as it is); tlsfuzzer or
+  BoringSSL's runner against a running image; Valgrind over the host build with the
+  secrets marked undefined, which would check "nothing branches on a secret" where it
+  is now read.
 - **The chain** is the user's to shorten or not. Let's Encrypt sends four certificates
   (3,391 bytes: the leaf; YE1 or YE2; Root YE signed by ISRG Root X2; ISRG Root X2
   signed by ISRG Root X1). Leaf and intermediate alone verify nowhere: Root YE is in no
@@ -231,7 +267,8 @@ are wall-clock time on any processor.
   20,000, SHA-256 about 60,000, the rest records and TCP. OpenSSL's assembly does the
   ladder in 113,000 and the signature in 71,000 on the same machine: there is a fifth
   to be had.
-**Later.** DHCP instead of a baked-in address, taking out the reset knock, rings for
+**Later.** IPv6 (there is none: the README says so since 2026-11-13). DHCP instead of
+a baked-in address, taking out the reset knock, rings for
 the processors there are, Unikraft and F-Stack next to k15 (bench/README.md
 says what that takes), a retransmission timer that knows the round trip (it is 0.25 s
 whatever the path), zstd beside brotli (Python has it since 3.14; Safari does not
@@ -245,7 +282,11 @@ exchange (see Goal).
 A standard validating client gets server authentication, confidentiality, integrity and
 forward secrecy against a network attacker, and no packet makes the server leak its key:
 - a fresh X25519 secret and a fresh ECDSA nonce per handshake, from `rdrand`; a fresh
-  server random too (k2 reused the client's)
+  server random too (k2 reused the client's). Every draw is compared with the one before
+  it (`rand`): a generator that says the same twice is the machine's end, at boot,
+  before anything is signed. (The first Ryzen 3000s were sold with an `rdrand` that
+  said all ones and reported success: every nonce the same. `tools/wxtest.sh` plays
+  one. A generator that is wrong in subtler ways is not found out.)
 - a real ECDSA P-256 signature under a key that only exists in the image
 - a certificate chain clients verify (private CA by default, or a real chain dropped in)
 - the key is in the image and nowhere else that a network can reach: `./k15 renew` makes
@@ -259,6 +300,12 @@ forward secrecy against a network attacker, and no packet makes the server leak 
   can put into memory (frames, buffers, tables, the stack) is data that the processor
   refuses to run (`start`; `tools/wxtest.sh` does each forbidden thing and expects the
   machine's end)
+- a fault is the machine's end, on every processor: each is given a table of interrupt
+  handlers of length nothing (`GDT`; `start`, `apstart`). Left alone, a processor has
+  the table the BIOS left, or the one it is started up with: both at address 0, which
+  is where the frame in hand lies, so a fault would go where sixteen bytes of a
+  client's packet say (`tools/wxtest.sh`, 6 and 7: with such bytes there, the machine
+  went on)
 - a connection's key seals 2^24 records and the response in hand, then the connection is
   closed (RFC 8446, 5.5: no more than 2^24.5 under AES-GCM); we never change keys
 - what we send is a function of the image and the client's acks: no request leaves
@@ -303,9 +350,9 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   for its owner's eyes only (umask 077), and /boot/k15.bin on the server for root's.
 - `make` assembles `src/os.asm` into `build/os.bin` (loaded at 1 MiB) and `build/disk.img`
   (`src/boot.asm` + the image; what the tests boot), with the site of `www/` in it.
-  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 14,683,
+  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 14,747,
   about: boot, clock calibration, page tables, driver and the other processors 2,700,
-  network 4,250 with the timers, requests and the forms of a file 700, TLS handshake
+  network 4,300 with the timers, requests and the forms of a file 700, TLS handshake
   and key schedule 1,600, SHA-256 450, curves 3,000 with their programs and constants,
   the two ciphers 1,650, certificate 230; among them some 250 of padding in front of the
   routines a handshake spends its time in: see HOT in "How the curve code works". Of the
@@ -337,7 +384,7 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   none (a browser may not believe it there). OUT/site.json says what each path must
   return (for the tests), OUT/page80.bin what port 80 says.
 - `tools/suite.sh [JOBS] [name...]`: everything below, a few at a time, one line each
-  (55 runs, six minutes). `SMP=1` or `SMP=4` in front for other machines than the
+  (57 runs, seven minutes). `SMP=1` or `SMP=4` in front for other machines than the
   default of 2 processors. Its verdict is strict: one failed connection is a FAIL. Under
   a loaded host a run that overflows rings on purpose (`raw1m_20k`) can time out a few
   hundred of a million (on 4 processors it does every time the suite runs five at once):
@@ -362,11 +409,18 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   suite's site runs do.
   `ONLY=text` runs the checks with that in their name. `HOST=a.b.c.d PORT=443
   B=build-hz python3 tools/sitecheck.py quick` is the same against the server.
+  `GONE=1` in front (over tap; the suite's `site_gone`, three minutes) adds a client that
+  vanishes in the middle of a file: what it sends is dropped on its way out (`ip rule
+  add blackhole from` its address), the server's reset for it must be seen on the wire
+  between 50 and 170 s later, and a second client, which only stopped reading, must
+  still get its file after that.
 - Test images (make variables, each for its test): `ISNTOP=n ISNBITS=b` forces the top b
   bits (12) of every initial sequence number, so that what we send crosses 2^31 or 2^32
   (the suite's `*isn*` and `site_wrap*` runs); `KEYLIFE=n`: a connection's key seals 2^n
-  records (`site_keylife`); `WXTEST=n`: do one thing the page tables forbid
-  (`tools/wxtest.sh`: all five must be the machine's end); `WIN=n`: so many segments may
+  records (`site_keylife`); `WXTEST=n`: do one thing that must be the machine's end
+  (`tools/wxtest.sh`: 1 to 5 what the page tables forbid; 6 and 7 a fault while the
+  frame in hand reads as an interrupt gate to our own code, on the first processor and
+  on another; 8 a random number generator that says the same twice); `WIN=n`: so many segments may
   be on their way to begin with (10); `NOTSO=1`: a segment a frame, whatever the card
   offers; `BIGSH=n`: 2^n buffers a processor for the frames the card cuts (3; with 0 or
   1 a frame waits for the device to have sent the one before: the way to test that).
@@ -442,7 +496,12 @@ Unlike k2 this one faces the internet: anything a packet can make it do is in sc
   connections that end (five ways) give their slots back, and with `FLOOD=n` in front that
   SYNs, acks and data from clients that don't exist (`tools/flood.py`) take none. With
   `IDLE=0` as well, a connection quiet for a minute or two may be replaced (default: about
-  an hour): the way to test that rule. `TSHARE=n` gives the TLS table 1/2^n of the memory.
+  an hour). The test of that rule is `make B=build-small-idle1 CAP=1024 IDLE=1` (quiet
+  for more than one unit of 64 s) and `B=build-small-idle1 unshare -Urn ./tap.sh python3
+  tools/idletest.py`: the table for port 80 is filled, nobody new gets in, and 140 s
+  later 200 new connections each take a quiet one's place and none the place of the 32
+  that kept talking (three minutes; the suite's `idle`). `TSHARE=n` gives the TLS table
+  1/2^n of the memory.
 - `tools/bench.c` (`gcc -O2 -o build/bench tools/bench.c -lssl -lcrypto`) measures rates,
   of k15 and of what it is compared with: P processes with W connections each; a
   connection is made, does the TLS handshake (1.3, X25519, AES-128-GCM unless `SUITES` or
@@ -509,7 +568,10 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
   a deploy of anything else takes the site down, so put it back afterwards (`./k15
   deploy 2.28.113.14 build-15kb.org --persist --reset 'hcloud server reset k3'`). (The
   night of 2026-11-12 it was away four times for measurements, 45 minutes in all, and
-  a minute for its new image.)
+  a minute for its new image. Late on 2026-11-13, 17 minutes, from 22:12: a first
+  look with a `DEBUG=1 LIFE=8` image, the test site, then its new image.)
+  `build-15kb.org` must stay where it is: the renewal timer packs from its pack.conf,
+  and fails without it (`~/.local/bin/15kb-renew --dry-run` says whether it would run).
   On its Linux: /boot/k15.bin, the GRUB entry, the unit, certbot and its account
   (/etc/letsencrypt: no key of the site's).
 - The name: 15kb.org is the user's, at Namecheap, with Namecheap's name servers; `@` and
@@ -562,7 +624,7 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
   `hcloud server list` to see that nothing is left.
 - The image never answers ping; the user's reset button in the Hetzner console is the
   fallback if a build doesn't come up or the knock doesn't work. A fault resets the
-  machine by itself (there is no IDT), which boots Linux again; a hang does not.
+  machine by itself (nobody handles it: `GDT`), which boots Linux again; a hang does not.
 - Be modest with load from the user's home connection: load comes from a generator next
   to the server (above). From here, for a look: `B=build-hz DST=2.28.113.14:443 build/tapc
   0.0.0.0 20000 400 www/index.html`, and with `PLAIN=1 INFLIGHT=32` and `DST=...:80` for
@@ -599,7 +661,8 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
 
 ## Layout
 - `src/os.asm`: everything after the loader, and at its end the site (`incbin`). 64-bit
-  long mode, interrupts off, no IDT (a fault resets the machine), one polling loop per
+  long mode, interrupts off, a table of interrupt handlers of length nothing on every
+  processor (a fault resets the machine), one polling loop per
   processor. Start-up, in 32-bit code as the loader leaves us: everything of ours below
   the table space zeroed, page tables for it (who may write and execute what), long
   mode. Then: the memory map into page tables (below), the table space zeroed and divided,
@@ -643,7 +706,8 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
   `keys`, `hmac`, `expand`; `sha256`/`shablk`; `seal` with `ks64`, `chacha`, Poly1305,
   `aeskey`, `aes4`, `gh1` and four-block GHASH.
 - `xdh`, `sign`, `stock`, `binv`, `comb`, `select`, `vm`, `fas`, `fmul`, `inv`, `ecinit`:
-  the curves, see below.
+  the curves, see below. `rand`: what is random (`rdrand`, each draw compared with the
+  one before).
 - `tools/ec.py`: the curve code's other half: the programs, and a model of the arithmetic
   that the asm must match number for number. Read its docstring before touching either.
 - `tools/gen.py`: certificate, curve programs and constants -> `build/*.inc`.
@@ -651,9 +715,12 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
   `tools/mkdisk.py`: the baked-in address, the disk image. `k15`: the tool on top.
 - `tools/mksite.py`, `tools/sitecheck.py`, `tools/sitetest.sh`, `tools/wxtest.sh`,
   `tools/jcc.py`, `tools/tlsprobe.sh`, `tools/k15test.sh`: the test site and its checker,
-  the W^X test, the jumps on boundaries, a scanner's questions, the tool's own test.
+  the W^X test (and what else must be the machine's end), the jumps on boundaries, a
+  scanner's questions, the tool's own test.
   `tools/bneck.sh`, `tools/bnecktest.sh`, `tools/tl.py`: a bottleneck between guest and
   client, the test that uses it, a download's timeline from a capture.
+  `tools/churn.py`, `tools/flood.py`, `tools/idletest.py`: slots given back, slots not
+  given to clients that don't exist, slots taken from connections long quiet.
 - `tools/vm.sh`: QEMU command line and curl options, sourced by the test scripts
 - `tools/bench.c`, `bench/`: the comparison with other servers (see Commands)
 - `tools/ffcheck.py`, `tools/nssdb.py`, `tools/certerr.py`: the browser checks' helpers
@@ -722,9 +789,27 @@ and while it waits for the transmit lock or a free transmit buffer).
   real mode straight to long mode); each takes a number with `lock xadd`. Frames go to
   the largest power of two of them (`NCPUM`). With one processor nothing changes but the
   uncontended lock.
-- Not closed: a slot given up for being idle (full table, an hour of silence) is taken by
-  another processor's `cmpxchg` while a packet of the idle connection could be arriving
-  on its own processor in the same microsecond.
+- A slot that changes hands between processors (a connection quiet for an hour, in a
+  full table) does so in one step on each side. The taker's `cmpxchg` asks for the slot's
+  first eight bytes as it saw them in one look (`find.used`), C_AGE among them, and puts
+  its own there, C_AGE included (`tcp.make`). The owner, before it does anything with a
+  packet of that connection, changes C_AGE with an `xchg` and then looks whether the slot
+  still is its connection's (`tcp`, after `find`). So one of the two finds out: the taker
+  that the slot is not as it was (it gets nothing, and its packet comes again), or the
+  owner that it has no connection (its packet is as good as lost). A slot quiet for all
+  of 255 units is not taken: a packet of its own, a unit on, would leave C_AGE as it is.
+  (Until 2026-11-13 this stood here as "not closed": the owner wrote C_AGE with a plain
+  store some instructions after finding the slot, the taker read C_AGE and the eight
+  bytes one after the other, and a new slot got its C_AGE after it was made: three
+  windows of tens of nanoseconds in which two processors could each take a slot for
+  theirs. What one of them then did with the other's slot, keys included, nobody had
+  worked out; with a table to fill and an hour to wait, a client could at least ask for
+  the conditions.)
+- Not closed: `tqrun` works on a slot it has looked up without saying "in use" (it can't:
+  C_AGE is when the client was last heard, which is what it goes by). For that to meet a
+  taker, a connection that waits for an ack must have been quiet for over an hour, and
+  such a one is given up after two minutes, if `tqrun` runs at all: it takes a processor
+  with no idle moment for an hour, and a full table.
 
 ## How TCP works here
 No copy of what was sent, except the handshake flight: everything else is made again
@@ -791,7 +876,16 @@ bytes.
   boot; twice as long for every time in vain, up to 16 s): to the back. Old enough: if
   the client has everything by now, that is that; if its ack has moved, back into the
   queue; if not, the segment at its ack goes again (and half as many may be on their
-  way). As with SYN-ACKs: only when idle.
+  way). As with SYN-ACKs: only when idle. And not for ever: after six times in vain
+  (16 s), a client from which nothing at all has come for more than a unit of C_AGE (a
+  minute or two) has gone: it is sent a reset, and its slot is free. One that takes no
+  more for now but answers when it is sent to stays, as in TCP. (Until 2026-11-13 a
+  client that vanished in the middle of a response was sent to every 16 s for as long
+  as the server was up, and kept its place in the queue, which has 4 n of them, 65,536
+  a processor on the server: with all of them taken, by clients that asked for a file
+  and went, nobody's timer ran, and what was sent in vain was 1.5 KB every 16 s for
+  each. The reset has the number we got to, `C_SND`: a client that lacks some of what
+  we sent does not take it, RFC 5961. For one that has gone that is all the same.)
 - A request for the next response is taken only when the client has acknowledged all of
   this one. One that comes earlier (two requests at once) is as good as not arrived, and
   what follows it in its segment too: the client sends it again (`.busy`).
@@ -948,7 +1042,11 @@ The old way, and what both share:
   with clients that vanished: a slot whose connection has been quiet for more than `IDLE`
   (64 units of 64 s, 68 minutes; `C_AGE` is a byte of that clock) is taken if
   there is no free one. (It was "the quietest of 16 goes": that pushed out held
-  connections from half full on.)
+  connections from half full on.) `tools/idletest.py` tests the rule (the suite's
+  `idle`): a full table, nobody quiet, no room; two minutes on, 200 new connections
+  each in a quiet one's place, and none in the place of one that kept talking. A
+  connection that gave way and had never been sent anything but its SYN-ACK is made
+  again by its next packet: its ack still is a valid cookie.
 - A slot is freed by a RST with the expected sequence number, and by a FIN: it gets our
   FIN, and if the client had everything we sent, the slot is free at once (a lost FIN of
   ours means the client's next FIN gets a RST). If the client still lacks something, the
@@ -1331,6 +1429,31 @@ segment a frame, no window scaling, no compression, no conditional requests.
   on it got ChaCha20-Poly1305 from us, the one we are slow at, and the benchmark
   anybody would run said half of what a browser gets. A client without AES in its
   processor puts ChaCha20 first: that order is the one to believe.
+- "There is no IDT" was a sentence, not a state. A processor always has a table of
+  interrupt handlers: the one the BIOS left it (address 0, 1 KiB), or the one it is
+  started up with (address 0, 64 KiB), until it is told another. And address 0 is where
+  we keep the frame in hand, so a fault went where sixteen bytes of a client's packet
+  said: with a gate to our own code written there, the machine carried on from it, on
+  the first processor and on the second. No test had asked: `wxtest.sh` did its
+  forbidden things before a frame had come, when page 0 held nothing a processor takes
+  for a gate. Found by asking QEMU what each processor has (`info registers -a` in its
+  monitor: `IDT= 0000000000000000 000003ff`), which takes ten seconds and had not been
+  done. What the README says the machine is, ask the machine.
+- A timer that sends again needs an end. A client that asked for a file and vanished
+  was sent to every 16 s for as long as the server ran, and its place in the queue of
+  waiting connections never came free: 131,072 such clients, twenty seconds' work for
+  one machine, and nobody's timer ran again. Every test's client either answered or
+  reset.
+- A test's client is a TCP too, with rules of its own. The test for the above waited
+  for the client's socket to see the server's reset and waited in vain: Linux takes a
+  reset only if its number is exactly the next one it expects (RFC 5961) and answers
+  any other with an ack. And the test that counts connections that gave way counted
+  none: one that has never been sent anything but its SYN-ACK is made again by its next
+  packet (that is what a SYN cookie is). Look at the wire (a packet socket in tap.sh's
+  namespace: tools/sitecheck.py's `vanish`) before believing either side's sockets.
+- Running other virtual machines beside a suite makes `raw1m_20k` fail on four
+  processors (734 of a million timed out; alone, 3 of 3 passed). A separate worktree
+  keeps the source apart, not the processors.
 
 ## Tried and rejected
 - Compressed EC point in the leaf: Firefox says SEC_ERROR_UNSUPPORTED_EC_POINT_FORM.
@@ -1391,6 +1514,21 @@ segment a frame, no window scaling, no compression, no conditional requests.
   not to be built (the user, 2026-11-13). What a lossy client costs would hang on what
   a flood of ClientHellos leaves of those buffers, and a static site is fast enough
   without.
+- Mixing the private key into every nonce through SHA-256, so that a generator that is
+  wrong in subtler ways than repeating itself would not give the key away: `stock`
+  runs inside `sign` when the stock is empty, in the middle of a handshake whose hash
+  is in the registers it would need, and a generator that says the same after every
+  boot would want something else that differs from boot to boot. Not built: `rand`
+  catches the failure that has been seen, a generator that is stuck.
+- Saying "in use" from `tqrun` as `tcp` does (changing C_AGE): C_AGE is when the client
+  was last heard, which is what `tqrun` gives a connection up by. And resetting from
+  `tqrun` whatever has been quiet for a minute, however often it was sent to: after a
+  minute without an idle moment (a benchmark) that would reset connections that were
+  never sent to again at all.
+- The server's reset for a connection it gives up, with a number the client is sure to
+  take: we know the client's ack, not what it has received since, and Linux takes a
+  reset only at exactly the next number it expects. `C_SND` it is: right for a client
+  that has everything we sent, and for one that has gone it does not matter.
 
 ## Workflow
 `./measure.sh` after every change (ten seconds; also once each with `DEBUG=1`, `KNOCK=`
@@ -1413,7 +1551,9 @@ could behave differently on a real machine, and `bench/run.sh` from a load gener
 (bench/README.md), in turn with the image before, for anything that could change what it
 does under load.
 Commit when the user asks. (The night of 2026-11-11 was worked on a branch, `night`, with
-a commit per step, because nobody was there to ask.) Don't change the source or a test
+a commit per step, because nobody was there to ask.) Since 2026-11-13 the user has
+asked for good: "you can always commit and push". What has been through the tests this
+section names for its kind goes onto `main` and is pushed. Don't change the source or a test
 script while a suite runs in the background: it calls make as each run starts.
 
 The lossy runs of 2026-11-12, after the last change to the code:
@@ -1441,3 +1581,25 @@ The lossy runs of 2026-11-12, after the last change to the code:
   fails where it always has: at the page on port 80, which shows the counters).
 - on 2026-11-13, after the cipher rule (`handshake` alone was touched): `measure.sh`
   with its new checks and the suite, 55 of 55. Not the lossy runs many times over.
+- late on 2026-11-13, for the commit of that evening (four-block `seal`, the calibrated
+  clock), which had been through `make test` and `measure.sh`, and for the four fixes
+  made after it (`start`, `apstart`, `rand`, `tqrun`, `tcp` after `find`, `tcp.make`,
+  `find.used`). The evening's commit alone: the suite, 55 of 55 on 2 processors and on
+  1, on 4 all but `raw1m_20k` (3 of 3 alone). With the fixes: `make test`; `measure.sh`,
+  also with `KNOCK=` and `LIFE=` images (a `LIFE=1` image ends after 60 s and a knocked
+  one at once: `reset` no longer loads a table of its own), with `DEBUG=1` failing
+  where it always has; the suite, 57 of 57 on 2 and on 1, on 4 all but `raw1m_20k` (45
+  of a million timed out with four runs at once; 3 of 3 alone); the seven kinds of
+  handshake, 16 runs of 2,000 each: none of 224,000 failed; the site test over tap
+  (`quick`), 4 runs each at 3% loss, with reordering, with MTU 600 at 3% loss and
+  across 2^31 at 3% loss, 3 on one processor at 5% loss and 3 on four at 3%: 22 runs,
+  every check of every run passed. On the server: a `DEBUG=1 LIFE=8` image (both
+  processors take frames and answer; it ended 480 s after it came up, so the clock is
+  calibrated there: on 2^20 cycles a tick it would have been 491 s), the test site
+  (`sitecheck.py quick` and `tlsprobe.sh` from here, Firefox and Chrome with its CA),
+  then 15kb.org on the new image: the same two, the headers of each kind of answer,
+  Firefox and Chrome with their own roots, back by itself 87 s after a reset, and SSL
+  Labs: A, no warnings. Not run: `bench/run.sh` and `bench/files.sh` from a load
+  generator (Plan, "Next"). All of it took two and a half hours, most of them waiting:
+  the suites can't share the machine, and three of the new tests wait for C_AGE's
+  units of 64 s.

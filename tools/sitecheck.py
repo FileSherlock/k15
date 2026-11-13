@@ -15,6 +15,7 @@ holds.
 Environment: B (build directory, default build), HOST and PORT (default 127.0.0.1:8443;
 over tap: HOST=10.0.2.15 PORT=443), SRC (address to connect from), T (seconds to wait
 for anything, default 20). With "quick" as argument: fewer fetches of the large file.
+GONE=1 (over tap only): also a client that vanishes, which takes three minutes.
 """
 import hashlib
 import json
@@ -47,14 +48,14 @@ def context():
 class Conn:
     """A TLS client over a TCP socket we also hold: so a record can be sent in pieces."""
 
-    def __init__(self, mss=None, rcvbuf=None):
+    def __init__(self, mss=None, rcvbuf=None, src=None):
         self.sock = socket.socket()
         if mss:
             self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_MAXSEG, mss)
         if rcvbuf:
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
-        if SRC:
-            self.sock.bind((SRC, 0))
+        if src or SRC:
+            self.sock.bind((src or SRC, 0))
         self.sock.settimeout(T)
         self.sock.connect((HOST, PORT))
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -445,6 +446,47 @@ def main():
             return ok and same(c2.response(), paths["/"])
 
         check("a connection whose key has sealed its share of records is ended after the response in hand", key_life)
+
+    # A client that vanishes in the middle of a file, and one that only stops reading (GONE=1:
+    # over tap, as root in tap.sh's namespace; two or three minutes). What the first sends
+    # from then on is dropped on its way out, so the server hears nothing more of it, while
+    # what the server sends still arrives: it is sent to again for a while and then given
+    # up, with a reset. That reset is watched for on the wire: the client's own TCP need not
+    # take it (its number is the last one the server got to, which is the client's next only
+    # if all of that arrived). The second client takes nothing more either, but says so
+    # whenever it is sent to: it must still be there afterwards, and get its file.
+    if os.environ.get("GONE"):
+        def vanish():
+            src, held = "10.0.2.40", "/size/70000.bin"
+            resets = []                 # (when the server reset the one that vanished)
+
+            def watch():
+                s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0800))
+                a, b = socket.inet_aton(HOST), socket.inet_aton(src)
+                while not resets:
+                    f = s.recv(2048)
+                    if f[23] == 6 and f[26:30] == a and f[30:34] == b and f[14 + (f[14] & 15) * 4 + 13] & 4:
+                        resets.append(time.time())
+
+            threading.Thread(target=watch, daemon=True).start()
+            stays = Conn(rcvbuf=4096)
+            stays.get(held)
+            c = Conn(rcvbuf=4096, src=src)
+            c.get(big)
+            time.sleep(1)               # (the window of each is shut by now)
+            subprocess.run(["ip", "rule", "add", "blackhole", "from", src], check=True)
+            t0 = time.time()
+            while not resets and time.time() - t0 < 170:
+                time.sleep(0.5)
+            subprocess.run(["ip", "rule", "del", "blackhole", "from", src])
+            if not resets or resets[0] - t0 < 50:
+                raise AssertionError("given up after %.0f s" % (resets[0] - t0) if resets else "not given up in 170 s")
+            ok = same(stays.response(), paths[held])    # (it has waited all that time)
+            c2 = Conn()
+            c2.get("/")
+            return ok and same(c2.response(), paths["/"])
+
+        check("a client that vanishes is given up after a minute or two, one that only stops reading is not", vanish)
     check("and after all that, the page", lambda: fresh() or True)
     print("FAILED: " + "; ".join(FAILED) if FAILED else "all ok")
     return 1 if FAILED else 0

@@ -84,7 +84,6 @@ TRAMP   equ 0x8000          ; where the others start, in real mode (`tramp` is c
 TXLOCK  equ 0x9F00          ; held from `txbuf` to `txgo` (not in the page of TRAMP: that one
 NCPUM   equ 0x9F04          ; is code); how many processors take frames, less 1 (a power of two, less 1)
 KST     equ 0x9F08          ; reset knock: 1 after the first port (development builds)
-NOIDT   equ 0x9F10          ; ten zero bytes: an IDT with nothing in it (`reset`)
 TXCNT   equ 0x9F20          ; how many frames have ever been queued for sending (a qword: `txgo`)
 %ifndef HOST
 APMEM   equ 0x900000 + LOW  ; for each other processor 32 KiB: four page tables, its page 0,
@@ -182,6 +181,7 @@ TQTRY   equ NV + 184        ;   and (a byte) how often the one in hand has been 
 TSO     equ NV + 188        ; not 0: the card cuts a frame of ours into segments and sums them
 BIGN    equ NV + 192        ; so many such frames this processor has made (`txbig`),
 TSCM    equ NV + 200        ; 2^64 / cycles per tick of 1/2048 s (calibrated at boot)
+RLAST   equ NV + 208        ; what the processor's random number generator said last (`rand`)
 BIGQ    equ BSS + 0x0F100   ;   and for each of its buffers a count of frames queued (TXCNT)
                             ;   that is past the one it last held (qwords)
 HKS     equ BSS + 0x0F400   ; the eleven round keys of `prf`, made at boot
@@ -354,6 +354,16 @@ DBG     equ BSS + 0x0F500
 %ifndef DEBUG
 %define tcpd tcp            ; (the polling loops call `tcp` through what counts its cycles)
 %endif
+; WXGATE label (make WXTEST=6 or 7, for tools/wxtest.sh): what a table of interrupt handlers
+; at address 0 would have for an invalid instruction, at 16 times its number: a gate to
+; `label`, which is in our code. Then such an instruction. A processor that has no such
+; table can't go on from there: the machine's end. (See `GDT`.)
+%macro WXGATE 1
+        mov dword [abs 6*16], ((0x100000 + (%1 - mb)) & 0xFFFF) | 8 << 16
+        mov dword [abs 6*16+4], 0x8E00 | ((0x100000 + (%1 - mb)) >> 16 << 16)
+        and qword [abs 6*16+8], 0
+        ud2
+%endmacro
 
 %ifdef HOST
 BITS 64
@@ -370,10 +380,11 @@ mb:     dd 0x1BADB002, 0x00010002, -(0x1BADB002 + 0x00010002)
 start:                          ; Entered in 32-bit protected mode by whoever loaded us at 1 MiB
         cli                     ; (boot.asm, GRUB's or QEMU's multiboot), with ebx = what a
         cld                     ; multiboot loader tells its kernel: the memory map is what we
-        mov edi, BSSN           ; need of it. Nothing else is assumed: our own page tables,
-        mov ecx, (TABV - BSSN) / 4 ; segments and stack, and memory we zero ourselves: first
-        xor eax, eax            ; all that is ours below the table space. The top table and
-        rep stosd               ; the next one have one entry each for now (the rest is
+        lidt [GDT]              ; need of it. Nothing else is assumed: no interrupt handlers
+        mov edi, BSSN           ; (a table of them of length nothing: see `GDT`), our own page
+        mov ecx, (TABV - BSSN) / 4 ; tables, segments and stack, and memory we zero ourselves:
+        xor eax, eax            ; first all that is ours below the table space. The top table
+        rep stosd               ; and the next one have one entry each for now (the rest is
         mov dword [PML4], PDPT0 + 3 ; filled in from long mode), and the first page directory
                                 ; maps the first 16 MiB as they are
         mov dword [PDPT0], PDT + 3
@@ -791,12 +802,9 @@ shaconst:
         mov word [rdx], 0       ; notify queue 0: there are buffers
 
         mov edi, HKS            ; the round keys for `prf`
-        push 44
+        push 22
         pop rcx
-.hk:    rdrand eax
-        jnc .hk
-        stosd
-        loop .hk
+        call rand
 
         mov ecx, 1 << 26        ; Calibrate the clock against timer 2 (1,193,182 Hz):
         mov bl, 2               ; 9,322 ticks are 1/128 s, or 16 of our ticks of 1/2048 s
@@ -933,6 +941,8 @@ shaconst:
         mov eax, RXB            ; a packet buffer executed
         mov byte [rax], 0xC3
         call rax
+%elif WXTEST = 6                ; a fault, with a handler for it named where the frame in hand
+        WXGATE .poll            ; lies (as a client's packet could name one)
 %endif
 %endif
         jmp .poll
@@ -1105,11 +1115,17 @@ apstart: mov esp, STACK
         mov ds, eax
         mov es, eax
         mov ss, eax
+        lidt [GDT]              ; (no interrupt handlers here either: see `GDT`)
         mov eax, [CPUN]
         imul eax, [RSTEP]
         add [TQB], eax          ; (its own queue of waiting connections, and its own ring)
         add eax, [RBASE]
         mov [MYRING], eax
+%ifdef WXTEST
+%if WXTEST = 7                  ; (the same on a processor that was started up: its table is
+        WXGATE .poll            ; at address 0 whatever loaded us)
+%endif
+%endif
 .poll:  call ring1
         jnz .poll
         call txkick
@@ -1146,8 +1162,7 @@ tcpd:   rdtsc                   ; (`tcp`, with the cycles spent on frames, and h
 ; reset: the machine starts over (development builds only: the knock, and LIFE)
 reset:  mov al, 0xFE
         out 0x64, al            ; keyboard controller: pulse the reset line
-        lidt [abs NOIDT]        ; (and if that does nothing: no IDT, then a fault)
-        int3
+        int3                    ; (and if that does nothing: a fault, which nobody handles)
 %endif
 
 ; pcird: eax = PCI configuration dword at register eax of the device at ebx (dx = 0xCFC after)
@@ -1391,7 +1406,17 @@ tcp:
         mov dl, [rbx+P_FL]
         call find               ; ebp = the connection's slot; or, if it has none, eax = -1
         sbb eax, eax            ; and ebp = a slot for a new one (0: there is no room)
-        test dl, 4
+        jnz .slot
+        mov al, [NOW]           ; Its slot. If the connection has been quiet for an hour and
+        xchg [rbp+C_AGE], al    ; there is no room, another processor may be taking the slot
+        mov eax, [rbx+P_IP]     ; for one of its own this very moment (`find`). So first we
+        cmp eax, [rbp+C_IP]     ; say "in use", in one step (xchg): C_AGE is one of the eight
+        jne .gone               ; bytes the other asks for, which then are not as it saw
+        mov ax, [rbx+P_PORTS]   ; them, and it gets nothing. And then we look whether the
+        cmp ax, [rbp+C_PORT]    ; slot still is ours: if the other got there first, this
+        jne .gone               ; packet is as good as lost.
+        xor eax, eax
+.slot:  test dl, 4
         jz .nrst
         inc eax                 ; RST: if it is the next thing its connection expects, that
         jz .ret                 ; was the connection
@@ -1399,7 +1424,7 @@ tcp:
         cmp eax, [rbp+C_NXT]
         jne .ret
 .free:  and dword [rbp+C_IP], 0
-        ret
+.gone:  ret
 .nrst:  test dl, 2
         jz .nsyn
         test dl, 16
@@ -1518,11 +1543,13 @@ tcp:
         jmp .rst
 .make:  test rbp, rbp
         jz .full
-        movzx edi, word [rbx+P_PORTS] ; The slot becomes this connection's in one step, if
-        shl rdi, 32             ; it still is as `find` saw it: another processor may have
-        mov eax, [rbx+P_IP]     ; taken it since, for a connection of its own. (Then this
-        or rdi, rax             ; packet is as good as lost, and will come again.)
-        mov rax, [CLAIMQ]
+        movzx edi, byte [NOW]   ; The slot becomes this connection's in one step, if it still
+        shl edi, 24             ; is as `find` saw it: another processor may have taken it
+        mov di, [rbx+P_PORTS]   ; since, for a connection of its own. (Then this packet is as
+        shl rdi, 32             ; good as lost, and will come again.) Its first eight bytes:
+        mov eax, [rbx+P_IP]     ; the client's address and port, no flags, and the time
+        or rdi, rax             ; (C_AGE): from that step on it is not one that has long
+        mov rax, [CLAIMQ]       ; been quiet, for anybody to take
         lock cmpxchg [rbp], rdi
         jne .ret
         mov eax, [HKO+12]       ; (its SYN-ACK has arrived: `tnote`)
@@ -1552,11 +1579,9 @@ tcp:
         mov [rbp+C_SND], eax
         mov [rbp+C_ACK], eax
 
-.est:   mov al, [NOW]
-        mov [rbp+C_AGE], al
         ; The client's ack counts if it is in [C_ACK, C_SND]. edx = 1: it lacks something we
         ; sent, 2: and says so with the same ack as before, 0: neither
-        xor edx, edx
+.est:   xor edx, edx
         mov [rbx+P_ADV], edx
         mov eax, [rbx+P_ACK]
         sub eax, [rbp+C_ACK]    ; how much further than before
@@ -2571,7 +2596,11 @@ tarm:   pushad
 ; that is that; if its ack has moved since, it joins the queue afresh; if not, what it
 ; asks for is sent again, as for a client that asks (E_RTO in `tcp.tx`). Only when there
 ; is nothing else to do: while frames wait in our ring, the client's ack may be one of
-; them. (Clobbers everything.)
+; them. And not for ever: after six times in vain, a client from which nothing at all has
+; come for a minute or two (C_AGE) is told that its connection is no more, and it is no
+; more. (Or every client that vanished in the middle of a response would be sent to every
+; 16 s for as long as we are up, and keep one of the queue's 4 n places: with all of them
+; taken, nobody's timer runs.) (Clobbers everything.)
 tqrun:  mov eax, [TQH]
         cmp eax, [TQT]
         je .none
@@ -2624,7 +2653,11 @@ tqrun:  mov eax, [TQH]
 .vain:  inc ecx
         cmp cl, 6
         jbe .t
-        mov cl, 6
+        mov cl, 6               ; (16 s at a time from here on.) And a client that has said
+        mov al, [NOW]           ; nothing at all for a minute or two while we sent to it in
+        sub al, [rbp+C_AGE]     ; vain has gone: that was the connection. (One that takes
+        cmp al, 2               ; no more for now, and says so each time it is sent to,
+        jae tcp.reset           ; stays.)
 .t:     mov [TQTRY], cl
         call tcp.tx
         mov byte [TQTRY], 0
@@ -2746,6 +2779,13 @@ clock:  call tsc
 ; connection in them that has been quiet for the longest, if that is longer than IDLE (about
 ; an hour): such a client has probably gone without saying so. If none has, the new one is
 ; refused.
+; The processors take slots from each other, and a slot changes hands in one step: its
+; first eight bytes (address, port, flags, C_AGE) become the new connection's if they still
+; are as they were seen here (`tcp.make`). The processor whose connection it was says "in
+; use" in one step as well, by changing C_AGE, before it does anything else with a packet
+; of that connection, and then looks whether the slot still is that connection's (`tcp`,
+; after it has called us). So one of the two finds out: the new connection that the slot
+; is not as it was, or the old one that it has none.
 find:   pushad
         xor esi, esi
         call prf
@@ -2809,14 +2849,20 @@ find:   pushad
         inc edx
         jmp .nx
 .used:  push rax
-        mov al, [NOW]
-        sub al, [rbp+C_AGE]     ; how long it has been quiet
-        cmp al, bh
-        jbe .young
+        mov rax, [rbp]          ; One look at it: what a new connection then asks for (`.make`
+        push rax                ; in `tcp`) is the slot as it was found quiet, to the bit.
+        shr rax, 56             ; (its C_AGE)
+        sub al, [NOW]
+        neg al                  ; How long it has been quiet: longer than the longest so far?
+        cmp al, bh              ; (But not all of 255 units: the next packet of its own, a
+        jbe .not                ; unit on, would leave C_AGE as it is, and it is by changing
+        cmp al, 255             ; C_AGE that its processor says "in use": see `tcp`.)
+        je .not
         mov bh, al
         mov rsi, rbp
-        mov rax, [rbp]
-        mov [CLAIMQ], rax
+        pop qword [CLAIMQ]
+        jmp short .young
+.not:   pop rax
 .young: pop rax
 .nx:    add rbp, rcx
         dec dh
@@ -3306,20 +3352,14 @@ handshake:
         pop rsi
         mov edi, E              ; a fresh secret: our X25519 scalar
         mov cl, 4
-.rnd:   rdrand rax
-        jnc .rnd
-        stosq
-        loop .rnd
+        call rand
         movzx edx, byte [rsi+38] ; session id length
         mov edi, ebx
         lea ecx, [rdx+39]
         rep movsb               ; ServerHello: as the ClientHello up to its session id,
         lea edi, [rbx+6]
         mov cl, 4
-.rs:    rdrand rax              ; but with a random of our own, ...
-        jnc .rs
-        stosq
-        loop .rs
+        call rand               ; but with a random of our own, ...
         lea edi, [rbx+rdx+39]
         mov esi, SHTAIL
         mov cl, 19
@@ -3977,6 +4017,28 @@ sign:   pushad
         popad
         ret
 
+; rand: ecx times 64 random bits to rdi (which moves on), from the processor's generator:
+; every secret there is but the key in the image. (Clobbers rax; ecx = 0 after.) Each is
+; compared with the one before it. A generator that says the same twice is stuck, and then
+; this is the machine's end: every nonce would be the same, which gives the key away. (It
+; has happened: processors were sold in 2019 whose rdrand said all ones every time, and
+; that this was a success. The first draw is compared with zero, which is what a generator
+; stuck there would say.)
+rand:   rdrand rax
+        jnc rand
+%ifdef WXTEST
+%if WXTEST = 8                  ; (make WXTEST=8, for tools/wxtest.sh: a generator that is
+        or rax, -1              ; stuck the way those were)
+%endif
+%endif
+        cmp rax, [RLAST]
+        je .stuck
+        mov [RLAST], rax
+        stosq
+        loop rand
+        ret
+.stuck: ud2
+
 ; stock: one step towards the next NPOOL nonces k with their r = x(k G) (POOLR) and R^2 / k
 ; (POOLK): either one more k and its k G, or, when all are there, the divisions: two for
 ; all of them (`binv`). The polling loop does a step whenever it has nothing else to do and
@@ -3990,10 +4052,7 @@ stock:  mov ebx, [POOLFILL]
         lea edi, [rbx+POOLK]
         push 4
         pop rcx
-.rnd:   rdrand rax
-        jnc .rnd
-        stosq
-        loop .rnd
+        call rand
 %ifdef HOST
         cmp ebx, (NPOOL - 1) * 32 ; (the tests choose the nonce that is used first)
         jne .k
@@ -5096,6 +5155,13 @@ SIGMA:  db "expand 32-byte k"
 CVCTX:  db "TLS 1.3, server CertificateVerify", 0
 L_HRR:  db "HelloRetryRequest"
 %include "regs.inc"
+; The segments. Their table's first ten bytes, all zero, are also what every processor is
+; given as its table of interrupt handlers (`start`, `apstart`): read as such a table's
+; length and place they say "of length nothing". There are no handlers: whatever faults
+; can't be delivered, nor can that, and the machine starts over. A processor that is not
+; told so has the table the BIOS left it, or the one it is started up with: at address 0,
+; which is where the frame in hand lies. A fault would then go where sixteen bytes of a
+; client's packet say (tools/wxtest.sh, 6 and 7).
 GDT:    dq 0
         dq 0x00209A0000000000   ; 8: code, 64-bit
         dq 0x0000920000000000   ; 16: data

@@ -25,22 +25,25 @@ For a site that is meant to stay (`--reset`: how the server gets back into its L
 
 What you get, and what you don't:
 
-- **Small.** The system is 14,683 bytes. The image is that plus your files, each stored
+- **Small.** The system is 14,747 bytes. The image is that plus your files, each stored
   as the response it is sent as (and, where that makes it shorter, once more compressed
   with gzip and with brotli, for clients that take that).
 - **Nothing to break into.** No kernel, no shell, no file system, no user accounts, no
   way to log in, no outgoing connections, no parser but the ones for a TLS record and a
   request line. Only the code is executed, and nothing that is written (not a packet,
   not the stack) can be: the page tables say so, and a test makes sure. There are no
-  fault handlers: a fault resets the machine.
+  fault handlers, and every processor is told so: a fault resets the machine.
 - **Secure where it counts.** TLS 1.3 only (older clients are told so), X25519, ECDSA
   P-256, ChaCha20-Poly1305 and
   AES-128-GCM, a fresh key and a fresh nonce for every handshake, forward secrecy for
   every connection, and curve arithmetic and ciphers that neither branch on nor index
-  with anything secret. Port 80 only says where the site is.
+  with anything secret. What is random comes from the processor's generator, and each
+  draw is compared with the one before: a generator that repeats itself (some have)
+  stops the machine before it signs anything. Port 80 only says where the site is.
 - **Cheap to hold open.** A TLS connection costs 128 bytes, however large the file it is
   fetching: what was sent is never stored, it is made again from the image if it gets
-  lost. A SYN from an address that does not answer costs nothing.
+  lost. A SYN from an address that does not answer costs nothing, and a client that
+  vanishes in the middle of a file is given up after a minute or two.
 - **Fast at what a site is made of.** On a cloud server with two shared virtual
   processors (a Hetzner cx23): 7,500 to 9,000 new TLS 1.3 connections a second,
   depending on the hour, each with a full handshake: twice what nginx with BoringSSL
@@ -60,7 +63,8 @@ What you get, and what you don't:
   be run from cron, does nothing until the certificate has a month left, and then makes
   the new key on your machine: only a request for a certificate travels to the server.
   One site per server, one address
-  baked in, GET and HEAD and nothing else, requests of up to 4 KB, nothing compressed
+  baked in (IPv4: there is no IPv6), GET and HEAD and nothing else, requests of up to
+  4 KB, nothing compressed
   that was not packed that way, no ranges, TLS 1.3 clients only. Of a request's
   headers two are read: Accept-Encoding and If-None-Match (a client that has a file is
   told so).
@@ -78,7 +82,7 @@ everything measured so far.
 make                 # -> build/os.bin and build/disk.img with the site of www/ (the first build makes cert/)
 ./measure.sh         # boot it in QEMU, fetch with curl (certificate verified), play the hostile client
 make test            # the crypto against pyca/cryptography and the model in tools/ec.py
-tools/suite.sh       # all 55 regression runs: loss, reordering, scale, browsers, a site of 80 files
+tools/suite.sh       # all 57 regression runs: loss, reordering, scale, browsers, a site of 80 files
 tools/sitetest.sh    # that site alone: every path, every kind of client
 unshare -Urn ./tap.sh ./taprunc.sh 2000 1024 4   # 8,000 connections from 4 source IPs
 gcc -O2 -o build/rawc tools/rawc.c

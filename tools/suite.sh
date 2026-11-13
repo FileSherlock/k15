@@ -51,6 +51,9 @@ T[raw_4g]='MEM=4096 unshare -Urn ./tap.sh build/rawc 2000000'
 T[tls_4g]="MEM=4096 $TLS"
 T[churn]='B=build-small FLOOD=20000 unshare -Urn ./tap.sh python3 tools/churn.py'
 T[churn_idle]='B=build-small-idle unshare -Urn ./tap.sh python3 tools/churn.py 64 3000'
+# a connection that has long been quiet gives way when there is no room, and only then
+# (an image in which "long" is two minutes; three minutes)
+T[idle]='B=build-small-idle1 unshare -Urn ./tap.sh python3 tools/idletest.py'
 T[real_measure]='B=build-real CERT=cert-real PORT=8463 ./measure.sh'
 T[real_loss3]="B=build-real LOSS=3 $TLS"
 T[real_mtu300_loss3]="B=build-real MTU=300 LOSS=3 $TLS"
@@ -81,6 +84,9 @@ T[site_wrap31_loss3]="$CHA LOSS=3 B=build-wrapl31 ISNTOP=0x7FF00000 unshare -Urn
 T[site_wrap32_loss3]='LOSS=3 B=build-wrapl32 ISNTOP=0xFFF00000 unshare -Urn tools/sitetest.sh tap quick'
 # a connection's key is not used for more records than it should be (here: 2^10)
 T[site_keylife]='B=build-keylife KEYLIFE=10 ONLY=sealed unshare -Urn tools/sitetest.sh tap'
+# a client that vanishes in the middle of a file is given up after a minute or two, and one
+# that only stops reading is not (three minutes)
+T[site_gone]='GONE=1 ONLY=vanishes unshare -Urn tools/sitetest.sh tap'
 # the tool: ./k15 pack and ./k15 run
 T[k15]='PORT=8513 tools/k15test.sh'
 # only code is executed, and neither code nor site is written (tools/wxtest.sh)
@@ -98,11 +104,11 @@ T[site_notso_loss3]="$CHA NOTSO=1 B=build-site-notso LOSS=3 unshare -Urn tools/s
 T[bneck]='tools/bnecktest.sh'
 ORDER="measure measure_tcg browsers tls tls_loss3 tls_mtu300_loss3 tls_reorder aes aes_loss3
   aes_mtu300_loss3 aes_reorder tls_own_order twice twice_reorder plain plain_loss3 plain_mtu300_loss3
-  plain_reorder raw1m raw1m_20k raw_4g tls_4g churn churn_idle real_measure real_loss3
+  plain_reorder raw1m raw1m_20k raw_4g tls_4g churn churn_idle idle real_measure real_loss3
   real_mtu300_loss3 real_reorder hrr hrr_loss3 hrr_mtu300_loss3
   hrr_reorder real_hrr_loss3 redirect raw_redirect tls_isn31 tls_isn32 tls_isn31_loss3
   plain_isn32_loss3 real_isn31_loss3 real_isn32_reorder site_wrap31 site_wrap32 site_wrap31_loss3
-  site_wrap32_loss3 site_keylife k15 wx site site_tap site_loss3 site_mtu600_loss3 site_reorder
+  site_wrap32_loss3 site_keylife site_gone k15 wx site site_tap site_loss3 site_mtu600_loss3 site_reorder
   site_notso_loss3 bneck"
 
 # the images and clients first (not in parallel)
@@ -110,6 +116,7 @@ ORDER="measure measure_tcg browsers tls tls_loss3 tls_mtu300_loss3 tls_reorder a
 make -s all >/dev/null || { echo "BUILD FAILED"; exit 1; }
 make -s B=build-small CAP=1024 >/dev/null || { echo "BUILD FAILED (small)"; exit 1; }
 make -s B=build-small-idle CAP=1024 IDLE=0 >/dev/null || { echo "BUILD FAILED (small-idle)"; exit 1; }
+make -s B=build-small-idle1 CAP=1024 IDLE=1 >/dev/null || { echo "BUILD FAILED (small-idle1)"; exit 1; }
 make -s B=build-real CERT=cert-real >/dev/null || { echo "BUILD FAILED (real)"; exit 1; }
 env $REDIR make -s >/dev/null || { echo "BUILD FAILED (redirect)"; exit 1; }
 make -s B=build-isn31 ISNTOP=0x7FF00000 >/dev/null && make -s B=build-isn32 ISNTOP=0xFFF00000 >/dev/null || { echo "BUILD FAILED (isn)"; exit 1; }
@@ -134,8 +141,8 @@ verdict() {  # name, exit code -> one line
     raw*|twice*) [[ $rc == 0 ]] && ! grep -q -E ' [1-9][0-9]* (reset|timed out)' "$f" && v=ok
        note=$(grep '^RAW total' "$f" | tail -1 | cut -c1-80)
        note="$note; $(grep -o '[0-9]* reset, [0-9]* timed out' "$f" | tr '\n' ';')";;
-    churn*) [[ $rc == 0 ]] && v=ok; note=$(tail -1 "$f");;
-    wx) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 6 ok; $(grep -m1 '^FAIL' "$f")";;
+    churn*|idle) [[ $rc == 0 ]] && v=ok; note=$(tail -1 "$f");;
+    wx) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 9 ok; $(grep -m1 '^FAIL' "$f")";;
     bneck) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 4 ok; $(grep -m1 '^FAIL' "$f" | cut -c1-80)";;
     k15) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 24 ok; $(grep -m1 '^FAIL' "$f")";;
     site*) [[ $rc == 0 ]] && grep -q '^all ok' "$f" && v=ok; note="$(grep -c '^ok' "$f") checks ok; $(grep -m2 '^FAIL' "$f" | cut -c1-90 | tr '\n' ';')";;

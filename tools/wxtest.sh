@@ -5,17 +5,29 @@
 # site, run the site, run a packet buffer). Each must be the machine's end: a fault, and
 # with no handlers a reset, which makes this QEMU quit. An image that does none of them
 # (WXTEST=0) must stay up and serve.
-#   tools/wxtest.sh          (SMP=n for other machines than 2 processors)
+# That there are no handlers is checked too (6, and 7 on another processor): a fault while
+# page 0, where the frame in hand lies, holds what reads as an interrupt gate to our own
+# code. A processor whose table of handlers is at address 0 (the one a BIOS leaves, and
+# the one a processor is started up with) goes on from where the gate says; one that was
+# told it has none (`start`, `apstart`) can't.
+# And one thing that is no fault of ours but must end the same way (8): a processor whose
+# random number generator says the same every time (`rand`). Such a machine never serves.
+#   tools/wxtest.sh          (SMP=n for other machines than 2 processors; PORT=n for other
+#                            ports than 8500 and up)
 cd "$(dirname "$0")/.." || exit 1
 mkdir -p build-site
 python3 tools/mksite.py build-site/www >/dev/null || exit 1
-WHAT=("none of it" "writing to the code" "running the stack" "writing to the site" "running the site" "running a packet buffer")
+WHAT=("none of it" "writing to the code" "running the stack" "writing to the site" "running the site" "running a packet buffer"
+  "a fault where the frame in hand names a handler" "the same on another processor"
+  "a random number generator that says the same twice")
+P0=${PORT:-8500}
 bad=0
-for n in 0 1 2 3 4 5; do
+for n in 0 1 2 3 4 5 6 7 8; do
+  if [[ $n == 7 && ${SMP:-2} == 1 ]]; then echo "ok   (${WHAT[$n]}: this machine has no other)"; continue; fi
   export B=build-wx
   make -s -B B=$B SITE=build-site/www WXTEST=$n >/dev/null 2>&1 || { echo "BUILD FAILED (WXTEST=$n)"; exit 1; }
-  PORT=$((8500 + n))
-  HPORT=$((9500 + n))
+  PORT=$((P0 + n))
+  HPORT=$((P0 + 1000 + n))
   IMG=$B/os.bin
   source tools/vm.sh
   LOG=$(mktemp)
