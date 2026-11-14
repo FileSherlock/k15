@@ -148,6 +148,12 @@ for arg in "$@"; do
   esac
 done
 
+# 15kb.org runs what the branch `bounty` holds, and nothing else: its page says so.
+if [[ $LIVE == 1 && $DRY == 0 ]]; then
+  [[ $(git rev-parse --abbrev-ref HEAD) == bounty ]] || die "15kb.org is packed from the branch 'bounty': git switch bounty"
+  [[ -z $(git status --porcelain --untracked-files=no) ]] || die "there are uncommitted changes: commit them to 'bounty' first"
+fi
+
 if [[ $REDEPLOY == 1 ]]; then
   [[ -f $PUB_PEM && -f $PROOF ]] || die "no $PUB_PEM or no $PROOF: nothing to deploy again"
   openssl x509 -checkend 0 -noout -in "$PUB_PEM" >/dev/null || die "the certificate in $PUB_PEM has ended: this bounty is over"
@@ -257,7 +263,7 @@ if [[ $LIVE == 0 ]]; then
   exit 0
 fi
 echo "  1. Fund $ADDR with \$200 BTC (double-check it matches https://$DOMAIN/)."
-echo "  2. Commit and push: git add site/index.html site/style.css README.md bounty.proof && git commit -m 'Start \$200 bounty' && git push"
+echo "  2. Commit and push (to 'bounty', not main): git add site/index.html README.md bounty.proof && git commit -m 'The bounty: its address and proof' && git push origin bounty"
 echo "  3. Remove the hcloud token from this laptop (rm -f ~/.config/hcloud/cli.toml + revoke in Hetzner Console, keep Console 2FA on)."
 echo "  4. Monitor defacement & wallet: python3 tools/monitor_bounty.py --watch 60 --notify --expect-funded"
 echo "  5. A change before the deadline, with the same key: tools/bounty_ceremony.sh --redeploy"

@@ -755,7 +755,7 @@ def main():
             proof_text = open(proof_path, encoding="utf-8").read()
         elif len(args) < 3:
             import urllib.request
-            with urllib.request.urlopen("https://raw.githubusercontent.com/FileSherlock/k15/main/bounty.proof", timeout=10) as resp:
+            with urllib.request.urlopen("https://raw.githubusercontent.com/FileSherlock/k15/bounty/bounty.proof", timeout=10) as resp:
                 proof_text = resp.read().decode("utf-8")
         else:
             sys.exit(f"bounty.py: proof file not found: {proof_path}")

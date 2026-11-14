@@ -35,6 +35,9 @@ is history, a measurement series or a description of how a routine works. Those 
 - `hcloud` may be used to create, reset and delete servers (a load generator costs by
   the hour: delete it, then `hcloud server list`).
 - Taking 15kb.org down for tests needs the user's word each time.
+- The bounty's page and README are on the branch `bounty`, not on `main`. 15kb.org is
+  packed from that branch (`tools/bounty_ceremony.sh` refuses any other) and stays on it
+  until the deadline: nothing merged into `main`, and no pull request, reaches the server.
 - Keep this file short. When something is learned, put it in `docs/pitfalls.md` as one
   or two lines, or fix the docs it contradicts. Delete what is no longer true.
 
