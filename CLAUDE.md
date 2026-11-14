@@ -43,7 +43,7 @@ is history, a measurement series or a description of how a routine works. Those 
   RAM and up to 4 processors, modern virtio-net, and serves GET and HEAD by path with
   compressed forms, ETag and 304, keep-alive, and a redirect on port 80.
 - Memory per held connection: 20 bytes on port 80, 128 bytes for TLS.
-- 15kb.org runs the image in `build-15kb.org` (24,701 bytes) with a Let's Encrypt
+- 15kb.org runs the image in `build-15kb.org` (24,733 bytes) with a Let's Encrypt
   certificate for 15kb.org and www.15kb.org, HSTS, `--persist`. SSL Labs: A.
 - On the server (2 shared vCPUs; last measured 2026-11-14) it does 7,300 to 8,800 new
   TLS connections a second and 100,000 to 120,000 requests a second on kept
