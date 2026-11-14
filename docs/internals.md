@@ -140,9 +140,10 @@ and while it waits for the transmit lock or a free transmit buffer).
   the largest power of two of them (`NCPUM`). With one processor nothing changes but the
   uncontended lock. One that gets no frames (the third of three; one that took its
   number after the count was read) waits for the count and then halts (`apstart`;
-  `tools/cputest.py` asks QEMU). Until 2026-11-14 it went round the polling loop like
-  the others, and its turn at the SYNs of late (`tidle`) was at the first processor's
-  places: it answered that one's SYNs again, on that one's connections.
+  `tools/cputest.py` asks QEMU; if the first processor counted nobody, it waits for
+  good). Until 2026-11-14 it went round the polling loop like the others, and its turn
+  at the SYNs of late (`tidle`) was at the first processor's places: it answered that
+  one's SYNs again, on that one's connections.
 - A slot that changes hands between processors (a connection quiet for an hour, in a
   full table) does so in one step on each side. The taker's `cmpxchg` asks for the slot's
   first eight bytes as it saw them in one look (`find.used`), C_AGE among them, and puts
@@ -361,10 +362,10 @@ The old way, and what both share:
   2026-11-14 the walk had no end: it went on into the next bucket, where `find` never
   looks for that connection again, or out of the table: from the one for TLS into the
   one for port 80, a slot of 128 bytes laid over six of 20. `tools/racetest.sh 3`.) A
-  slot is free when its address is 0. With two buckets to choose from the table fills to 85% before
-  anyone finds both full, and at 92% one in a thousand does; one run of 16 slots from one
-  hash, as it was, lost 0.8% of the held connections at 70% (`tools/rawc.c` measures it;
-  both match a simulation).
+  slot is free when its address is 0. With two buckets to choose from the table fills
+  to 85% before anyone finds both full, and at 92% one in a thousand does; one run of
+  16 slots from one hash, as it was, lost 0.8% of the held connections at 70%
+  (`tools/rawc.c` measures it; both match a simulation).
 - A slot for port 80 is 20 bytes, and a bucket of 16 begins on a cache line: so the
   fourth slot of every bucket has its address in one line and its port, flags and time
   in the next. The `lock cmpxchg` that claims it (`tcp.make`) is then a lock on the
