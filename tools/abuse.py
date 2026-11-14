@@ -5,7 +5,7 @@
      the connection still serves the next real request (so they moved no sequence number)
   2. a ClientHello without an x25519 key share gets no working session, and one with bytes
      that look like the start of one in another extension is served all the same; a
-     client that can't be served (no TLS 1.3, none of our cipher suites, no x25519, no
+     client that can't be served (no TLS 1.3, not our cipher suite, no x25519, no
      share for it after being asked) gets a fatal alert that says why, and the end of
      the connection: nothing that only looks like an answer
   3. junk instead of a ClientHello, an oversized "ClientHello", and a real one cut short
@@ -217,19 +217,19 @@ def main():
     old.maximum_version = ssl.TLSVersion.TLSv1_2
     good &= check("a client without TLS 1.3 is told \"protocol version\", and that is all",
                   said(hello_record(old)) == PROTOCOL_VERSION)
-    other = bytearray(hello)                    # our two cipher suites become one we don't have
+    other = bytearray(hello)                    # our cipher suite becomes one we don't have
     p = 38
     p += 1 + hello[p]
     for q in range(p + 2, p + 2 + int.from_bytes(hello[p:p + 2], "big"), 2):
-        if hello[q:q + 2] in (b"\x13\x01", b"\x13\x03"):
+        if hello[q:q + 2] == b"\x13\x01":
             other[q:q + 2] = b"\x13\x02"
-    good &= check("one that names none of our cipher suites is told \"handshake failure\"",
+    good &= check("one that does not name our cipher suite is told \"handshake failure\"",
                   said(record(other)) == HANDSHAKE_FAILURE)
 
-    # Which of our two a client gets: AES-128-GCM (13 01) if it names it, unless ChaCha20-
-    # Poly1305 (13 03) is the first suite of TLS 1.3 (13 xx) it names. What else stands
+    # A client gets AES-128-GCM (13 01) wherever it names it, and nothing else: ChaCha20-
+    # Poly1305 (13 03) first, or alone, is a suite like any we don't have. What else stands
     # in its list (a made-up suite in front, as browsers put one: GREASE; suites of TLS
-    # 1.2) is not its first.
+    # 1.2) is passed over.
     def chosen(suites):
         """The cipher suite in the ServerHello for this machine's ClientHello with these suites."""
         p = 38 + 1 + hello[38]
@@ -253,13 +253,14 @@ def main():
     for name, suites, want in (
             ("OpenSSL's order (AES-256, ChaCha20, AES-128)", "130213031301", "1301"),
             ("a browser's (a made-up suite, AES-128, AES-256, ChaCha20)", "0a0a130113021303", "1301"),
-            ("ChaCha20 first", "13031301", "1303"),
-            ("a made-up suite, then ChaCha20, then AES-128", "3a3a130313021301", "1303"),
-            ("suites of TLS 1.2 and a made-up one, then ChaCha20, then AES-128", "c02bcca9fafa13031301", "1303"),
-            ("another suite of TLS 1.3 first, then ChaCha20, then AES-128", "130413031301", "1301"),
-            ("AES-256 and ChaCha20, no AES-128", "13021303", "1303"),
-            ("AES-128 last of many", "c02bc02fcca9cca8130213041305009c1301", "1301")):
-        good &= check(f"a client that names {name} gets {'AES-128-GCM' if want == '1301' else 'ChaCha20-Poly1305'}",
+            ("ChaCha20 first, then AES-128", "13031301", "1301"),
+            ("suites of TLS 1.2 and a made-up one, then ChaCha20, then AES-128", "c02bcca9fafa13031301", "1301"),
+            ("AES-128 last of many", "c02bc02fcca9cca8130213041305009c1301", "1301"),
+            ("ChaCha20 alone", "1303", HANDSHAKE_FAILURE.hex()),
+            ("AES-256 and ChaCha20, no AES-128", "13021303", HANDSHAKE_FAILURE.hex()),
+            ("AES-128's two bytes across two suites, 01 13 01 00", "01130100", HANDSHAKE_FAILURE.hex())):
+        told = "gets AES-128-GCM" if want == "1301" else 'is told "handshake failure"'
+        good &= check(f"a client that names {name} {told}",
                       chosen(bytes.fromhex(suites)) == want)
     groupless = bytearray(shareless[5:])        # x25519 is not among its groups either
     p = 38

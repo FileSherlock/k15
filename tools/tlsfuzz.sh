@@ -47,14 +47,14 @@ go() {  # script, pattern of the conversations that may fail, why; NOSWAP=1 in f
   fi
 }
 go conversation ''
-go symetric-ciphers 'check connection with TLS_(AES_256_GCM_SHA384|AES_128_CCM)' 'the three suites that are not ours'
+go symetric-ciphers 'check connection with TLS_(AES_256_GCM_SHA384|AES_128_CCM|CHACHA20_POLY1305)' 'the four suites that are not ours'
 go hrr ''
 go ccs ''
 go multiple-ccs-messages ''
 go empty-alert ''
 go unencrypted-alert ''
 go finished-plaintext ''
-go finished '.*TLS_AES_256_GCM_SHA384|padding - cipher TLS_AES_128_GCM_SHA256' 'not our suite; a record of more than 4 KB'
+go finished '.*TLS_(AES_256_GCM_SHA384|CHACHA20_POLY1305_SHA256)|padding - cipher TLS_AES_128_GCM_SHA256' 'not our suite; a record of more than 4 KB'
 go invalid-ciphers ''
 go nociphers ''
 go no-unknown-groups ''

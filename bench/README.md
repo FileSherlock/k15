@@ -279,6 +279,10 @@ the page 106,864 and 107,301 a second. `bench/run.sh`'s first rows: 7,640, 8,060
 8,372 new TLS connections a second, 7,251 with two key shares, 104,382 and 115,463
 requests on kept ones.)
 
+Since 2026-11-14 ChaCha20-Poly1305 is gone (665 bytes): every client gets AES-128-GCM,
+and one that offers ChaCha20-Poly1305 alone is told "handshake failure". The rows of
+k15 under OpenSSL's order before 2026-11-13 were under ChaCha20-Poly1305.
+
 **Over a distance.** With windows scaled, more than 64 KB can be on their way. How much
 more is the question: a window that doubles every round trip up to 367 KB brought 1.5
 MiB over a round trip of 100 ms in 1.1 s (2.9 s before), and through a path that holds

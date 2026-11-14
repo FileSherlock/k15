@@ -14,9 +14,8 @@ order, tags that differ in one bit), and RFC 6979's signatures.
                           of small order, our key share is zeros too: the two come out of
                           one division, here by zero. We don't refuse such a client: see
                           "Shortcuts that remain" in docs/internals.md.)
-  ChaCha20-Poly1305,      chacha20_poly1305_test.json, aes_gcm_test.json: the vectors with a
-  AES-128-GCM             nonce of 12 bytes, a tag of 16, a key of ours (256 and 128 bits)
-                          and no more than 16 bytes of associated data. `seal` makes its tag
+  AES-128-GCM             aes_gcm_test.json: the vectors with a nonce of 12 bytes, a tag of
+                          16, a key of 128 bits and no more than 16 bytes of associated data. `seal` makes its tag
                           over a record's header there; the host build can be given other
                           bytes (`haad` in src/os.asm). Opened: the plaintext and the tag
                           must be the vector's (a vector that is to be refused: the tag we
@@ -71,10 +70,10 @@ def x25519():
                          lambda o, ours=ours, want=want: o[32:] == want and o[:32] == (ours if any(want) else bytes(32))))
 
 
-def aead(name, cipher, bits):
-    what = "%s (Wycheproof)" % ("ChaCha20-Poly1305" if cipher == "c" else "AES-128-GCM")
-    for g in load(name):
-        if g["ivSize"] != 96 or g["tagSize"] != 128 or g["keySize"] != bits:
+def aead():
+    what = "AES-128-GCM (Wycheproof)"
+    for g in load("aes_gcm_test.json"):
+        if g["ivSize"] != 96 or g["tagSize"] != 128 or g["keySize"] != 128:
             skipped[what] = skipped.get(what, 0) + len(g["tests"])
             continue
         for t in g["tests"]:
@@ -83,7 +82,7 @@ def aead(name, cipher, bits):
                 skipped[what] = skipped.get(what, 0) + 1
                 continue
             tid = "%d: %s" % (t["tcId"], t["comment"])
-            args = "%s %s %s %s" % (cipher, h(key), h(iv), h(aad))
+            args = "%s %s %s" % (h(key), h(iv), h(aad))
             if t["result"] == "invalid":
                 jobs.append((what, tid, "open %s %s" % (args, h(ct)), lambda o, tag=tag: o[-16:] != tag))
                 continue
@@ -162,8 +161,7 @@ def ecdsa():
 
 
 x25519()
-aead("chacha20_poly1305_test.json", "c", 256)
-aead("aes_gcm_test.json", "g", 128)
+aead()
 hmac_()
 sha()
 ecdsa()

@@ -15,10 +15,9 @@ static void hex(const char *tag, const u8 *p, u32 n)
  *   sha M                    SHA-256 of M
  *   hmac K M                 HMAC-SHA256 under the 32 bytes K of M (64 bytes at most)
  *   xdh E U                  our key share for the scalar E as it is, and the secret shared with U
- *   open C KEY IV AAD CT     C = c or g: the cipher. What CT holds under KEY (32 bytes; AES uses
- *                            16) and the nonce IV, and the tag it should have, made over AAD
- *                            (16 bytes at most) and CT
- *   seal C KEY IV AAD M      the other way: the ciphertext of M (whose last byte goes in as
+ *   open KEY IV AAD CT       AES-128-GCM: what CT holds under KEY (16 bytes) and the nonce IV,
+ *                            and the tag it should have, made over AAD (16 bytes at most) and CT
+ *   seal KEY IV AAD M        the other way: the ciphertext of M (whose last byte goes in as
  *                            the byte that says what the others are) and its tag
  *   sign D K Z               (r, s) for the hash Z with the nonce K (little-endian) under the
  *                            key whose d R mod n is D (little-endian; "-": the image's own) */
@@ -59,10 +58,9 @@ static int commands(void)
             static u8 kiv[44];
             u32 L;
             memset(kiv, 0, sizeof kiv), memset(HAAD, 0, 16);
-            unhex(kiv, w[2]), unhex(kiv + 32, w[3]);
-            HAADN[0] = 1 + unhex(HAAD, w[4]);
-            n[4] = unhex(a[4], w[5]);
-            CIPH[0] = w[1][0] == 'g';
+            unhex(kiv, w[1]), unhex(kiv + 32, w[2]);
+            HAADN[0] = 1 + unhex(HAAD, w[3]);
+            n[4] = unhex(a[4], w[4]);
             if (w[0][0] == 'o') L = op(out, a[4], n[4], kiv, 0), put(out, L);
             else L = sl(out, a[4], n[4], kiv, 0), put(out + 5, L - 5);
             HAADN[0] = 0;
@@ -98,15 +96,14 @@ int main(int argc, char **argv)
     ex(h, m, "\x20\x07" "derived", m + 100);
     hex("expand", h, 32);
     for (i = 0; i < 32; i++) kiv[i] = m[300 + i], kiv[32 + i] = m[400 + i];
-    for (i = 0; i < 20; i++) {       /* ChaCha20-Poly1305, then AES-128-GCM (CIPH says) */
-        u32 n = (u32[]){1, 100, 1500, 15, 16, 17, 63, 64, 65, 128}[i % 10], L;
+    for (i = 0; i < 10; i++) {       /* AES-128-GCM */
+        u32 n = (u32[]){1, 100, 1500, 15, 16, 17, 63, 64, 65, 128}[i], L;
         char t[32];
-        CIPH[0] = i >= 10;
         L = sl(out, m, n, kiv, i * 77);
-        sprintf(t, "%s%u_%u", i >= 10 ? "gcm" : "seal", n, i * 77);
+        sprintf(t, "gcm%u_%u", n, i * 77);
         hex(t, out, L);
         L = op(tmp, out + 5, L - 21, kiv, i * 77);    /* and back: the plaintext, then the tag */
-        sprintf(t, "%s%u_%u", i >= 10 ? "ungcm" : "unseal", n, i * 77);
+        sprintf(t, "ungcm%u_%u", n, i * 77);
         hex(t, tmp, L);
     }
     /* X25519 with our scalar e (unclamped): key share, and the secret with the public key

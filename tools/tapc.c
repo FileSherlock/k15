@@ -11,7 +11,7 @@
 // Env: PLAIN (set: plain HTTP to port 80, no TLS), INFLIGHT (handshakes/fetches at once,
 // default 4), TIMEOUT (seconds, default 60), NOMARK (set: no fetches before all are open:
 // open_s is then the time the handshakes took), SUITES (the TLS 1.3 cipher suites to offer, e.g.
-// TLS_AES_128_GCM_SHA256; default: OpenSSL's, of which the server takes ChaCha20-Poly1305),
+// TLS_AES_128_GCM_SHA256; default: OpenSSL's, of which the server takes AES-128-GCM),
 // DST (ip:port), B (build directory: B/name is the name the certificate must carry, B/ca.pem
 // the CA to trust; an empty ca.pem means the system's roots, for a real certificate).
 #define _GNU_SOURCE

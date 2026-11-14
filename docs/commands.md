@@ -28,11 +28,11 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   for its owner's eyes only (umask 077), and /boot/k15.bin on the server for root's.
 - `make` assembles `src/os.asm` into `build/os.bin` (loaded at 1 MiB) and `build/disk.img`
   (`src/boot.asm` + the image; what the tests boot), with the site of `www/` in it.
-  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 14,396,
+  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 13,731,
   about: boot, clock calibration, page tables, driver and the other processors 2,700,
   network 4,300 with the timers, requests and the forms of a file 700, TLS handshake
   and key schedule 1,600, SHA-256 450, curves 3,000 with their programs and constants,
-  the two ciphers 1,650, certificate 230; among them 35 of padding in front of the
+  the cipher 1,000, certificate 230; among them 49 of padding in front of the
   routines a handshake spends its time in: see HOT in "How the curve code works". Of the
   874 that the night of 2026-11-12 added: frames for the card to cut 450, window scaling
   and what goes with it 130, the forms of a file 290; `seal` got faster in the same
@@ -62,7 +62,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   none (a browser may not believe it there). OUT/site.json says what each path must
   return (for the tests), OUT/page80.bin what port 80 says.
 - `tools/suite.sh [JOBS] [name...]`: everything below, a few at a time, one line each
-  (64 runs, ten minutes). `SMP=1` or `SMP=4` in front for other machines than the
+  (59 runs, ten minutes). `SMP=1` or `SMP=4` in front for other machines than the
   default of 2 processors. Its verdict is strict: one failed connection is a FAIL. Under
   a loaded host a run that overflows rings on purpose (`raw1m_20k`) can time out a few
   hundred of a million (on 4 processors it does every time the suite runs five at once):
@@ -73,7 +73,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   have, names that need escaping, a folder, one file of 1.5 MiB, so the image is over
   1 MiB and everything else lies higher) must serve every path as pack.py made it, to
   every kind of client `tools/sitecheck.py` plays: one connection or many, GET and HEAD,
-  clients that take small segments, that read slowly, 16 at once, curl with each cipher,
+  clients that take small segments, that read slowly, 16 at once, curl,
   clients that take gzip or brotli (in every spelling of Accept-Encoding the checker
   knows, "q=0" among them), clients that have a file (each form by its own ETag: alone,
   in a list, weak, in small letters; and other headers with an ETag in them),
@@ -81,9 +81,8 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   3 KB, of over 4 KB, two at once, a client that closes its side, clients that go away.
   Over tap the card cuts our frames (TSO), through QEMU's own network it does not:
   `NOTSO=1` in front builds an image that never asks it to (the suite's
-  `site_notso_loss3`). `SUITES=TLS_CHACHA20_POLY1305_SHA256` in front makes the
-  checker's clients offer that alone (by themselves they get AES-128-GCM): half of the
-  suite's site runs do.
+  `site_notso_loss3`). `SUITES=...` in front makes the checker's clients offer those
+  suites alone (by themselves they offer OpenSSL's three, and get AES-128-GCM).
   `ONLY=text` runs the checks with that in their name. `HOST=a.b.c.d PORT=443
   B=build-hz python3 tools/sitecheck.py quick` is the same against the server.
   `GONE=1` in front (over tap; the suite's `site_gone`, three minutes) adds a client that
@@ -113,8 +112,8 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   `tools/bnecktest.sh` is two such paths with times they must keep (the suite's
   `bneck`).
 - `./measure.sh` builds, boots the disk image in QEMU, fetches with curl (chain and name
-  verified, fresh connections + keep-alive, each of the two ciphers by name and in every order a client can
-  name them in, a client
+  verified, fresh connections + keep-alive, AES-128-GCM wherever a client names it and
+  "handshake failure" for one that offers ChaCha20-Poly1305 or AES-256-GCM alone, a client
   whose key share is for P-256, port 80, an unknown path, HEAD, and a check that curl
   refuses without our CA) and runs `tools/abuse.py` (forged, replayed, truncated records
   and bad ClientHellos, also in place of the second one after a HelloRetryRequest, must
@@ -132,8 +131,8 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   (10.0.2.32-47) x PER connections, all open at once, all fetched over at the end. A real
   Ethernet segment: ARP, a Linux TCP as the peer, random ISNs. In front of `unshare`:
   `LOSS=1` drops 1% of the packets in each direction, `MTU=n` sets the tap's MTU,
-  `TIMEOUT=10` makes a hung connection fail fast instead of after 60 s, `SUITES=
-  TLS_CHACHA20_POLY1305_SHA256` picks the cipher (OpenSSL's own order gets AES-128-GCM),
+  `TIMEOUT=10` makes a hung connection fail fast instead of after 60 s, `SUITES=...`
+  picks the suites the clients offer (OpenSSL's own order gets AES-128-GCM),
   `NOMARK=1` leaves out the fetches on the way (then `open_s` is the handshakes alone:
   the rate), `PLAIN=1 INFLIGHT=64` runs the same over plain HTTP to port 80, `SMP=n` and
   `MEM=n` shape the VM (default 2 processors, 256 MiB), `KEX=P-256:X25519` makes the
@@ -204,7 +203,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   of it into `ext/`, which is not in git: Wycheproof's vectors, tlsfuzzer with
   tlslite-ng, Ubuntu's Valgrind unpacked; no root):
   `make outside` (a second): the host build against Project Wycheproof's vectors for
-  X25519 (all 518), ChaCha20-Poly1305 and AES-128-GCM (those with our sizes of key,
+  X25519 (all 518), AES-128-GCM (those with our sizes of key,
   nonce and tag: opened, and sealed), HMAC-SHA256, against RFC 6979's two signatures
   for P-256 with SHA-256, and against OpenSSL's point multiplication for nonces and
   hashes on the edges (`test/outside.py`, which says what each takes for granted).
@@ -239,10 +238,10 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   `cpus3`): asks QEMU's monitor which processors are halted. Those that take no frames
   must be (the third of three; the fifth and on), and no other.
 - `make test` checks the asm crypto (`src/os.asm` built with `-DHOST`, driven by
-  `test/test_asm.c`) against pyca/cryptography (hashes, both ciphers, X25519 with edge
+  `test/test_asm.c`) against pyca/cryptography (hashes, AES-128-GCM, X25519 with edge
   scalars, 70 signatures) and against the model (every pair of 22 edge numbers through
   add, subtract and multiply in each of the three fields), and runs `tools/ec.py`, the
   Python model of the curve code. `make bench` times the same object natively, down to
-  one multiplication, and a record under each cipher.
+  one multiplication, and a record of a small page and of a full segment.
 - KVM is used when /dev/kvm is there; `KVM=0` emulates. `tools/vm.sh` reads `KVM` when it
   is sourced, not when `boot` runs.

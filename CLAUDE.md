@@ -24,8 +24,8 @@ is history, a measurement series or a description of how a routine works. Those 
   Don't golf it, don't bloat it.
 - Scope: the best product in its niche, "a clunky, limited but fast and secure OS".
   A new image for every change of content or certificate is the point, not a defect.
-- TLS 1.3 only. Of our two ciphers a client gets AES-128-GCM, unless
-  ChaCha20-Poly1305 is the first TLS 1.3 suite it names.
+- TLS 1.3 only, one cipher: AES-128-GCM, which every TLS 1.3 client has (no
+  ChaCha20-Poly1305: what it cost in bytes bought nothing).
 - Not to be built: session tickets, SACK, post-quantum key exchange, TLS 1.2 (so SSL
   Labs stays at A, not A+), ACME or a clock inside the image.
 - The certificate chain stays at four certificates until the user says otherwise.
@@ -39,7 +39,7 @@ is history, a measurement series or a description of how a routine works. Those 
   or two lines, or fix the docs it contradicts. Delete what is no longer true.
 
 ## Where it stands
-- The system is 14,396 bytes. It boots from GRUB or a BIOS boot sector, uses all the
+- The system is 13,731 bytes. It boots from GRUB or a BIOS boot sector, uses all the
   RAM and up to 4 processors, modern virtio-net, and serves GET and HEAD by path with
   compressed forms, ETag and 304, keep-alive, and a redirect on port 80.
 - Memory per held connection: 20 bytes on port 80, 128 bytes for TLS.
@@ -67,7 +67,7 @@ is history, a measurement series or a description of how a routine works. Those 
 2. The handshake further: OpenSSL's assembly does the ladder and the signature in
    about a fifth fewer cycles.
 3. Later: IPv6, DHCP, a retransmission timer that knows the round trip, pacing, zstd,
-   ChaCha20 several blocks abreast, taking out the reset knock.
+   taking out the reset knock.
 
 ## What "secure" means here
 A validating client gets server authentication, confidentiality, integrity and forward
@@ -97,7 +97,7 @@ Don't change the source or a test script while a suite runs.
   `make outside` and `make ct` (`tools/outside.sh fetch` once, for what they run with).
 - After touching the handshake, records, or what a bad packet gets:
   `unshare -Urn tools/tlsfuzz.sh` (three minutes).
-- After anything else: `tools/suite.sh` (64 runs, ten minutes). Also with `SMP=1` and
+- After anything else: `tools/suite.sh` (59 runs, ten minutes). Also with `SMP=1` and
   `SMP=4` after touching what processors share or how the machine starts. On 4,
   `raw1m_20k` fails when the host is busy: run it alone before believing it.
 - After touching boot or the polling loops: `measure.sh` with `DEBUG=1`, `KNOCK=` and

@@ -286,8 +286,7 @@ def main():
         out = subprocess.run(cmd + [f"https://{NAME}:{PORT}{big}"], capture_output=True).stdout
         return hashlib.sha256(out).hexdigest() == paths[big]["sha256"]
 
-    for suite in ("TLS_AES_128_GCM_SHA256", "TLS_CHACHA20_POLY1305_SHA256"):
-        check(f"the largest file to curl with {suite}", lambda suite=suite: curl(suite))
+    check("the largest file to curl with TLS_AES_128_GCM_SHA256", lambda: curl("TLS_AES_128_GCM_SHA256"))
 
     def unknown():
         c = Conn()

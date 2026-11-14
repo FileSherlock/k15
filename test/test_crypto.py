@@ -11,7 +11,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 m = bytes((i * 7 + 3) & 255 for i in range(2000))
 exp = {}
@@ -22,16 +22,12 @@ info = b"\x00\x20" + b"\x0dtls13 derived" + b"\x20" + m[100:132] + b"\x01"
 exp["expand"] = hmac.new(m[:32], info, hashlib.sha256).digest()
 sk = X25519PrivateKey.from_private_bytes(bytes(32))
 key, iv = m[300:332], m[400:412]
-for i, n in enumerate((1, 100, 1500, 15, 16, 17, 63, 64, 65, 128) * 2):
+for i, n in enumerate((1, 100, 1500, 15, 16, 17, 63, 64, 65, 128)):
     seq = i * 77
     nonce = iv[:4] + bytes(a ^ b for a, b in zip(iv[4:], seq.to_bytes(8, "big")))
     hdr = bytes([0x17, 3, 3]) + (n + 16).to_bytes(2, "big")
-    if i < 10:
-        exp[f"seal{n}_{seq}"] = hdr + ChaCha20Poly1305(key).encrypt(nonce, m[:n], hdr)
-        exp[f"unseal{n}_{seq}"] = m[:n] + exp[f"seal{n}_{seq}"][-16:]   # decrypted again, and its tag
-    else:
-        exp[f"gcm{n}_{seq}"] = hdr + AESGCM(key[:16]).encrypt(nonce, m[:n], hdr)
-        exp[f"ungcm{n}_{seq}"] = m[:n] + exp[f"gcm{n}_{seq}"][-16:]
+    exp[f"gcm{n}_{seq}"] = hdr + AESGCM(key[:16]).encrypt(nonce, m[:n], hdr)
+    exp[f"ungcm{n}_{seq}"] = m[:n] + exp[f"gcm{n}_{seq}"][-16:]   # decrypted again, and its tag
 
 got = {}
 for line in subprocess.run([sys.argv[1]], capture_output=True, text=True, check=True).stdout.splitlines():

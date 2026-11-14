@@ -25,7 +25,7 @@ For a site that is meant to stay (`--reset`: how the server gets back into its L
 
 What you get, and what you don't:
 
-- **Small.** The system is 14,396 bytes. The image is that plus your files, each stored
+- **Small.** The system is 13,731 bytes. The image is that plus your files, each stored
   as the response it is sent as (and, where that makes it shorter, once more compressed
   with gzip and with brotli, for clients that take that).
 - **Nothing to break into.** No kernel, no shell, no file system, no user accounts, no
@@ -34,9 +34,9 @@ What you get, and what you don't:
   not the stack) can be: the page tables say so, and a test makes sure. There are no
   fault handlers, and every processor is told so: a fault resets the machine.
 - **Secure where it counts.** TLS 1.3 only (older clients are told so), X25519, ECDSA
-  P-256, ChaCha20-Poly1305 and
-  AES-128-GCM, a fresh key and a fresh nonce for every handshake, forward secrecy for
-  every connection, and curve arithmetic and ciphers that neither branch on nor index
+  P-256, AES-128-GCM (the one cipher every TLS 1.3 client has), a fresh key and a
+  fresh nonce for every handshake, forward secrecy for every connection, and curve
+  arithmetic and ciphers that neither branch on nor index
   with anything secret: checked, not only read, by running them under Valgrind with
   every secret marked as undefined. The arithmetic is also asked what Project
   Wycheproof asks every implementation, and the running image what tlsfuzzer does
@@ -55,12 +55,10 @@ What you get, and what you don't:
   at 30,000 to 35,000 a second, against 24,000 to 27,000. [bench/README.md](bench/README.md)
   has the comparison, how it was made, and what it does not say.
 - **Large files about as fast as nginx**: 0.92 GB/s where nginx did 0.90 to 0.98 the
-  same night. That is under AES-128-GCM, which a client gets if it names it at all,
-  unless it puts ChaCha20-Poly1305 first (then 0.47 GB/s: ChaCha20 is made a block at
-  a time here). (It was 0.17 GB/s until the card was given 45 records to a frame to
-  cut up, and sealing a record got faster.) Over a distance a window may grow past
-  64 KB, but only slowly: without SACK, what is lost in a large window comes back a
-  segment a round trip.
+  same night, under AES-128-GCM. (It was 0.17 GB/s until the card was given 45
+  records to a frame to cut up, and sealing a record got faster.) Over a distance a
+  window may grow past 64 KB, but only slowly: without SACK, what is lost in a large
+  window comes back a segment a round trip.
 - **Clunky on purpose.** Content and certificate are part of the image: a change is a new
   image and a reboot of a few seconds. Nothing renews by itself: `./k15 renew` is there to
   be run from cron, does nothing until the certificate has a month left, and then makes
@@ -89,7 +87,7 @@ tools/outside.sh fetch   # what the next three need, into ext/ (Wycheproof, Valg
 make outside         # the crypto against Wycheproof's vectors and RFC 6979's
 make ct              # the crypto under Valgrind: no jump and no address is made of a secret
 unshare -Urn tools/tlsfuzz.sh   # tlsfuzzer against the image
-tools/suite.sh       # all 64 regression runs: loss, reordering, scale, browsers, a site of 80 files
+tools/suite.sh       # all 59 regression runs: loss, reordering, scale, browsers, a site of 80 files
 tools/sitetest.sh    # that site alone: every path, every kind of client
 unshare -Urn ./tap.sh ./taprunc.sh 2000 1024 4   # 8,000 connections from 4 source IPs
 gcc -O2 -o build/rawc tools/rawc.c

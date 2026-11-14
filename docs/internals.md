@@ -48,8 +48,8 @@ Read the part you are about to change. `tools/ec.py` has the curve code's other 
   records that may go, in one frame for the card to cut), `tarm`/`tqrun` (who waits for
   an ack), `tsc`/`clock` (the calibrated clock), `sm` (is this a connection past its handshake).
 - `handshake`, `hrrmsg`, `thash` (the transcript's hash, continued, not restarted),
-  `keys`, `hmac`, `expand`; `sha256`/`shablk`; `seal` with `ks64`, `chacha`, Poly1305,
-  `aeskey`, `aes4`, `gh1` and four-block GHASH.
+  `keys`, `hmac`, `expand`; `sha256`/`shablk`; `seal` with `ks64`, `aeskey`, `aes4`,
+  `gh1` and four-block GHASH.
 - `xdh`, `sign`, `stock`, `binv`, `comb`, `select`, `vm`, `fas`, `fmul`, `inv`, `ecinit`:
   the curves, see below. `rand`: what is random (`rdrand`, each draw compared with the
   one before).
@@ -316,7 +316,7 @@ The old way, and what both share:
   we wait for a ClientHello, a record that is not a handshake record is passed over.
 - A client we can't serve gets seven bytes and our FIN: a fatal alert, "protocol version"
   if TLS 1.3 is not among the versions it offers (extension 43; a client of TLS 1.2 has
-  none), "handshake failure" if neither of our cipher suites is among its, if x25519 is
+  none), "handshake failure" if our cipher suite is not among its, if x25519 is
   not among its groups (extension 10: then there is nothing to ask for), or if it sent no
   x25519 share after being asked. The alert is its connection's flight (kept, sent again
   if lost), and the connection is closed from our side (`handshake` sets F_CLOSED,
@@ -355,7 +355,7 @@ The old way, and what both share:
   same, then the number of the client's next record (`C_ST`), the response in hand
   (`C_SR`, `C_RS`, `C_AS`: ten bytes), its handshake buffer and how much of a record is
   in it, a byte of flags and the window's shift (`C_FL2`), a byte of window (`C_CW`), and
-  88 bytes of keys (two of 32 with their 12 of iv; which cipher is a flag). They fill the table
+  88 bytes of keys (two of 32, of which AES-128 uses 16, with their 12 of iv). They fill the table
   space behind the buffers: the TLS table gets an eighth (`TSHARE`), port 80 the rest.
 - A connection is in one of two buckets of 16 slots, picked by two words of `prf(addresses,
   ports)`; a new one goes into the bucket with more free slots (`find`), into the first
@@ -476,35 +476,28 @@ model that asserts every bound.
 `seal` makes a record for some bytes and the byte that says what they are (handshake
 messages, application data); or, the other way round (carry set), decrypts what a
 client's record held and puts behind it the tag that record should have had, which
-`record` compares before it looks at anything. The key block of a direction is 32 bytes
-of key and 12 of iv; which cipher, `CIPH` says (0 ChaCha20-Poly1305, else AES-128-GCM:
-from `SUITE` in the handshake, which is AES-128-GCM if the client names it, unless
-ChaCha20-Poly1305 is the first suite of TLS 1.3 it names; and from the connection's
-flag after it).
-- ChaCha20: the state's four rows in xmm registers, a quarter round on all four columns
-  at once (SSE2). Poly1305: 64-bit limbs, `mul`.
-- AES-128-GCM: the key schedule is made again for every record (`aeskey`: 176 bytes would
-  not fit a slot), four counter blocks interleaved across the ten AES rounds (`aes4`,
-  sharing the 64-byte key-stream path `ks64` with `chacha`), and GHASH four blocks at a
-  time with one reduction (`HTAB` holds H^1..H^4 times x; `gh1` handles single blocks and
-  the powers).
+`record` compares before it looks at anything. The cipher is AES-128-GCM, the one suite
+there is; the key block of a direction is 32 bytes for the key's 16 and 12 of iv.
+- The key schedule is made again for every record (`aeskey`: 176 bytes would not fit a
+  slot), four counter blocks interleaved across the ten AES rounds (`aes4`, by way of
+  `ks64`, 64 bytes of key stream), and GHASH four blocks at a time with one reduction
+  (`HTAB` holds H^1..H^4 times x; `gh1` handles single blocks and the powers).
+- ChaCha20-Poly1305 was there too until 2026-11-14, for clients that named it first (whose
+  processors have no AES): 665 bytes, and every client that has TLS 1.3 has AES-128-GCM
+  (RFC 8446 9.1: a MUST; ChaCha20 is a SHOULD).
 - Full 64-byte blocks are xored directly in xmm0-xmm3 without bouncing through memory,
   with a 16-byte/byte tail for what remains (a byte at a time, with source and
   destination the same, cost 6,500 cycles of a record of 1,418 bytes).
-- What a record costs (`make bench`, Ryzen 7 3800X): 1,418 bytes of a file 1,780 cycles
-  under AES-128-GCM and 11,000 under ChaCha20-Poly1305; 180 bytes 660 and 2,100 (3,900
-  and 11,800, 940 and 2,200 before four-block AES and GHASH; 11,600 and 17,900 before
+- What a record costs (`make bench`, Ryzen 7 3800X): 1,418 bytes of a file 1,780 cycles,
+  180 bytes 660 (3,900 and 940 before four-block AES and GHASH; 11,600 before
   2026-11-12, night).
 
 ## Shortcuts that remain
 From k2, where they saved bytes, and from the first version that served files. Ask before
 removing the ones about TLS.
-- TLS 1.3 only, two suites: TLS_CHACHA20_POLY1305_SHA256 and TLS_AES_128_GCM_SHA256,
-  X25519, ecdsa_secp256r1_sha256; who has none of these is told so (an alert) and
-  nothing else. Which of the two suites is ours to say: AES-128-GCM for a client
-  that names it, unless the first suite of TLS 1.3 in its list (13 xx: the made-up
-  suite a browser puts in front is none, nor are those of TLS 1.2) is
-  ChaCha20-Poly1305: then that. Of the ClientHello the cipher suites, the versions, the groups and the
+- TLS 1.3 only, one suite: TLS_AES_128_GCM_SHA256 (wherever the client names it),
+  X25519, ecdsa_secp256r1_sha256; who lacks one of these is told so (an alert) and
+  nothing else. Of the ClientHello the cipher suites, the versions, the groups and the
   x25519 key share are looked at (`handshake` walks the extensions; every length on the
   way is bounded by the ClientHello's end, and what is looked at inside an extension by
   that extension's): no name (SNI: a client gets the one site whatever it calls us,

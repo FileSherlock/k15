@@ -26,34 +26,26 @@ for _ in 1 2; do
   B2=$("${CURL[@]}" "$URL" "${URL}index.html") || { echo "FAIL: repeat"; exit 1; }
   [[ "$B2" == "$EXPECT"$'\n'"$EXPECT" ]] || { echo "FAIL: keep-alive got '$B2'"; exit 1; }
 done
-# each of the two ciphers, asked for by name (a keep-alive request too)
-for C in TLS_AES_128_GCM_SHA256 TLS_CHACHA20_POLY1305_SHA256; do
-  V=$("${CURL[@]}" -v --tls13-ciphers $C "$URL" "${URL}index.html" 2>&1) || { echo "FAIL: $C"; exit 1; }
-  [[ "$V" == *"$C"* && "$V" == *"$EXPECT"*"$EXPECT"* ]] || { echo "FAIL: $C not used, or not the page twice"; exit 1; }
-done
-# Of a client's two, AES-128-GCM is ours wherever it stands (we seal three times as fast
-# under it), unless ChaCha20-Poly1305 is the first suite of TLS 1.3 the client names; and
-# ChaCha20-Poly1305 if AES-128-GCM is not among them
-while read -r OFFER WANT; do
-  V=$("${CURL[@]}" -v --tls13-ciphers "$OFFER" "$URL" 2>&1) || { echo "FAIL: a client that offers $OFFER"; exit 1; }
-  [[ "$V" == *"SSL connection using TLSv1.3 / $WANT /"* ]] || { echo "FAIL: a client that offers $OFFER did not get $WANT"; exit 1; }
+# Our one cipher, AES-128-GCM, wherever the client names it (a keep-alive request too)
+while read -r OFFER; do
+  V=$("${CURL[@]}" -v --tls13-ciphers "$OFFER" "$URL" "${URL}index.html" 2>&1) || { echo "FAIL: a client that offers $OFFER"; exit 1; }
+  [[ "$V" == *"SSL connection using TLSv1.3 / TLS_AES_128_GCM_SHA256 /"* && "$V" == *"$EXPECT"*"$EXPECT"* ]] || { echo "FAIL: a client that offers $OFFER did not get AES-128-GCM, or not the page twice"; exit 1; }
 done <<'ORDERS'
-TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256 TLS_AES_128_GCM_SHA256
-TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256 TLS_CHACHA20_POLY1305_SHA256
-TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256 TLS_CHACHA20_POLY1305_SHA256
-TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256 TLS_AES_128_GCM_SHA256
-TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256 TLS_CHACHA20_POLY1305_SHA256
+TLS_AES_128_GCM_SHA256
+TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256
+TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256
 ORDERS
 # a client whose key share is for another curve is asked for one for ours, and gets it
-for C in TLS_AES_128_GCM_SHA256 TLS_CHACHA20_POLY1305_SHA256; do
-  V=$("${CURL[@]}" -v --curves secp256r1:x25519 --tls13-ciphers $C "$URL" 2>&1) || { echo "FAIL: no HelloRetryRequest ($C)"; exit 1; }
-  [[ "$V" == *"/ x25519 /"*"$EXPECT"* ]] || { echo "FAIL: after a HelloRetryRequest, not x25519 or not the page"; exit 1; }
-done
-# a client that can't be served is told why: one without TLS 1.3, one without our ciphers
+V=$("${CURL[@]}" -v --curves secp256r1:x25519 "$URL" 2>&1) || { echo "FAIL: no HelloRetryRequest"; exit 1; }
+[[ "$V" == *"/ x25519 /"*"$EXPECT"* ]] || { echo "FAIL: after a HelloRetryRequest, not x25519 or not the page"; exit 1; }
+# a client that can't be served is told why: one without TLS 1.3, one without our cipher
+# (ChaCha20-Poly1305 alone, or with AES-256-GCM)
 V=$("${CURL[@]}" -v --tls-max 1.2 "$URL" 2>&1) && { echo "FAIL: served a client without TLS 1.3"; exit 1; }
 [[ "$V" == *"alert protocol version"* ]] || { echo "FAIL: no \"protocol version\" alert for a TLS 1.2 client"; exit 1; }
-V=$("${CURL[@]}" -v --tls13-ciphers TLS_AES_256_GCM_SHA384 "$URL" 2>&1) && { echo "FAIL: served a client without our ciphers"; exit 1; }
-[[ "$V" == *"alert handshake failure"* ]] || { echo "FAIL: no \"handshake failure\" alert for a client without our ciphers"; exit 1; }
+for C in TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384; do
+  V=$("${CURL[@]}" -v --tls13-ciphers $C "$URL" 2>&1) && { echo "FAIL: served a client that offers only $C"; exit 1; }
+  [[ "$V" == *"alert handshake failure"* ]] || { echo "FAIL: no \"handshake failure\" alert for a client that offers only $C"; exit 1; }
+done
 # port 80: the same page over plain HTTP, fresh and keep-alive; or, in an image built with
 # P80=redirect, everybody is sent to the site's https address
 if [[ $(head -c 12 "$B/page80.bin") == "HTTP/1.1 301" ]]; then

@@ -7,7 +7,7 @@
  * ciphertext and its tag, a signature) is marked defined again when it leaves.
  *
  * Secret here: our X25519 scalar and the shared secret, every key of the key schedule and
- * of the two ciphers, what is sealed, every ECDSA nonce of a stock and the private key.
+ * of the cipher, what is sealed, every ECDSA nonce of a stock and the private key.
  *
  *   make ct        (Valgrind from tools/outside.sh fetch; ten seconds)
  *
@@ -35,7 +35,7 @@ int main(int argc, char **argv)
     /* the public key of the all-zero private key: some client's key share */
     static const u8 peer[32] = {0x2f,0xe5,0x7d,0xa3,0x47,0xcd,0x62,0x43,0x15,0x28,0xda,0xac,0x5f,0xbb,0x29,0x07,
                                 0x30,0xff,0xf6,0x84,0xaf,0xc4,0xcf,0xc2,0xed,0x90,0x99,0x5f,0x58,0xcb,0x3b,0x74};
-    u32 i, c, L;
+    u32 i, L;
     control = argc > 1 ? atoi(argv[1]) : 0;
     if (asm_init()) return 1;
     for (i = 0; i < sizeof m; i++) m[i] = i * 7 + 3;
@@ -52,24 +52,22 @@ int main(int argc, char **argv)
      * made over, then every secret is the key of the next. */
     hm(hs, m, shared, 32);                              /* handshake secret */
     ex(ts, hs, "\x20\x0c" "s hs traffic", m + 100);     /* a traffic secret */
-    ex(kiv, ts, "\x20\x03" "key", 0);                   /* and its key and iv */
+    ex(kiv, ts, "\x10\x03" "key", 0);                   /* and its key and iv */
     ex(kiv + 32, ts, "\x0c\x02" "iv", 0);
     sha(tmp, shared, 32);                               /* (and the hash by itself) */
     jump(2, kiv + 32);
 
-    /* Both ciphers, both ways, under that key, of secret bytes: lengths around the blocks
+    /* AES-128-GCM both ways, under that key, of secret bytes: lengths around the blocks
      * of 16 and 64 and a full record. */
     SECRET(m, 1500);
-    for (c = 0; c < 2; c++)
-        for (i = 0; i < 12; i++) {
-            u32 n = (u32[]){1, 15, 16, 17, 63, 64, 65, 128, 129, 200, 1419, 1500}[i];
-            CIPH[0] = c;
-            L = sl(out, m, n, kiv, i);
-            jump(3, out + L - 1);
-            PUBLIC(out, L);                             /* a record is public */
-            L = op(tmp, out + 5, L - 21, kiv, i);       /* what it held, and its tag: not */
-            jump(4, tmp + L - 1);
-        }
+    for (i = 0; i < 12; i++) {
+        u32 n = (u32[]){1, 15, 16, 17, 63, 64, 65, 128, 129, 200, 1419, 1500}[i];
+        L = sl(out, m, n, kiv, i);
+        jump(3, out + L - 1);
+        PUBLIC(out, L);                                 /* a record is public */
+        L = op(tmp, out + 5, L - 21, kiv, i);           /* what it held, and its tag: not */
+        jump(4, tmp + L - 1);
+    }
     PUBLIC(m, sizeof m);
 
     /* Signatures: every nonce of a stock is secret (the host build lets us give them), and

@@ -15,8 +15,8 @@
 # whose connections may seal 2^n records (make KEYLIFE=n), and the check that they don't
 # seal more. NOTSO=1: an image that sends a segment a frame also over tap, where the card
 # would cut frames into segments for it (a control for the runs that do).
-# SUITES=TLS_CHACHA20_POLY1305_SHA256: what the checker's clients offer (by themselves
-# they offer both of ours and get AES-128-GCM).
+# SUITES=TLS_AES_128_GCM_SHA256: what the checker's clients offer (by themselves they
+# offer OpenSSL's three and get the one of them that is ours, AES-128-GCM).
 cd "$(dirname "$0")/.." || exit 1
 export B=${B:-build-site}
 if [[ -z ${NOBUILD:-} ]]; then

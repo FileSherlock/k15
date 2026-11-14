@@ -32,7 +32,6 @@ static u32 op(u8 *o, const u8 *c, u32 n, const u8 *kiv, u32 seq)
     __asm__ volatile("stc\n\tcall seal" : "+D"(e), "+S"(c), "+c"(n), "+b"(kiv), "+d"(seq) : : SCRATCH); /* CF = 1: decrypt */
     return e - o;
 }
-extern u8 CIPH[];
 
 extern u8 E[], REGS[];
 enum { R_X = 3 * 32, R_Y = 4 * 32 }; /* as in tools/ec.py */

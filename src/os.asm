@@ -7,7 +7,7 @@
 ;       AES-GCM), SSE4.1, and BMI2 and ADX (mulx, adcx, adox: the curves).
 ; NIC:  virtio-net (modern PCI interface), polled. Our IP is baked in (OURIP).
 ; TCP:  ports 443 (TLS) and 80 (one response for everybody: the page, or where to go); see `tcp`.
-; TLS:  1.3, TLS_CHACHA20_POLY1305_SHA256 and TLS_AES_128_GCM_SHA256, X25519 (asked for
+; TLS:  1.3, TLS_AES_128_GCM_SHA256, X25519 (asked for
 ;       with a HelloRetryRequest if need be), ecdsa_secp256r1_sha256.
 ; HTTP: GET and HEAD for the files of the site the image ends with (tools/pack.py); see `record`.
 ; Like k2, and unlike k1, this one is meant to be secure: a fresh X25519 key and a fresh ECDSA nonce per
@@ -91,16 +91,14 @@ APBSS   equ 0xA00000 + LOW  ; and 2 MiB: its BSS
 %endif
 TR      equ BSS + 0x20000   ; handshake transcript
 VB      equ BSS + 0x30000   ; what a client record should look like (for its tag)
-SB      equ BSS + 0x40000   ; seal scratch: Poly1305 input
+SB      equ BSS + 0x40000   ; seal scratch: what the tag is made over
 OB      equ BSS + 0x50000   ; our answer to one packet (OBMAX bytes)
 HB      equ BSS + 0x0C900   ; HMAC buffer (key pad | message)
 INFO    equ HB + 64         ; HKDF info is built right where HMAC wants its message
 SH      equ BSS + 0x0CB00   ; SHA-256: the state of the hash being made,
 TSH     equ SH + 32         ;   the state of the handshake transcript's hash (see `thash`),
 PADB    equ SH + 64         ;   and the end of a message with its padding (two blocks)
-ST      equ BSS + 0x0CD40   ; ChaCha20 state
-KS      equ BSS + 0x0CD80   ; ChaCha20 key stream block (64-byte aligned)
-PK      equ BSS + 0x0CDC0   ; ChaCha20 block 0: the Poly1305 key (r, then s)
+KS      equ BSS + 0x0CD80   ; a block of key stream (64-byte aligned)
 RK      equ BSS + 0x0CE00   ; AES-128: the eleven round keys of the record at hand,
 NB      equ RK + 176        ;   its counter block (nonce | counter),
 TAGM    equ NB + 16         ;   what its tag is masked with,
@@ -149,7 +147,7 @@ TXK     equ NV + 12         ; 1: frames are queued that the device has not been 
 TT      equ NV + 16         ; the table of TLS connections: address (a qword), number of buckets
 PT      equ NV + 32         ; the table of connections to port 80: the same
 TPOS    equ NV + 48         ; how far the transcript has been hashed (see `thash`)
-SUITE   equ NV + 52         ; the handshake's cipher: 0 ChaCha20-Poly1305, 1 AES-128-GCM
+SUITE   equ NV + 52         ; 0 if the ClientHello names our cipher suite, else -1
 POOLN   equ NV + 64         ; how many of the nonces made are left
 POOLFILL equ NV + 68        ; how far the next ones are (32 for each k G there is)
 CPUN    equ NV + 72         ; which processor this is (0: the one that booted)
@@ -173,7 +171,6 @@ TXBLOB  equ NV + 152        ;   where it is,
 TXEND   equ NV + 156        ;   the sequence number behind its last byte,
 TXLIM   equ NV + 160        ;   and the one up to which the client takes it for now
 SEGP    equ NV + 164        ; where the data of the segment in hand began (`tcp.busyc`)
-CIPH    equ NV + 168        ; a byte: the cipher `seal` is to use (0: ChaCha20-Poly1305, else AES-128-GCM)
 TQB     equ NV + 172        ; this processor's connections that wait for an ack (`tarm`): where
 TQH     equ NV + 176        ;   the queue is, how many have been taken out,
 TQT     equ NV + 180        ;   how many put in,
@@ -292,10 +289,10 @@ C_AS    equ 32              ;   and which it is (a word: its number in the site;
                             ;   its head)
 C_HS    equ 34              ; its handshake buffer + 1 (a word; if that still says so itself)
 C_LEN   equ 36              ; a word: so many bytes of a record that came in pieces are in that buffer
-C_FL2   equ 38              ; a byte: F_AES, F_FIN, F_ARMED, and in the top four bits by how
-F_AES   equ 1               ;   many bits the client's window is to be shifted (what its SYN
-F_FIN   equ 2               ;   said: window scaling). F_AES: its cipher is AES-128-GCM. F_FIN:
-F_ARMED equ 4               ;   our FIN has gone out. F_ARMED: it is in the queue of `tarm`.
+C_FL2   equ 38              ; a byte: F_FIN, F_ARMED, and in the top four bits by how many
+F_FIN   equ 2               ;   bits the client's window is to be shifted (what its SYN said:
+F_ARMED equ 4               ;   window scaling). F_FIN: our FIN has gone out. F_ARMED: it is
+                            ;   in the queue of `tarm`.
 F_HRR   equ 8               ;   F_HRR (before the handshake): we have asked for a second
 F_CA    equ 8               ;   ClientHello; F_CA (after it): something was lost on this
                             ;   connection once.
@@ -405,7 +402,7 @@ DBG     equ BSS + 0x0F500
 BITS 64
         section .text align=32
         global sha256, hmac, expand, seal, shaconst, echost, xdh, sign
-        global E, REGS, CIPH
+        global E, REGS
 %else
         org 0x100000
 BITS 32
@@ -2151,14 +2148,6 @@ sm:     cmp byte [abs P_PORTS+2], 0
         pop rax
 .no:    ret
 
-; ciph: `seal` is told which cipher connection rbp has
-ciph:   push rax
-        mov al, [rbp+C_FL2]
-        and al, F_AES
-        mov [CIPH], al
-        pop rax
-        ret
-
 ; ackno: edi = what we acknowledge to the client of connection rbp
 ackno:  mov edi, [rbp+C_NXT]
         test byte [rbp+C_FLG], F_DEFER
@@ -2199,7 +2188,6 @@ geom:   pushad
         add eax, [TXL]
         add eax, [rbp+C_RS]
         mov [TXEND], eax
-        call ciph
         popad
         ret
 
@@ -2366,7 +2354,6 @@ record: pushad
         lea rbx, [rbp+C_KIV+44] ; the client's key,
         mov edx, [rbp+C_ST]
         dec edx                 ; and the number this record must have
-        call ciph
         mov edi, VB
         stc
         call seal               ; VB = what it says, and behind that the tag it should have:
@@ -3250,32 +3237,21 @@ handshake:
         lea r8d, [rsi+rcx]      ; length, which counts as far as the ClientHello goes
         movzx ecx, word [rax-2]
         xchg cl, ch
-        or edi, -1              ; Ours of the client's: 13 01 (AES-128-GCM: 1) if it names
-        sub r8d, eax            ; that, which we seal three times as fast; but 13 03
-        jbe .cse                ; (ChaCha20-Poly1305: 0) if that is the first suite of
-        cmp ecx, r8d            ; TLS 1.3 (13 xx) it names at all: a client puts it there
-        jbe .csn                ; when AES is slow for it. And ChaCha20-Poly1305 if it has
-        mov ecx, r8d            ; no AES-128-GCM. Less than 0 if it names neither (-1:
-.csn:   shr ecx, 1              ; nothing of TLS 1.3 has gone by yet; -2: something has).
-        jz .cse                 ; What stands in front of a client's suites to see whether
-.cs:    mov dx, [rax]           ; we pass over what we don't know (GREASE) is no 13 xx.
-        cmp dl, 0x13
-        jne .csx
-        cmp dh, 1
+        or edi, -1              ; Ours, 13 01 (AES-128-GCM), among the client's: SUITE is
+        sub r8d, eax            ; 0 if it names it, -1 if not
+        jbe .cse
+        cmp ecx, r8d
+        jbe .csn
+        mov ecx, r8d
+.csn:   shr ecx, 1
+        jz .cse
+.cs:    cmp word [rax], 0x0113
         je .cs1
-        cmp dh, 3
-        je .cs3
-        and edi, -2             ; (another suite of TLS 1.3)
-.csx:   inc eax
+        inc eax
         inc eax
         loop .cs
         jmp .cse
-.cs3:   inc edi                 ; (ChaCha20-Poly1305 with nothing of TLS 1.3 before it:
-        jz .cse                 ; that is it. Else it is ours unless AES-128-GCM follows)
-        xor edi, edi
-        jmp .csx
-.cs1:   push 1
-        pop rdi
+.cs1:   inc edi
 .cse:   mov [SUITE], edi
         pop rcx
         mov edi, TR             ; The transcript. If this is the ClientHello we asked for
@@ -3362,7 +3338,7 @@ handshake:
 .nxt:   mov edi, esi
         jmp .ext
         ; A client we can't serve is told so, and that is the connection: one that has no
-        ; TLS 1.3 (an alert "protocol version"), one that names none of our cipher suites,
+        ; TLS 1.3 (an alert "protocol version"), one that does not name our cipher suite,
         ; one that has no x25519, or sent no share for it after being asked ("handshake
         ; failure"). It gets nothing that only looks like an answer.
 .seen:  pop rsi
@@ -3433,9 +3409,6 @@ handshake:
         mov esi, SHTAIL
         mov cl, 19
         rep movsb               ; ... + suite, extensions, key share header ...
-        mov eax, [SUITE]
-        add eax, eax
-        sub [rdi-18], al        ; (13 03, or 13 01)
         pop rsi
         lodsd
         call xdh                ; ... + our key share; R_X = the shared secret
@@ -3540,8 +3513,6 @@ handshake:
         sub ecx, esi
         mov ebx, KH
         push rax
-        mov al, [SUITE]
-        mov [CIPH], al
         mov al, 0x16            ; what the record holds: handshake messages
         xor edx, edx            ; (its number; and CF = 0: encrypt)
         call seal               ; edi = end of output
@@ -3582,9 +3553,7 @@ handshake:
         push 22
         pop rcx
         rep movsd
-        mov cl, [SUITE]
-        and byte [rbp+C_FL2], 0xF0 ; (F_AES, or nothing; the window's shift stays)
-        or [rbp+C_FL2], cl
+        and byte [rbp+C_FL2], 0xF0 ; (the window's shift stays)
         xchg eax, edi
         ret
 
@@ -3610,9 +3579,6 @@ hrrmsg: push rsi
         pop rdi
         mov esi, SHTAIL
         rep movsb               ; (17 of its 19 bytes: no key follows)
-        mov eax, [SUITE]
-        add eax, eax
-        sub [rdi-16], al        ; (13 03, or 13 01)
         mov byte [rdi-13], 12   ; twelve bytes of extensions,
         mov byte [rdi-3], 2     ; two of key share
         pop rsi
@@ -3675,16 +3641,13 @@ thash:
         ret
 %endif
 
-; keys: edi = key | iv from traffic secret ebx, for the cipher SUITE names: 32 bytes of key
-; (of which AES-128 uses 16), 12 of iv (+20 junk bytes: expand writes 32)
+; keys: edi = key | iv from traffic secret ebx: 32 bytes of key (of which AES-128 uses
+; 16), 12 of iv (+20 junk bytes: expand writes 32)
 keys:
         pushad
         xor edx, edx
         mov esi, L_KEY
-        cmp [SUITE], edx
-        je .k
-        mov esi, L_KEY16
-.k:     call expand
+        call expand
         add edi, 32
         mov esi, L_IV
         call expand
@@ -4717,7 +4680,7 @@ HKSET   equ HK + NPOOL * 32
 HAAD    equ HKSET + 16          ; (16 bytes to make a tag over in place of a record's header,
 HAADN   equ HAAD + 16           ; if HAADN is not 0: then so many of them count, less 1)
 ; haad (`seal`, before it makes the tag of the ebp blocks at rsi; rax = where the lengths
-; are): Wycheproof's vectors for the two ciphers have data of their own where a record has
+; are): Wycheproof's vectors for AES-128-GCM have data of their own where a record has
 ; its header, or none: then the header's block is not part of what is hashed.
 haad:   movzx edx, byte [HAADN]
         dec edx
@@ -4727,11 +4690,7 @@ haad:   movzx edx, byte [HAADN]
         dec ebp
 .some:  movdqu xmm5, [HAAD]
         movdqa [SB], xmm5
-        cmp byte [CIPH], 0
-        jne .gcm
-        mov [rax], dl
-        ret
-.gcm:   shl edx, 3
+        shl edx, 3
         mov [rax+7], dl
 .no:    ret
 hstock: pushad
@@ -4772,87 +4731,19 @@ hinv:   pushad
 %endif
 
 ; ----------------------------------------------------------------------------
-        HOT 0xC1F3F01F
-; chacha: xmm0-xmm3 = the ChaCha20 block of the 16-dword state at ST (its four rows:
-; a quarter round does all four columns at once), and the counter moves on. Clobbers eax,
-; xmm4.
-chacha: movdqa xmm0, [ST]
-        movdqa xmm1, [ST+16]
-        movdqa xmm2, [ST+32]
-        movdqa xmm3, [ST+48]
-        mov al, 10
-.r:     call .qr
-        pshufd xmm1, xmm1, 0x39 ; (the diagonals become the columns,
-        pshufd xmm2, xmm2, 0x4E
-        pshufd xmm3, xmm3, 0x93
-        call .qr
-        pshufd xmm1, xmm1, 0x93 ; and columns again)
-        pshufd xmm2, xmm2, 0x4E
-        pshufd xmm3, xmm3, 0x39
-        dec al
-        jnz .r
-        paddd xmm0, [ST]
-        paddd xmm1, [ST+16]
-        paddd xmm2, [ST+32]
-        paddd xmm3, [ST+48]
-        inc dword [ST+48]
-        ret
-.qr:    paddd xmm0, xmm1        ; a += b; d ^= a; d <<<= 16
-        pxor xmm3, xmm0
-        pshuflw xmm3, xmm3, 0xB1
-        pshufhw xmm3, xmm3, 0xB1
-        paddd xmm2, xmm3        ; c += d; b ^= c; b <<<= 12
-        pxor xmm1, xmm2
-        movdqa xmm4, xmm1
-        pslld xmm1, 12
-        psrld xmm4, 20
-        por xmm1, xmm4
-        paddd xmm0, xmm1        ; a += b; d ^= a; d <<<= 8
-        pxor xmm3, xmm0
-        movdqa xmm4, xmm3
-        pslld xmm3, 8
-        psrld xmm4, 24
-        por xmm3, xmm4
-        paddd xmm2, xmm3        ; c += d; b ^= c; b <<<= 7
-        pxor xmm1, xmm2
-        movdqa xmm4, xmm1
-        pslld xmm1, 7
-        psrld xmm4, 25
-        por xmm1, xmm4
-        ret
-
-        HOT 0x00038000
+        HOT 0xE0000007
 ; seal: a TLS 1.3 record at rdi for the ecx bytes at rsi and, behind them inside it, the
-; byte al that says what they are; key | iv at rbx (32 and 12 bytes), number edx; the
-; cipher is the one CIPH names. Returns rdi = the record's end.
+; byte al that says what they are, under AES-128-GCM; key | iv at rbx (the key's 16
+; bytes, 16 more, and 12), number edx. Returns rdi = the record's end.
 ; With CF set it is the other way round: the ecx bytes at rsi are what a record held between
 ; its header and its tag. They are decrypted to rdi, and behind them goes the tag that
 ; record should have had, for the caller to compare (rdi = behind that).
-; Both ciphers go the same way: a key stream 64 bytes at a time, xored straight onto what
-; was given, and a tag over header | ciphertext | lengths, lined up in SB.
+; A key stream 64 bytes at a time, xored straight onto what was given, and a tag over
+; header | ciphertext | lengths, lined up in SB.
 seal:   pushad
         sbb r12, r12            ; -1: decrypt (what we were given is the ciphertext)
         bswap edx               ; (the number goes on the nonce's last four bytes)
-        cmp byte [CIPH], 0
-        jne .aes
-        mov edi, ST             ; ChaCha state: constants | key | counter 0 | iv ^ number
-        mov esi, SIGMA
-        movsq
-        movsq
-        mov rsi, rbx
-        push 4
-        pop rcx
-        rep movsq
-        xor eax, eax
-        stosd
-        movsd
-        movsq
-        xor [rdi-4], edx
-        call chacha             ; block 0: Poly1305 key
-        movdqa [PK], xmm0
-        movdqa [PK+16], xmm1
-        jmp .sb
-.aes:   mov edi, NB             ; the counter block: iv ^ number | counter
+        mov edi, NB             ; the counter block: iv ^ number | counter
         mov rax, [rbx+32]
         stosq
         mov eax, [rbx+40]
@@ -4984,95 +4875,19 @@ seal:   pushad
         lea ecx, [rbp-(SB+16)]
         lea eax, [rbp+15]
         and eax, -16            ; SB+16 is 16-aligned
-        cmp byte [CIPH], 0
-        jne .alen
-        mov byte [rax], 5       ; Poly1305: the header's length, the ciphertext's
-        mov [rax+8], ecx
-        jmp .mac
-.alen:  mov byte [rax+7], 40    ; GCM: the same in bits, big-endian
-        lea edx, [rcx*8]
+        mov byte [rax+7], 40    ; the header's length and the ciphertext's, in bits,
+        lea edx, [rcx*8]        ; big-endian
         bswap rdx
         mov [rax+8], rdx
-.mac:   lea ebp, [rax+16-SB]
+        lea ebp, [rax+16-SB]
         shr ebp, 4              ; blocks to hash
         mov esi, SB
 %ifdef HOST
         call haad               ; (the tests may have other bytes hashed than a header's)
 %endif
-        cmp byte [CIPH], 0
-        jne .ghash
-        ; Poly1305 tag of the ebp 16-byte blocks at SB, key at PK (r, then s), to rdi.
-        ; h is r8, r9, r10 (two limbs of 64 bits and what is above them); r is r11, r12,
-        ; and r13 = r1 * 5/4 does for r1 where a product leaves 2^130 (which is 5).
-        mov r11, [PK]
-        mov r12, [PK+8]
-        mov rax, 0x0FFFFFFC0FFFFFFF
-        and r11, rax
-        sub rax, 3
-        and r12, rax
-        mov r13, r12
-        shr r13, 2
-        add r13, r12
-        xor r8d, r8d
-        xor r9d, r9d
-        xor r10d, r10d
-.blk:   add r8, [rsi]           ; h += block + 2^128
-        adc r9, [rsi+8]
-        adc r10, 1
-        mov rax, r8             ; h *= r: limb 0 is h0 r0 + h1 r1 5/4,
-        mul r11
-        mov rbx, rax
-        mov rcx, rdx
-        mov rax, r9
-        mul r13
-        add rbx, rax
-        adc rcx, rdx
-        mov rax, r8             ; limb 1 is h0 r1 + h1 r0 + h2 r1 5/4,
-        mul r12
-        mov r14, rax
-        mov r15, rdx
-        mov rax, r9
-        mul r11
-        add r14, rax
-        adc r15, rdx
-        mov rax, r10
-        imul rax, r13
-        add r14, rax
-        adc r15, 0
-        imul r10, r11           ; limb 2 is h2 r0
-        mov r8, rbx
-        add r14, rcx
-        mov r9, r14
-        adc r10, r15
-        mov rax, r10            ; and what is above 2^130 comes back times 5
-        shr rax, 2
-        and r10d, 3
-        lea rax, [rax+rax*4]
-        add r8, rax
-        adc r9, 0
-        adc r10, 0
-        add rsi, 16
-        dec ebp
-        jnz .blk
-        mov rax, r8             ; h mod 2^130 - 5: if h + 5 reaches 2^130, that less 2^130
-        mov rcx, r9
-        add rax, 5
-        adc rcx, 0
-        adc r10, 0
-        shr r10, 2
-        cmovnz r8, rax
-        cmovnz r9, rcx
-        add r8, [PK+16]         ; tag = h + s mod 2^128
-        adc r9, [PK+24]
-        mov [rdi], r8
-        mov [rdi+8], r9
-.tag:   add rdi, 16
-        mov [rsp], rdi
-        popad
-        ret
         ; GHASH of the ebp blocks at SB, up to four at a time: (y ^ b0) H^m ^ ... ^ b_{m-1} H
         ; in GF(2^128), reduced once.
-.ghash: mov ebx, HTAB
+        mov ebx, HTAB
         pxor xmm2, xmm2
 .g4:    mov eax, 4
         cmp ebp, eax
@@ -5088,12 +4903,13 @@ seal:   pushad
         pshufb xmm2, xmm7
         pxor xmm2, [TAGM]
         movdqu [rdi], xmm2
-        jmp .tag
+        add rdi, 16
+        mov [rsp], rdi
+        popad
+        ret
 
 ; ks64: the next 64 bytes of key stream, in xmm0-xmm3
-ks64:   cmp byte [CIPH], 0
-        je chacha
-        push 1
+ks64:   push 1
         pop rax
         movd xmm5, eax
         movdqa xmm0, xmm4
@@ -5214,11 +5030,9 @@ L_SHTS: db 32, 12, "s hs traffic"
 L_SATS: db 32, 12, "s ap traffic"
 L_CATS: db 32, 12, "c ap traffic"
 L_FIN:  db 32, 8, "finished"
-L_KEY:  db 32, 3, "key"
-L_KEY16: db 16, 3, "key"
+L_KEY:  db 16, 3, "key"
 L_IV:   db 12, 2, "iv"
 TLS13:  db "tls13 "
-SIGMA:  db "expand 32-byte k"
 
 %ifndef HOST
 CVCTX:  db "TLS 1.3, server CertificateVerify", 0
@@ -5244,7 +5058,7 @@ T_GZ:   db "gzip"
 SYNOPT: db 2, 4, 1460 >> 8, 1460 & 255 ; maximum segment size: what fits an Ethernet frame
         db 1, 3, 3, 0           ; (padding,) window scale: ours is not shifted
 MSSTAB: dw 216, 536, 1220, 1440 ; the sizes we cut our segments to (the client's, rounded down)
-SHTAIL: db 0x13, 0x03, 0x00, 0x00, 0x2e, 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04
+SHTAIL: db 0x13, 0x01, 0x00, 0x00, 0x2e, 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04
         db 0x00, 0x33, 0x00, 0x24, 0x00, 0x1d, 0x00, 0x20
 %else
 %include "regs.inc"

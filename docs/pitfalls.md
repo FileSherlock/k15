@@ -80,8 +80,6 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - "It takes an hour and a nanosecond" is no reason to leave a race: a host takes a
   processor away for milliseconds, in the middle of anything. Close it, and make the
   test hold one side still (`RACE=n`, `tools/racetest.py`).
-- In Poly1305 a block of zeros counts (every block has a bit added on top); in GHASH it
-  does not. So "no associated data" is no block, not an empty one.
 
 ## Measuring
 - Where a frame's time goes can't be seen from outside. Over tap QEMU's packet path
@@ -133,7 +131,5 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - Using what a client's SACK says without keeping it: Linux bunches its acks, and
   D-SACK looks the same.
 - Three bits for the client's window shift: Linux says 10. Four bits.
-- Taking the order of a client's suites for its wish: OpenSSL's order goes by key
-  length.
 - Getting past 130,000 frames a second on the server: a second generator, one
   processor, no interrupts: the same ceiling each time.
