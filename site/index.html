@@ -2,28 +2,31 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>k15: a static site as a bootable HTTPS server</title>
+<title>k15: an unhackable 14 KB HTTPS OS ($200 bounty)</title>
 <link rel="stylesheet" href="/style.css">
 <h1>k15</h1>
-<p class="sub">This page is served by the thing it describes.
-<p>k15 turns a folder of static files into a bootable x86-64 HTTPS server. The whole
-system (boot code, network driver, TCP, TLS 1.3, HTTP) is about 14 KB of assembly, and
-the files come behind it in the same image. There is no operating system underneath:
-no kernel, no shell, no file system, nothing to log into.
-<p>What answered your request is a cloud server with two shared virtual processors and
-4 GB of memory, running nothing but that image.
+<p class="sub">This page is served by an unhackable 14 KB x86-64 operating system.
+<div class="bounty">
+<p><strong>$200 Bitcoin bounty — until 2027-02-12.</strong>
+This server’s TLS private key is also the private key of
+<a href="https://mempool.space/address/bc1q00000000000000000000000000000000000000"><code>bc1q00000000000000000000000000000000000000</code></a>.
+Hack the server, read the key, and take the money. Moving the coins is the proof.
+<p>Verify against the live TLS handshake (zero-knowledge cross-curve proof):
+<code>python3 tools/bounty.py --verify 15kb.org</code>
+</div>
+<p>k15 turns a folder of static files into a bootable x86-64 HTTPS image: boot sector,
+virtio-net, ARP, TCP, TLS 1.3 and HTTP in 13,859 bytes of assembly, with the files
+behind it. There is no Linux on the disk, no kernel, no shell, no file system, no login,
+and no executable data pages; any CPU fault resets the machine back into k15.
 <table>
-<tr><th>on that server<th>k15<th>nginx + OpenSSL
-<tr><td>new TLS 1.3 connections a second<td>7,500 to 9,000<td>2,100 to 2,200
-<tr><td>small pages a second, connections kept<td>105,000 to 125,000<td>30,000 to 34,000
-<tr><td>files of 14 KB a second<td>30,000 to 35,000<td>24,000 to 27,000
-<tr><td>a 1.5 MiB file<td>0.92 GB/s<td>0.90 to 0.98 GB/s
-<tr><td>memory for a TLS connection that is held<td>128 bytes<td>25.8 KiB
+<tr><th>on this 2-vCPU cloud server<th>k15<th>nginx + OpenSSL
+<tr><td>new TLS 1.3 connections / s<td>7,500 to 9,000<td>2,100 to 2,200
+<tr><td>small pages / s, connections kept<td>105,000 to 125,000<td>30,000 to 34,000
+<tr><td>files of 14 KB / s<td>30,000 to 35,000<td>24,000 to 27,000
+<tr><td>a 1.5 MiB file<td>1.2 GB/s<td>0.90 to 0.98 GB/s
+<tr><td>memory per held TLS connection<td>128 bytes<td>25.8 KiB
 </table>
-<p>It is fast at what a site is mostly made of and about as fast as nginx at large
-files, it speaks TLS 1.3 only, it serves GET and HEAD and nothing else, and a change of
-content or certificate is a new image and a reboot. That is the design: clunky, limited, small, and hard to
-break into.
-<p>The source is at <a href="https://github.com/FileSherlock/k15">github.com/FileSherlock/k15</a>.
-How the numbers were measured, and what they do not say, is in its
-<a href="https://github.com/FileSherlock/k15/blob/main/bench/README.md">bench/README.md</a>.
+<p>TLS 1.3 only (X25519, ECDSA P-256, AES-128-GCM; SSL Labs: A), GET and HEAD only.
+Changing a file or certificate means booting a new image (4 seconds).
+<p>Source, proof and benchmarks: <a href="https://github.com/FileSherlock/k15/tree/bounty">github.com/FileSherlock/k15</a>.
+This server stays on that version until 2027-02-12: later changes are not deployed.
