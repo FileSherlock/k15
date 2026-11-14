@@ -22,38 +22,20 @@ import collections
 import os
 import random
 import socket
-import ssl
 import sys
 import time
+
+from tlsclient import HRR, NAME, context, hello_record
 
 HOST = os.environ.get("HOST", "10.0.2.15")
 PORT = int(os.environ.get("PORT", "443"))
 SRC = os.environ.get("SRC", "10.0.2.33")
-B = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", os.environ.get("B", "build"))
-NAME = open(os.path.join(B, "name")).read()
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 20000
 SEED = int(sys.argv[2]) if len(sys.argv) > 2 else int(time.time())
 
 
-def context():
-    ca = os.path.join(B, "ca.pem")
-    ctx = ssl.create_default_context(cafile=ca if os.path.getsize(ca) else None)
-    ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT  # see tools/load.py
-    return ctx
-
-
 def hello(groups=None):
-    """A ClientHello record as OpenSSL makes it (with these groups, if any are named)."""
-    ctx = context()
-    if groups:
-        ctx.set_ecdh_curve(groups)
-    inc, out = ssl.MemoryBIO(), ssl.MemoryBIO()
-    tls = ctx.wrap_bio(inc, out, server_hostname=NAME)
-    try:
-        tls.do_handshake()
-    except ssl.SSLWantReadError:
-        pass
-    return bytearray(out.read())
+    return bytearray(hello_record(groups=groups))
 
 
 def wrong(rng, rec):
@@ -157,9 +139,6 @@ def main():
     print("ok: and the server serves as before" if ok else "FAIL: the server no longer serves (seed %d)" % SEED)
     return 0 if ok else 1
 
-
-# SHA-256("HelloRetryRequest"): what a ServerHello has for its random when it is one
-HRR = bytes.fromhex("cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c")
 
 if __name__ == "__main__":
     sys.exit(main())

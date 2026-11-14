@@ -78,15 +78,16 @@ T[tls_isn31_loss3]="B=build-isn31 LOSS=3 $TLS"
 T[plain_isn32_loss3]='B=build-isn32 PLAIN=1 INFLIGHT=64 LOSS=3 unshare -Urn ./tap.sh ./taprunc.sh 4000 1024 4'
 T[real_isn31_loss3]="B=build-real-isn31 LOSS=3 $TLS"
 T[real_isn32_reorder]="B=build-real-isn32 REORDER=25 $TLS"
-T[site_wrap31]='B=build-wrap31 ISNTOP=0x7FFF8000 ISNBITS=17 unshare -Urn tools/sitetest.sh tap'
-T[site_wrap32]="$CHA B=build-wrap32 ISNTOP=0xFFFF8000 ISNBITS=17 unshare -Urn tools/sitetest.sh tap"
-T[site_wrap31_loss3]="$CHA LOSS=3 B=build-wrapl31 ISNTOP=0x7FF00000 unshare -Urn tools/sitetest.sh tap quick"
-T[site_wrap32_loss3]='LOSS=3 B=build-wrapl32 ISNTOP=0xFFF00000 unshare -Urn tools/sitetest.sh tap quick'
+SITE='NOBUILD=1 unshare -Urn tools/sitetest.sh tap'
+T[site_wrap31]="B=build-wrap31 $SITE"
+T[site_wrap32]="$CHA B=build-wrap32 $SITE"
+T[site_wrap31_loss3]="$CHA LOSS=3 B=build-wrapl31 $SITE quick"
+T[site_wrap32_loss3]="LOSS=3 B=build-wrapl32 $SITE quick"
 # a connection's key is not used for more records than it should be (here: 2^10)
-T[site_keylife]='B=build-keylife KEYLIFE=10 ONLY=sealed unshare -Urn tools/sitetest.sh tap'
+T[site_keylife]="B=build-keylife ONLY=sealed $SITE"
 # a client that vanishes in the middle of a file is given up after a minute or two, and one
 # that only stops reading is not (three minutes)
-T[site_gone]='GONE=1 ONLY=vanishes unshare -Urn tools/sitetest.sh tap'
+T[site_gone]="GONE=1 ONLY=vanishes $SITE"
 # a slot that another processor takes while its connection's timer has it in hand: before
 # the timer has said "in use", and after (tools/racetest.py; three to four minutes each)
 T[race1]='unshare -Urn tools/racetest.sh 1'
@@ -106,14 +107,14 @@ T[k15]='PORT=8513 tools/k15test.sh'
 # only code is executed, and neither code nor site is written (tools/wxtest.sh)
 T[wx]='tools/wxtest.sh'
 # a site of many files, one of them large (tools/sitetest.sh): every path, every kind of client
-T[site]='tools/sitetest.sh'
-T[site_tap]="$CHA unshare -Urn tools/sitetest.sh tap"
-T[site_loss3]='LOSS=3 unshare -Urn tools/sitetest.sh tap'
-T[site_mtu600_loss3]="$CHA MTU=600 LOSS=3 unshare -Urn tools/sitetest.sh tap quick"
-T[site_reorder]='REORDER=25 unshare -Urn tools/sitetest.sh tap'
+T[site]='NOBUILD=1 tools/sitetest.sh'
+T[site_tap]="$CHA $SITE"
+T[site_loss3]="LOSS=3 $SITE"
+T[site_mtu600_loss3]="$CHA MTU=600 LOSS=3 $SITE quick"
+T[site_reorder]="REORDER=25 $SITE"
 # the same where the card does not cut frames into segments for us (as through QEMU's own
 # network, but over tap, with loss): a segment a frame
-T[site_notso_loss3]="$CHA NOTSO=1 B=build-site-notso LOSS=3 unshare -Urn tools/sitetest.sh tap quick"
+T[site_notso_loss3]="$CHA B=build-site-notso LOSS=3 $SITE quick"
 # a large file through a path narrower than the window: no slower than a window of 64 KB was
 T[bneck]='tools/bnecktest.sh'
 ORDER="measure measure_tcg browsers tls tls_loss3 tls_mtu300_loss3 tls_reorder aes aes_loss3

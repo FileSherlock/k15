@@ -124,23 +124,15 @@ run() {
     esac
   done
   out=$(abs "$out")
-  local hport=$((port + 1000))
   [[ -f $out/disk.img ]] || die "run: no $out/disk.img (k15 pack first)"
-  local name ip
-  name=$(cat "$out/name")
-  ip=$(cat "$out/ip")
-  [[ $ip == 10.0.2.15 ]] || echo "(this image answers on $ip; QEMU's network is made to match)"
-  local accel=(-cpu max)
-  [[ -w /dev/kvm ]] && accel=(-accel kvm -cpu host)
-  echo "https://127.0.0.1:$port/  http://127.0.0.1:$hport/   (Ctrl-C ends it)"
+  local B=$out PORT=$port HPORT=$((port + 1000)) KVM=1 SMP=2 MEM=256
+  source tools/vm.sh
+  [[ $GUEST == 10.0.2.15 ]] || echo "(this image answers on $GUEST; QEMU's network is made to match)"
+  echo "https://127.0.0.1:$PORT/  http://127.0.0.1:$HPORT/   (Ctrl-C ends it)"
   local ca=
-  [[ -s $out/ca.pem ]] && ca="--cacert $out/ca.pem "
-  echo "curl ${ca}--connect-to $name:$port:127.0.0.1:$port https://$name:$port/"
-  exec qemu-system-x86_64 -nodefaults -display none -no-reboot -machine q35 -smp 2 "${accel[@]}" -m 256 \
-    -drive "file=$out/disk.img,format=raw,if=none,id=d0,snapshot=on" \
-    -netdev "user,id=n0,net=${ip%.*}.0/24,host=${ip%.*}.2,hostfwd=tcp:127.0.0.1:$port-$ip:443,hostfwd=tcp:127.0.0.1:$hport-$ip:80" \
-    -device pcie-root-port,id=rp1,chassis=1 -device virtio-net-pci,bus=rp1,netdev=n0,disable-legacy=on,romfile= \
-    -device pcie-root-port,id=rp2,chassis=2 -device virtio-scsi-pci,bus=rp2 -device scsi-hd,drive=d0
+  if [[ -s $out/ca.pem ]]; then ca="--cacert $out/ca.pem "; fi
+  echo "curl ${ca}--connect-to $NAME:$PORT:127.0.0.1:$PORT https://$NAME:$PORT/"
+  qemu "$out/disk.img" "$(slirp)"
 }
 
 # linux HOST RESET: make sure Linux is running there and stays (a "hold" for the chain into
@@ -216,7 +208,7 @@ EOF
       echo "k15 is up: https://$name/ (a verified fetch from $host)"
       # its other names, if it was packed with any
       local sans= n
-      [[ -f $out/pack.conf ]] && sans=$(source "$out/pack.conf" && echo "${sans:-}")
+      if [[ -f $out/pack.conf ]]; then sans=$(source "$out/pack.conf" && echo "${sans:-}"); fi
       for n in $sans; do
         if curl -s --max-time 4 "${ca[@]}" --connect-to "$n:443:$host:443" -o /dev/null "https://$n/"; then
           echo "          https://$n/ too"

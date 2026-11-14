@@ -9,7 +9,7 @@ IP ?= 10.0.2.15
 # KNOCK=a,b (development): a TCP packet to port a, then one to port b, resets the machine
 KNOCK ?=
 KNOCKDEF := $(if $(KNOCK),-DKNOCK_A=$(word 1,$(subst $(comma), ,$(KNOCK))) -DKNOCK_B=$(word 2,$(subst $(comma), ,$(KNOCK))),)
-OURIP := $(shell python3 tools/ip.py $(IP))
+OURIP := $(shell python3 -c 'import ipaddress; print("0x" + ipaddress.IPv4Address("$(IP)").packed[::-1].hex())')
 # CAP=n (tests): no more than n slots in each connection table, however much memory there is.
 # IDLE=n (tests): how long a connection must have been quiet to be replaced when there is no room
 # TSHARE=n: the table of TLS connections gets 1/2^n of the memory (default 3: an eighth), the
@@ -50,7 +50,7 @@ all: $(B)/disk.img
 
 $(B)/ip: FORCE
 	@mkdir -p $(B)
-	@python3 tools/ip.py $(IP) $@
+	@printf '%s' '$(IP)' > $@.$$$$; if cmp -s $@.$$$$ $@; then rm $@.$$$$; else mv $@.$$$$ $@; fi
 FORCE:
 
 $(B)/disk.img: src/boot.asm $(B)/os.bin tools/mkdisk.py

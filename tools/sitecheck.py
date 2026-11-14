@@ -28,62 +28,33 @@ import threading
 import time
 import zlib
 
-B = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", os.environ.get("B", "build"))
+from tlsclient import B, NAME, BioClient
+
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8443"))
 SRC = os.environ.get("SRC")
 T = float(os.environ.get("T", "20"))
-NAME = open(os.path.join(B, "name")).read()
 SITE = json.load(open(os.path.join(B, "site.json")))
 QUICK = "quick" in sys.argv[1:]
 
 
-def context():
-    ca = os.path.join(B, "ca.pem")
-    ctx = ssl.create_default_context(cafile=ca if os.path.getsize(ca) else None)
-    ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT  # see tools/load.py
-    return ctx
-
-
-class Conn:
+class Conn(BioClient):
     """A TLS client over a TCP socket we also hold: so a record can be sent in pieces."""
 
     def __init__(self, mss=None, rcvbuf=None, src=None):
-        self.sock = socket.socket()
+        sock = socket.socket()
         if mss:
-            self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_MAXSEG, mss)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_MAXSEG, mss)
         if rcvbuf:
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
         if src or SRC:
-            self.sock.bind((src or SRC, 0))
-        self.sock.settimeout(T)
-        self.sock.connect((HOST, PORT))
-        self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        self.inc, self.out = ssl.MemoryBIO(), ssl.MemoryBIO()
-        self.tls = context().wrap_bio(self.inc, self.out, server_hostname=NAME)
+            sock.bind((src or SRC, 0))
+        sock.settimeout(T)
+        sock.connect((HOST, PORT))
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        super().__init__(sock, eof_ok=True)
         self.buf = b""
-        self.eof = False
-        self.pump(lambda: self.tls.do_handshake() or True)
-
-    def pump(self, op):
-        while True:
-            try:
-                res = op()
-            except ssl.SSLWantReadError:
-                res = None
-            except ssl.SSLZeroReturnError:
-                self.eof = True
-                return b""
-            data = self.out.read()
-            if data:
-                self.sock.sendall(data)
-            if res is not None:
-                return res
-            got = self.sock.recv(65536)
-            if not got:
-                self.eof = True
-                return b""
-            self.inc.write(got)
+        self.handshake()
 
     def send(self, raw, pieces=None, gap=0.05):
         """One record with these bytes; in several TCP segments if pieces says where to cut."""

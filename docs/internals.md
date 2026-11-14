@@ -56,12 +56,12 @@ Read the part you are about to change. `tools/ec.py` has the curve code's other 
 - `tools/ec.py`: the curve code's other half: the programs, and a model of the arithmetic
   that the asm must match number for number. Read its docstring before touching either.
 - `tools/gen.py`: certificate, curve programs and constants -> `build/*.inc`.
-  `tools/pack.py`: the site -> `build/site.bin`, `site.inc`. `tools/ip.py`,
-  `tools/mkdisk.py`: the baked-in address, the disk image. `k15`: the tool on top.
-- `tools/mksite.py`, `tools/sitecheck.py`, `tools/sitetest.sh`, `tools/wxtest.sh`,
-  `tools/jcc.py`, `tools/tlsprobe.sh`, `tools/k15test.sh`: the test site and its checker,
-  the W^X test (and what else must be the machine's end), the jumps on boundaries, a
-  scanner's questions, the tool's own test.
+  `tools/pack.py`: the site -> `build/site.bin`, `site.inc`.
+  `tools/mkdisk.py`: the disk image. `k15`: the tool on top.
+- `tools/mksite.py`, `tools/sitecheck.py`, `tools/sitetest.sh`, `tools/tlsclient.py`,
+  `tools/wxtest.sh`, `tools/jcc.py`, `tools/tlsprobe.sh`, `tools/k15test.sh`: the test
+  site and its checker, the shared TLS client pieces, the W^X test (and what else must be
+  the machine's end), the jumps on boundaries, a scanner's questions, the tool's own test.
   `tools/racetest.sh`, `tools/racetest.py`: a slot taken from under its connection's timer.
 - From outside (`tools/outside.sh fetch` gets them into `ext/`): `test/outside.py`
   (Wycheproof's vectors and RFC 6979's against the host build), `test/ct.c` (the host
@@ -72,7 +72,8 @@ Read the part you are about to change. `tools/ec.py` has the curve code's other 
   client, the test that uses it, a download's timeline from a capture.
   `tools/churn.py`, `tools/flood.py`, `tools/idletest.py`: slots given back, slots not
   given to clients that don't exist, slots taken from connections long quiet.
-- `tools/vm.sh`: QEMU command line and curl options, sourced by the test scripts
+- `tools/vm.sh`: QEMU command line and curl options, sourced by `k15`, `tap.sh` and the
+  test scripts
 - `tools/bench.c`, `bench/`: the comparison with other servers (see Commands)
 - `tools/ffcheck.py`, `tools/nssdb.py`, `tools/certerr.py`: the browser checks' helpers
 

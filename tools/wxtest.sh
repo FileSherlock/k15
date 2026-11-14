@@ -15,8 +15,9 @@
 #   tools/wxtest.sh          (SMP=n for other machines than 2 processors; PORT=n for other
 #                            ports than 8500 and up)
 cd "$(dirname "$0")/.." || exit 1
-mkdir -p build-site
-python3 tools/mksite.py build-site/www >/dev/null || exit 1
+export B=build-wx
+mkdir -p $B
+python3 tools/mksite.py $B/www >/dev/null || exit 1
 WHAT=("none of it" "writing to the code" "running the stack" "writing to the site" "running the site" "running a packet buffer"
   "a fault where the frame in hand names a handler" "the same on another processor"
   "a random number generator that says the same twice")
@@ -24,18 +25,13 @@ P0=${PORT:-8500}
 bad=0
 for n in 0 1 2 3 4 5 6 7 8; do
   if [[ $n == 7 && ${SMP:-2} == 1 ]]; then echo "ok   (${WHAT[$n]}: this machine has no other)"; continue; fi
-  export B=build-wx
-  make -s -B B=$B SITE=build-site/www WXTEST=$n >/dev/null 2>&1 || { echo "BUILD FAILED (WXTEST=$n)"; exit 1; }
+  make -s -B B=$B SITE=$B/www WXTEST=$n >/dev/null 2>&1 || { echo "BUILD FAILED (WXTEST=$n)"; exit 1; }
   PORT=$((P0 + n))
   HPORT=$((P0 + 1000 + n))
   IMG=$B/os.bin
   source tools/vm.sh
   LOG=$(mktemp)
-  qemu-system-x86_64 -nodefaults -display none -no-reboot -machine q35 -smp "${SMP:-2}" "${ACCEL[@]}" -m 256 \
-    -drive "file=$B/disk.img,format=raw,if=none,id=d0,snapshot=on" \
-    -netdev "user,id=n0,net=${GUEST%.*}.0/24,hostfwd=tcp:127.0.0.1:${PORT}-${GUEST}:443" \
-    -device pcie-root-port,id=rp1,chassis=1 -device virtio-net-pci,bus=rp1,netdev=n0,disable-legacy=on,romfile= \
-    -device pcie-root-port,id=rp2,chassis=2 -device virtio-scsi-pci,bus=rp2 -device scsi-hd,drive=d0 >"$LOG" 2>&1 &
+  qemu "$B/disk.img" "$(slirp)" >"$LOG" 2>&1 &
   pid=$!
   served=no
   for _ in $(seq 1 40); do

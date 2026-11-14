@@ -29,16 +29,9 @@ PORTS = os.environ.get("PORTS", "")
 EXPECT = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www", "index.html"), "rb").read()
 REQ = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"
 
-# Every connection verifies the server: the chain (against our private CA, or the system's
-# roots if build/ca.pem is empty: a real certificate) and the name in the certificate.
-BUILD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", os.environ.get("B", "build"))
-NAME = open(os.path.join(BUILD, "name")).read()
-CTX = ssl.create_default_context(cafile=os.path.join(BUILD, "ca.pem") if os.path.getsize(os.path.join(BUILD, "ca.pem")) else None)
-# (Python >= 3.13 also turns on OpenSSL's RFC 5280 strictness, which wants an authority key
-# identifier in the leaf: 14+ bytes that curl, Chrome and Firefox don't ask for.)
-CTX.verify_flags &= ~ssl.VERIFY_X509_STRICT
-if os.environ.get("SSLKEYLOGFILE"):
-    CTX.keylog_filename = os.environ["SSLKEYLOGFILE"]
+from tlsclient import NAME, context
+
+CTX = context()
 # asyncio's SSL transport allocates a read buffer this big per connection (256 KiB by default):
 # our responses are ~100 bytes, and tens of thousands of connections must fit in the client's RAM
 asyncio.sslproto.SSLProtocol.max_size = 16 * 1024

@@ -109,25 +109,21 @@ def make_identity(names):
     ECDSA signature under Q. Nobody knows log R, so nobody (us included) knows Q's private
     key: this CA can never sign a second certificate, which makes it harmless to trust.
     (Its own self-signature is a dummy for the same reason; no client checks a trust
-    anchor's.) LEAF=option,... tries variants of the leaf.
+    anchor's.)
     """
-    opt = os.environ.get("LEAF", "").split(",")
     key = ec.generate_private_key(ec.SECP256R1())
     # (a compressed point would save 32 bytes: curl takes it, Firefox says
     # SEC_ERROR_UNSUPPORTED_EC_POINT_FORM once the chain is trusted)
-    point = key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.CompressedPoint
-                                          if "compressed" in opt else serialization.PublicFormat.UncompressedPoint)
+    point = key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
     spki = tlv(0x30, EC_P256 + tlv(0x03, b"\x00" + point))
     gn = b"".join(general_name(n) for n in names)
     # critical, as RFC 5280 wants with an empty subject (Chrome: INVALID otherwise)
-    san = tlv(0x30, tlv(0x06, b"\x55\x1d\x11") + (b"" if "noncritical" in opt else tlv(0x01, b"\xff"))
-              + tlv(0x04, tlv(0x30, gn)))
-    subject = tlv(0x30, tlv(0x31, tlv(0x30, tlv(0x06, b"\x55\x04\x03") + tlv(0x0c, b"x")))) if "subject" in opt else tlv(0x30, b"")
+    san = tlv(0x30, tlv(0x06, b"\x55\x1d\x11") + tlv(0x01, b"\xff") + tlv(0x04, tlv(0x30, gn)))
     # The CA's name: one attribute, OID 2.5.4 = "". (An empty name: curl and Firefox refuse,
     # MOZILLA_PKIX_ERROR_EMPTY_ISSUER_NAME. Firefox calls a 1-byte OID bad DER.)
     ca_name = tlv(0x30, tlv(0x31, tlv(0x30, tlv(0x06, b"\x55\x04") + tlv(0x13, b""))))
     tbs = tlv(0x30, tlv(0xa0, tlv(0x02, b"\x02")) + tlv(0x02, b"\x01") + ECDSA_SHA256
-              + ca_name + VALIDITY + subject + spki + tlv(0xa3, tlv(0x30, san)))
+              + ca_name + VALIDITY + tlv(0x30, b"") + spki + tlv(0xa3, tlv(0x30, san)))
 
     p, n = curve.P256, curve.N256
     h = hashes.Hash(hashes.SHA256())

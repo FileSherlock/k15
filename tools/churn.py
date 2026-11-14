@@ -14,20 +14,17 @@ from made-up clients before that last round: none of them may get a slot either.
 """
 import os
 import socket
-import ssl
 import struct
 import sys
 import time
 
+from tlsclient import B as BUILD, NAME, context
+
 DST = (os.environ.get("DST", "10.0.2.15"), int(os.environ.get("DPORT", "443")))
 SRC = os.environ.get("SRC", "10.0.2.32")
-BUILD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", os.environ.get("B", "build"))
-NAME = open(os.path.join(BUILD, "name")).read()
 EXPECT = open(os.path.join(BUILD, "..", "www", "index.html"), "rb").read()
 REQ = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"
-CA = os.path.join(BUILD, "ca.pem")
-CTX = ssl.create_default_context(cafile=CA if os.path.getsize(CA) else None)
-CTX.verify_flags &= ~ssl.VERIFY_X509_STRICT  # see tools/load.py
+CTX = context()
 KINDS = [int(k) for k in os.environ.get("KINDS", "01234")]  # which of the five ways to go
 
 

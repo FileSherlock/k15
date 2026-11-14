@@ -19,16 +19,21 @@
 # they offer both of ours and get AES-128-GCM).
 cd "$(dirname "$0")/.." || exit 1
 export B=${B:-build-site}
-mkdir -p "$B"
-python3 tools/mksite.py "$B/www" ${BIG:-1.5} >/dev/null || exit 1
-make -s B="$B" SITE="$B/www" CERT="${CERT:-cert}" ISNTOP="${ISNTOP:-}" ISNBITS="${ISNBITS:-}" KEYLIFE="${KEYLIFE:-}" NOTSO="${NOTSO:-}" BIGSH="${BIGSH:-}" >/dev/null || { echo "BUILD FAILED"; exit 1; }
+if [[ -z ${NOBUILD:-} ]]; then
+  mkdir -p "$B"
+  python3 tools/mksite.py "$B/www" ${BIG:-1.5} >/dev/null || exit 1
+  make -s B="$B" SITE="$B/www" CERT="${CERT:-cert}" ISNTOP="${ISNTOP:-}" ISNBITS="${ISNBITS:-}" KEYLIFE="${KEYLIFE:-}" NOTSO="${NOTSO:-}" BIGSH="${BIGSH:-}" >/dev/null || { echo "BUILD FAILED"; exit 1; }
+fi
 if [[ -n ${SUITES:-} ]]; then         # (OpenSSL's own way to be told: Python's ssl has no other)
-  printf 'openssl_conf = c\n[c]\nssl_conf = s\n[s]\nsystem_default = d\n[d]\nCiphersuites = %s\n' "$SUITES" > "$B/suites.cnf"
-  export OPENSSL_CONF=$PWD/$B/suites.cnf
+  TMP=$(mktemp)
+  printf 'openssl_conf = c\n[c]\nssl_conf = s\n[s]\nsystem_default = d\n[d]\nCiphersuites = %s\n' "$SUITES" > "$TMP"
+  export OPENSSL_CONF=$TMP
 fi
 if [[ ${1:-} == tap ]]; then
   shift
-  exec ./tap.sh env HOST=10.0.2.15 PORT=443 SRC=10.0.2.32 T="${T:-40}" python3 tools/sitecheck.py "$@"
+  trap 'rm -f ${TMP:-}' EXIT
+  ./tap.sh env HOST=10.0.2.15 PORT=443 SRC=10.0.2.32 T="${T:-40}" python3 tools/sitecheck.py "$@"
+  exit $?
 fi
 PORT=${PORT:-8483}
 IMG=$B/os.bin

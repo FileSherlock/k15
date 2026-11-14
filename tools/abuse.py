@@ -23,51 +23,21 @@ import ssl
 import sys
 import time
 
+from tlsclient import B as BUILD, HRR, BioClient, context, hello_record
+
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", "8443"))
 HPORT = int(os.environ.get("HPORT", PORT + 1000))
-BUILD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", os.environ.get("B", "build"))
-NAME = open(os.path.join(BUILD, "name")).read()
 EXPECT = open(os.path.join(BUILD, "..", "www", "index.html"), "rb").read()
 P80 = open(os.path.join(BUILD, "page80.bin"), "rb").read()      # what port 80 says to every request
 REQ = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"
 
 
-def context(groups=None):
-    ca = os.path.join(BUILD, "ca.pem")
-    ctx = ssl.create_default_context(cafile=ca if os.path.getsize(ca) else None)
-    ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT  # see tools/load.py
-    if groups:
-        ctx.set_ecdh_curve(groups)
-    return ctx
-
-
-class Client:
+class Client(BioClient):
     """A TLS client whose TCP stream we can also write to directly."""
 
     def __init__(self, ctx):
-        self.sock = socket.create_connection((HOST, PORT), timeout=5)
-        self.inc, self.out = ssl.MemoryBIO(), ssl.MemoryBIO()
-        self.tls = ctx.wrap_bio(self.inc, self.out, server_hostname=NAME)
-
-    def pump(self, op):
-        while True:
-            try:
-                res = op()
-            except ssl.SSLWantReadError:
-                res = None
-            data = self.out.read()
-            if data:
-                self.sock.sendall(data)
-            if res is not None:
-                return res
-            got = self.sock.recv(65536)
-            if not got:
-                raise ConnectionError("closed")
-            self.inc.write(got)
-
-    def handshake(self):
-        self.pump(lambda: self.tls.do_handshake() or True)
+        super().__init__(socket.create_connection((HOST, PORT), timeout=5), ctx)
 
     def fetch(self):
         self.pump(lambda: self.tls.write(REQ))
@@ -80,9 +50,6 @@ class Client:
         """Encrypt one request and return the record instead of sending it."""
         self.tls.write(REQ)
         return self.out.read()
-
-    def close(self):
-        self.sock.close()
 
 
 def served(ctx=None):
@@ -98,13 +65,7 @@ def served(ctx=None):
 
 def client_hello():
     """The ClientHello this machine's TLS sends (the handshake message, without the record header)."""
-    inc, out = ssl.MemoryBIO(), ssl.MemoryBIO()
-    tls = context().wrap_bio(inc, out, server_hostname=NAME)
-    try:
-        tls.do_handshake()
-    except ssl.SSLWantReadError:
-        pass
-    rec = out.read()
+    rec = hello_record()
     assert rec[0] == 22 and rec[5] == 1 and int.from_bytes(rec[3:5], "big") == len(rec) - 5, "one record with a ClientHello"
     return rec[5:]
 
@@ -214,8 +175,7 @@ def main():
         try:
             s.sendall(shareless)
             got = s.recv(4096)
-            asked &= got[:1] == b"\x16" and got[11:43] == bytes.fromhex(
-                "cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c")
+            asked &= got[:1] == b"\x16" and got[11:43] == HRR
             s.sendall(second)
             s.shutdown(socket.SHUT_WR)
             s.settimeout(1)
@@ -255,14 +215,8 @@ def main():
     PROTOCOL_VERSION, HANDSHAKE_FAILURE = bytes.fromhex("15030300020246"), bytes.fromhex("15030300020228")
     old = context()
     old.maximum_version = ssl.TLSVersion.TLSv1_2
-    inc, out = ssl.MemoryBIO(), ssl.MemoryBIO()
-    tls = old.wrap_bio(inc, out, server_hostname=NAME)
-    try:
-        tls.do_handshake()
-    except ssl.SSLWantReadError:
-        pass
     good &= check("a client without TLS 1.3 is told \"protocol version\", and that is all",
-                  said(out.read()) == PROTOCOL_VERSION)
+                  said(hello_record(old)) == PROTOCOL_VERSION)
     other = bytearray(hello)                    # our two cipher suites become one we don't have
     p = 38
     p += 1 + hello[p]
