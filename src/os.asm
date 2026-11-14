@@ -239,6 +239,9 @@ HSP     equ TABV            ; Handshake buffers (see `hsnew`): each holds
 %if CHAIN_LEN + 512 > (1 << HS_SHIFT) - 16
 %error "the certificate chain is too long for a handshake buffer"
 %endif
+%if CHAIN_LEN + 5120 > 0x10000  ; (the transcript: the chain, and up to 4,883 bytes of the rest)
+%error "the certificate chain is too long for the transcript's 64 KiB"
+%endif
 HS_OWNER equ 0              ;   the connection it belongs to (its slot: a qword),
 HS_FLEN equ 8               ;   the length of our flight (0: not sent yet),
 HS_CH   equ 16              ;   and the ClientHello record as far as it has arrived (up to
@@ -1371,9 +1374,9 @@ tcp:
         lea eax, [rcx+14]
         cmp eax, [RXLEN]
         ja .bad
+        cmp ecx, 40             ; (our header and TCP's at least: asked before the one is
+        jb .bad                 ; taken off, or a length of less than 20 would pass as 4 GiB)
         sub ecx, 20             ; TCP length
-        cmp ecx, 20
-        jb .bad
         mov [rbx+22], bl        ; the pseudo header, in place: 0, protocol, TCP length, addresses
         mov eax, ecx
         xchg al, ah

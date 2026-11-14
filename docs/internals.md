@@ -38,8 +38,9 @@ Read the part you are about to change. `tools/ec.py` has the curve code's other 
   ever queued, and the device's own count tell), queued by `tcp_big` with the 12 bytes
   in front that say how it is to be cut, and the device is told at once.
 - `tcp`: ARP requests for OURIP get a reply; then only IPv4 without options, unfragmented,
-  TCP, to OURIP, with the TCP checksum right and a length that fits the frame, port 443 or
-  80 gets further. `tcp_send` cuts an answer into segments, `tcp_seg` builds and sends one.
+  TCP, to OURIP, with the TCP checksum right and a length that fits the frame and both
+  headers (40 bytes at least: asked before 20 are taken off it), port 443 or 80 gets
+  further. `tcp_send` cuts an answer into segments, `tcp_seg` builds and sends one.
   In it: `.walk` (records, whole or put together), `.tx` (a response on its way).
 - `record` (a client's record: authentic? a request? for which response), `pick` and
   `seek` (which form of it, by the request's Accept-Encoding and If-None-Match), `geom`
@@ -527,8 +528,11 @@ removing the ones about TLS.
   legacy_version, nor whether its second ClientHello is its first with a key share. A
   malformed x25519 share is no share: it is asked for one (a HelloRetryRequest), where
   a server is to refuse.
-- After 2^32 records from the client its counter wraps to "no ClientHello yet": the
-  connection is dead, the nonces never repeat.
+- After 2^32 records from the client (95 GB of them) its counter wraps to "no
+  ClientHello yet", and the connection then takes one. What comes of that is the same
+  client's own connection's affair: by reading (not tried), a response sent again
+  unasked, and with a frame for the card to cut, a record a byte short under a number
+  that has been used. Closing the connection there instead would take 9 bytes.
 - HTTP: GET and HEAD, the path compared byte for byte with what pack.py made of the file
   names (so `/a%20b.txt`, not `/a b.txt`; a query is cut off; no `..` to resolve: a path
   is in the table or it is not). A request is a record that begins with its request
@@ -546,7 +550,13 @@ removing the ones about TLS.
   a window past 64 KB opens slowly: "How TCP works here"), no pacing (what an ack lets
   go goes at once), a first timeout of 0.25 s whatever the round trip is (a path
   slower than that gets a segment twice), and the old way (`tcp_send`) for the flight
-  and port 80: all at once, no window. Our own window is 64 KB, unscaled. The IP header's checksum is not looked at: what we use of that header is
+  and port 80: all at once, no window. On port 80 that means much for little: a
+  segment full of line ends is answered with as many responses as 256 KiB hold, at
+  once, and while they are unacknowledged every ack that repeats gets all of them
+  again (some 1,200 frames for one of 54 bytes). Whoever does that must be at its
+  address (the SYN cookie), so it is its own line that fills, and our processors'
+  time and the transmit ring that all share. A bound on what port 80 lets be
+  unacknowledged would end it. Our own window is 64 KB, unscaled. The IP header's checksum is not looked at: what we use of that header is
   fixed or goes into TCP's checksum, which is.
 - Port 80: one response, whatever is asked; a request body is not understood.
 - `keys` writes 20 junk bytes after an IV: the handshake makes both key blocks in `KA` and

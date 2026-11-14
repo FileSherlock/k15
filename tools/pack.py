@@ -68,6 +68,7 @@ TYPES = {
 }
 MAX_FILE = 1 << 30      # a response's bytes on the wire are counted in 31 bits
 MAX_SITE = 768 << 20    # the image, and all that boot puts behind it, lies in the first GiB
+OBMAX = 0x40000         # where the answer to one packet is built (src/os.asm): port 80's has to fit
 RECORD = 1418           # a response's bytes in a record, where a segment is 1440 bytes
 PACKED = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".woff", ".woff2", ".mp4", ".webm", ".mp3",
           ".zip", ".gz", ".br", ".zst", ".xz", ".bz2", ".7z"}   # compressed as they are: not tried
@@ -277,6 +278,9 @@ def main(site, out):
         sys.exit("pack.py: more than 32,767 different responses")
     if len(data) > MAX_SITE:
         sys.exit(f"pack.py: the site is {len(data) >> 20} MiB; the limit is {MAX_SITE >> 20} MiB")
+    if len(p80) > OBMAX:
+        sys.exit(f"pack.py: what port 80 says is {len(p80) >> 10} KiB, and the answer to a packet is built in "
+                 f"{OBMAX >> 10} KiB: it would never be said (P80=redirect, or a smaller page)")
 
     with open(os.path.join(out, "site.bin"), "wb") as f:
         f.write(data)

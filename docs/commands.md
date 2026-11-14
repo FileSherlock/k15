@@ -62,7 +62,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   none (a browser may not believe it there). OUT/site.json says what each path must
   return (for the tests), OUT/page80.bin what port 80 says.
 - `tools/suite.sh [JOBS] [name...]`: everything below, a few at a time, one line each
-  (63 runs, seven minutes). `SMP=1` or `SMP=4` in front for other machines than the
+  (64 runs, ten minutes). `SMP=1` or `SMP=4` in front for other machines than the
   default of 2 processors. Its verdict is strict: one failed connection is a FAIL. Under
   a loaded host a run that overflows rings on purpose (`raw1m_20k`) can time out a few
   hundred of a million (on 4 processors it does every time the suite runs five at once):
@@ -222,6 +222,11 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   `hellofuzz`): 20,000 ClientHellos as OpenSSL makes them, each with bytes changed,
   lengths set wrong, parts cut, grown or copied about at random. The server must
   answer or not, and go on serving: a real client is sent in after every 500.
+  `unshare -Urn ./tap.sh python3 tools/rawtest.py [SEED]` (seconds; the suite's
+  `rawframes`): 3,200 frames that are wrong below TCP, as only a sender on the same
+  link can make them: IP total lengths of less than the headers, frames that end in
+  their headers, headers of other lengths than they say. The machine must still be
+  there.
 - `unshare -Urn tools/racetest.sh 1` (and `2`; the suite's `race1` and `race2`, three
   minutes each): an image built `RACE=n IDLE=1 CAP=32`, in which the timer of a
   connection that may be taken stops for up to 30 s, before it has said "in use" (1) or

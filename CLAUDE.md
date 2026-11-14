@@ -55,14 +55,15 @@ is history, a measurement series or a description of how a routine works. Those 
   else; each is named in `tools/tlsfuzz.sh`.
 
 ## Next
-1. For the user to decide: three TLS shortcuts that the tests from outside point at.
-   A ChangeCipherSpec after the ServerHello, which RFC 8446 wants sent to a client that
-   has a session id (all browsers), for middleboxes: 30 bytes or so. Refusing a client
-   whose X25519 point makes the secret all zeros (a MUST; today such a client gets a
-   key share of zeros and a handshake): 25 bytes or so. A ClientHello that comes in two
-   records. And one that is not TLS: a slot for port 80 has 20 bytes, so one in 16 has
-   its first eight across two cache lines, and the `lock cmpxchg` that claims it locks
-   the bus (slow, and a host may police it); 24 bytes would end that.
+1. For the user to decide, each described in `docs/internals.md` ("Shortcuts that
+   remain", "The connection tables"). Three TLS shortcuts that the tests from outside
+   point at: a ChangeCipherSpec after the ServerHello, which RFC 8446 wants sent to a
+   client that has a session id (30 bytes or so); refusing a client whose X25519 point
+   makes the secret all zeros (a MUST; 25 bytes); a ClientHello in two records. And
+   three that reviews of the code point at: port 80 has no window, so a few bytes make
+   it send 256 KiB, again and again; a slot for port 80 is 20 bytes, so one in 16 lies
+   across two cache lines and is claimed with a lock on the bus (24 would end that);
+   a client that has sent 2^32 records starts over instead of being closed.
 2. The handshake further: OpenSSL's assembly does the ladder and the signature in
    about a fifth fewer cycles.
 3. Later: IPv6, DHCP, a retransmission timer that knows the round trip, pacing, zstd,
@@ -96,7 +97,7 @@ Don't change the source or a test script while a suite runs.
   `make outside` and `make ct` (`tools/outside.sh fetch` once, for what they run with).
 - After touching the handshake, records, or what a bad packet gets:
   `unshare -Urn tools/tlsfuzz.sh` (three minutes).
-- After anything else: `tools/suite.sh` (63 runs, seven minutes). Also with `SMP=1` and
+- After anything else: `tools/suite.sh` (64 runs, ten minutes). Also with `SMP=1` and
   `SMP=4` after touching what processors share or how the machine starts. On 4,
   `raw1m_20k` fails when the host is busy: run it alone before believing it.
 - After touching boot or the polling loops: `measure.sh` with `DEBUG=1`, `KNOCK=` and

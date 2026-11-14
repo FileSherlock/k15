@@ -99,6 +99,8 @@ T[cpus3]='rm -f /tmp/k15mon.c3; SMP=3 MON=/tmp/k15mon.c3 unshare -Urn ./tap.sh p
 # fetched), and real ClientHellos damaged at random (tools/hellofuzz.py)
 T[tlsfuzz]='IFTHERE=1 unshare -Urn tools/tlsfuzz.sh'
 T[hellofuzz]='unshare -Urn ./tap.sh python3 tools/hellofuzz.py'
+# frames that no router would pass on: lengths that say less than there must be, and the like
+T[rawframes]='unshare -Urn ./tap.sh python3 tools/rawtest.py'
 # the tool: ./k15 pack and ./k15 run
 T[k15]='PORT=8513 tools/k15test.sh'
 # only code is executed, and neither code nor site is written (tools/wxtest.sh)
@@ -120,7 +122,7 @@ ORDER="measure measure_tcg browsers tls tls_loss3 tls_mtu300_loss3 tls_reorder a
   real_mtu300_loss3 real_reorder hrr hrr_loss3 hrr_mtu300_loss3
   hrr_reorder real_hrr_loss3 redirect raw_redirect tls_isn31 tls_isn32 tls_isn31_loss3
   plain_isn32_loss3 real_isn31_loss3 real_isn32_reorder site_wrap31 site_wrap32 site_wrap31_loss3
-  site_wrap32_loss3 site_keylife site_gone race1 race2 race3 cpus3 tlsfuzz hellofuzz k15 wx site site_tap site_loss3 site_mtu600_loss3
+  site_wrap32_loss3 site_keylife site_gone race1 race2 race3 cpus3 tlsfuzz hellofuzz rawframes k15 wx site site_tap site_loss3 site_mtu600_loss3
   site_reorder
   site_notso_loss3 bneck"
 
@@ -154,7 +156,7 @@ verdict() {  # name, exit code -> one line
     raw*|twice*) [[ $rc == 0 ]] && ! grep -q -E ' [1-9][0-9]* (reset|timed out)' "$f" && v=ok
        note=$(grep '^RAW total' "$f" | tail -1 | cut -c1-80)
        note="$note; $(grep -o '[0-9]* reset, [0-9]* timed out' "$f" | tr '\n' ';')";;
-    churn*|idle|race*|cpus3|tlsfuzz|hellofuzz) [[ $rc == 0 ]] && v=ok; note=$(tail -1 "$f" | cut -c1-110);;
+    churn*|idle|race*|cpus3|tlsfuzz|hellofuzz|rawframes) [[ $rc == 0 ]] && v=ok; note=$(tail -1 "$f" | cut -c1-110);;
     wx) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 9 ok; $(grep -m1 '^FAIL' "$f")";;
     bneck) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 4 ok; $(grep -m1 '^FAIL' "$f" | cut -c1-80)";;
     k15) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 24 ok; $(grep -m1 '^FAIL' "$f")";;

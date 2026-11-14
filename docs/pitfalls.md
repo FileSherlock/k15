@@ -69,6 +69,10 @@ One or two lines each. Add to it when something costs an hour; delete what stops
   loop that waits.
 - Under overload what matters is where frames wait: deep rings of our own, not the
   device's 256.
+- A length is compared before anything is taken off it: `sub ecx, 20` / `cmp ecx, 20`
+  let an IP total length of less than 20 pass for 4 GiB, and the next write was the
+  machine's end. One frame, from the first image to 2026-11-14 (`tools/rawtest.py`).
+- What a router would have dropped is still a frame to whoever is on the same link.
 - What was counted is no bound for a walk that comes after, once another processor can
   change it in between (`find`: the free slots of a bucket). Every walk has its own end.
 - A processor that has no work must not do the idle work either: its share of a shared
