@@ -18,7 +18,9 @@ MRG_RXBUF, CTRL_VQ, EVENT_IDX, INDIRECT_DESC), MAC 92:00:0a:76:c2:50. Address
 2.28.113.14/32, everything through the gateway 172.31.1.1 (d2:74:7f:6e:37:e3). Disk: 38 GB
 on virtio SCSI (1af4:1048), Ubuntu 26.04 with GRUB 2.14.
 
-SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse.
+SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse. A cx23 boots `disk.img`
+written over the whole of /dev/sda from the rescue system, and again after a reset
+(2026-11-14, on a second server; that is how `tools/bounty_ceremony.sh` deploys).
 
 ## Running it on the server
 `ssh root@2.28.113.14` works from the user's machine while the server runs Linux.
