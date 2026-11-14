@@ -369,6 +369,7 @@ DBG     equ BSS + 0x0F500
         ud2
 %endmacro
 
+; (make RACE=3 is in `find`.)
 ; RACEWAIT age (make RACE=n IDLE=1, for tools/racetest.py): `tqrun`, with a connection in
 ; hand that has been quiet for long enough to be taken (%1: its C_AGE as it was), stops
 ; there for up to 30 s, or until another processor has made the slot its own and has just
@@ -1145,12 +1146,20 @@ apstart: mov esp, STACK
         add [TQB], eax          ; (its own queue of waiting connections, and its own ring)
         add eax, [RBASE]
         mov [MYRING], eax
+.w:     pause                   ; Until the first processor has counted us. Frames go to a
+        mov eax, [abs NCPUM]    ; power of two of us: one that gets none (the third of
+        test eax, eax           ; three; one that came after the count) has nothing to do,
+        jz .w                   ; and must not go through the motions either: its turn at
+        cmp [CPUN], eax         ; the SYNs of late (`tidle`) would be at another's
+        ja .rest
 %ifdef WXTEST
 %if WXTEST = 7                  ; (the same on a processor that was started up: its table is
         WXGATE poll             ; at address 0 whatever loaded us)
 %endif
 %endif
         jmp poll
+.rest:  hlt
+        jmp .rest
 
 %ifdef DEBUG
 tcpd:   rdtsc                   ; (`tcp`, with the cycles spent on frames, and how many frames)
@@ -2807,7 +2816,7 @@ find:   pushad
         xor esi, esi
         call prf
         movdqa [HKO], xmm0
-        mov esi, PT             ; the table for port 80,
+.again: mov esi, PT             ; the table for port 80,
         push PSLOT
         pop rcx
         cmp byte [abs P_PORTS+2], 0
@@ -2838,11 +2847,31 @@ find:   pushad
         jnz .free
         mov rbp, rsi            ; no free slot in either
         jmp .miss
-.free:  mov rax, [rbp]
-        test eax, eax
-        jz .mine
+.free:
+%ifdef RACE
+%if RACE = 3                    ; (make RACE=3, for tools/racetest.py 3: the one free slot that
+        test byte [abs P_FL], 2 ; was counted is another's by the time we get to it, as when
+        jnz .walk               ; another processor has made a connection there meanwhile:
+        cmp dl, 1               ; here a made-up one, and not for a SYN, which takes no slot)
+        jne .walk
+        push rbp
+.gone:  cmp dword [rbp+C_IP], 0
+        je .took
         add rbp, rcx
-        jmp .free
+        jmp .gone
+.took:  mov dword [rbp+C_IP], 0x0100007F
+        pop rbp
+.walk:
+%endif
+%endif
+        mov dh, BUCKET          ; The first free slot of that bucket. If there is none any
+.f:     mov rax, [rbp]          ; more (another processor has taken what was free when it
+        test eax, eax           ; was counted), all of it again: the walk must not go on
+        jz .mine                ; into the next bucket, or out of the table
+        add rbp, rcx
+        dec dh
+        jnz .f
+        jmp .again
 .mine:  mov [CLAIMQ], rax       ; (what is there now: see `.make` in `tcp`)
 .miss:  stc
 .ret:   mov [rsp+16], rbp

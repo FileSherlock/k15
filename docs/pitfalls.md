@@ -69,6 +69,10 @@ One or two lines each. Add to it when something costs an hour; delete what stops
   loop that waits.
 - Under overload what matters is where frames wait: deep rings of our own, not the
   device's 256.
+- What was counted is no bound for a walk that comes after, once another processor can
+  change it in between (`find`: the free slots of a bucket). Every walk has its own end.
+- A processor that has no work must not do the idle work either: its share of a shared
+  table is somebody else's (`tidle`, with three processors).
 - "It takes an hour and a nanosecond" is no reason to leave a race: a host takes a
   processor away for milliseconds, in the middle of anything. Close it, and make the
   test hold one side still (`RACE=n`, `tools/racetest.py`).
@@ -86,6 +90,8 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - A number nobody measured is a guess. A feature somebody else sized is not sized.
 - A grade is what the grader says today. Compare with a site that has the grade
   before writing down why.
+- A fix is read best by somebody who has not heard why it is right: the review of the
+  slot race found it sound, and two older faults beside it that nobody had asked about.
 - A test written beside the code knows what the code knows. Vectors made elsewhere
   found in a minute that a client's point of small order makes our own key share zero.
 - tlsfuzzer's scripts fail in their first lines against us for four reasons that are

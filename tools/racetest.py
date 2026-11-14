@@ -9,7 +9,8 @@ one of the two with nothing: the timer, if the slot was taken before it said "in
 nanoseconds, if ever; an image built with RACE=N holds the timer still at that point for
 up to 30 s (see RACEWAIT in src/os.asm), so that they do meet. Run by tools/racetest.sh:
 
-    unshare -Urn tools/racetest.sh 1        (and 2; three to four minutes each)
+    unshare -Urn tools/racetest.sh 1        (and 2; three to four minutes each; 3 is
+                                            another matter: see `gone` below)
 
 The table for TLS has 32 slots. One is X's, which asks for the large file and vanishes in
 the middle of it (what it sends from then on is dropped on its way out); 31 are held by
@@ -181,7 +182,56 @@ def main():
     return None
 
 
+def gone():
+    """N = 3. A new connection goes into the first free slot of the bucket that has more of
+    them (`find`), and how many each has is counted before. If the last one is another
+    processor's by the time it is looked for, there is none: the walk must end with the
+    bucket, not find "a free slot" in the next bucket or behind the table. An image built
+    RACE=3 does that to itself: the one free slot that was counted becomes a made-up
+    connection's before the walk. With CAP=16 each table is one bucket, and behind the
+    table for TLS lies the one for port 80: there seven connections are made, and the
+    first of them ended, so that its slot, the table's first 20 bytes, is free and the
+    six behind it are held. Then connections to 443 until the bucket's last slot is
+    counted. A walk that leaves the bucket takes "a slot" of 128 bytes where the table
+    for port 80 begins, over the six: they must all still be answered."""
+    plain = []
+    for _ in range(7):
+        s = socket.create_connection((HOST, 80), timeout=5, source_address=(K_SRC[0], 0))
+        s.sendall(b"GET / HTTP/1.1\r\n\r\n")
+        if not s.recv(4096).startswith(b"HTTP/1.1 "):
+            return "port 80 does not answer"
+        plain.append(s)
+    plain.pop(0).close()
+    time.sleep(0.5)
+    made, why = [], "none"
+    for _ in range(20):
+        s = socket.socket()
+        s.bind((K_SRC[1], 0))
+        s.settimeout(3)
+        try:
+            s.connect((HOST, 443))
+        except OSError as e:            # (refused: the bucket is full now)
+            why = type(e).__name__
+            s.close()
+            break
+        made.append(s)
+        time.sleep(0.05)
+    time.sleep(0.5)
+    ok = 0
+    for s in plain:
+        try:
+            s.sendall(b"GET / HTTP/1.1\r\n\r\n")
+            ok += s.recv(4096).startswith(b"HTTP/1.1 ")
+        except OSError:
+            pass
+    print("%d connections to 443 until there was no room (%s); %d of the 6 on port 80 are still answered" % (len(made), why, ok))
+    if len(made) not in (15, 16):       # (the 16th is reset as soon as it is made: before `connect` is back, or after)
+        return "the bucket's last slot should have been counted with the 16th"
+    return None if ok == 6 else "a connection was made outside its bucket, over the table for port 80"
+
+
 if __name__ == "__main__":
-    why = main()
-    print("FAIL: " + why if why else "ok: a slot that changes hands under the timer is the taker's or the timer's, not both's")
+    why = gone() if N == "3" else main()
+    print("FAIL: " + why if why else "ok: a free slot that is gone is not looked for outside its bucket" if N == "3"
+          else "ok: a slot that changes hands under the timer is the taker's or the timer's, not both's")
     sys.exit(1 if why else 0)

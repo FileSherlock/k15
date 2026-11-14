@@ -138,7 +138,11 @@ and while it waits for the transmit lock or a free transmit buffer).
 - They are started with INIT and SIPI to "all but self" (`tramp`, copied to 0x8000: from
   real mode straight to long mode); each takes a number with `lock xadd`. Frames go to
   the largest power of two of them (`NCPUM`). With one processor nothing changes but the
-  uncontended lock.
+  uncontended lock. One that gets no frames (the third of three; one that took its
+  number after the count was read) waits for the count and then halts (`apstart`;
+  `tools/cputest.py` asks QEMU). Until 2026-11-14 it went round the polling loop like
+  the others, and its turn at the SYNs of late (`tidle`) was at the first processor's
+  places: it answered that one's SYNs again, on that one's connections.
 - A slot that changes hands between processors (a connection quiet for an hour, in a
   full table) does so in one step on each side. The taker's `cmpxchg` asks for the slot's
   first eight bytes as it saw them in one look (`find.used`), C_AGE among them, and puts
@@ -351,11 +355,23 @@ The old way, and what both share:
   88 bytes of keys (two of 32 with their 12 of iv; which cipher is a flag). They fill the table
   space behind the buffers: the TLS table gets an eighth (`TSHARE`), port 80 the rest.
 - A connection is in one of two buckets of 16 slots, picked by two words of `prf(addresses,
-  ports)`; a new one goes into the bucket with more free slots (`find`). A slot is free
-  when its address is 0. With two buckets to choose from the table fills to 85% before
+  ports)`; a new one goes into the bucket with more free slots (`find`), into the first
+  of them: a walk that ends with the bucket. (The free slots are counted first; if
+  another processor has taken the last one by then, `find` looks again. Until
+  2026-11-14 the walk had no end: it went on into the next bucket, where `find` never
+  looks for that connection again, or out of the table: from the one for TLS into the
+  one for port 80, a slot of 128 bytes laid over six of 20. `tools/racetest.sh 3`.) A
+  slot is free when its address is 0. With two buckets to choose from the table fills to 85% before
   anyone finds both full, and at 92% one in a thousand does; one run of 16 slots from one
   hash, as it was, lost 0.8% of the held connections at 70% (`tools/rawc.c` measures it;
   both match a simulation).
+- A slot for port 80 is 20 bytes, and a bucket of 16 begins on a cache line: so the
+  fourth slot of every bucket has its address in one line and its port, flags and time
+  in the next. The `lock cmpxchg` that claims it (`tcp.make`) is then a lock on the
+  whole bus: as atomic as any, some thousand cycles slower, and something a host can
+  notice and slow down. One new connection in 16 on port 80; the slots of the TLS
+  table are 128 bytes and never lie so. (Slots of 24 bytes would end it: 143 million
+  on the server where there are 172 million.)
 - `prf` is eleven AES rounds (the processor's `aesenc`) over the frame's addresses and
   ports under round keys from rdrand at boot: about 50 cycles, and clients can't aim at
   each other's buckets. Its four words pick the two buckets, make the cookie's secret

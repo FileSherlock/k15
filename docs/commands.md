@@ -28,11 +28,11 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   for its owner's eyes only (umask 077), and /boot/k15.bin on the server for root's.
 - `make` assembles `src/os.asm` into `build/os.bin` (loaded at 1 MiB) and `build/disk.img`
   (`src/boot.asm` + the image; what the tests boot), with the site of `www/` in it.
-  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 14,491,
+  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 14,396,
   about: boot, clock calibration, page tables, driver and the other processors 2,700,
   network 4,300 with the timers, requests and the forms of a file 700, TLS handshake
   and key schedule 1,600, SHA-256 450, curves 3,000 with their programs and constants,
-  the two ciphers 1,650, certificate 230; among them some 250 of padding in front of the
+  the two ciphers 1,650, certificate 230; among them 35 of padding in front of the
   routines a handshake spends its time in: see HOT in "How the curve code works". Of the
   874 that the night of 2026-11-12 added: frames for the card to cut 450, window scaling
   and what goes with it 130, the forms of a file 290; `seal` got faster in the same
@@ -62,7 +62,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   none (a browser may not believe it there). OUT/site.json says what each path must
   return (for the tests), OUT/page80.bin what port 80 says.
 - `tools/suite.sh [JOBS] [name...]`: everything below, a few at a time, one line each
-  (61 runs, seven minutes). `SMP=1` or `SMP=4` in front for other machines than the
+  (63 runs, seven minutes). `SMP=1` or `SMP=4` in front for other machines than the
   default of 2 processors. Its verdict is strict: one failed connection is a FAIL. Under
   a loaded host a run that overflows rings on purpose (`raw1m_20k`) can time out a few
   hundred of a million (on 4 processors it does every time the suite runs five at once):
@@ -100,7 +100,9 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   on another; 8 a random number generator that says the same twice); `WIN=n`: so many segments may
   be on their way to begin with (10); `NOTSO=1`: a segment a frame, whatever the card
   offers; `BIGSH=n`: 2^n buffers a processor for the frames the card cuts (3; with 0 or
-  1 a frame waits for the device to have sent the one before: the way to test that).
+  1 a frame waits for the device to have sent the one before: the way to test that);
+  `RACE=n`: what two processors can do to each other in a nanosecond, held still or done
+  on purpose (`tools/racetest.sh`).
 - `tools/bneck.sh` (inside tap.sh, with an image built `NOTSO=1`): a bottleneck between
   guest and client, `BRATE` Mbit/s with a queue of `BQUEUE` packets, `BDELAY` ms each
   way, `BLOSS` % lost besides; it fetches a large file and says how long that took and
@@ -224,7 +226,13 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   minutes each): an image built `RACE=n IDLE=1 CAP=32`, in which the timer of a
   connection that may be taken stops for up to 30 s, before it has said "in use" (1) or
   after (2), and a new connection that finds no room. Whoever is second must get
-  nothing (`tools/racetest.py`).
+  nothing (`tools/racetest.py`). `... racetest.sh 3` (`race3`, five seconds): an image
+  built `RACE=3 CAP=16`, in which the one free slot of a bucket is somebody else's
+  between being counted and being taken; the connection must then not be made anywhere
+  else.
+- `SMP=3 MON=/tmp/k15mon unshare -Urn ./tap.sh python3 tools/cputest.py` (the suite's
+  `cpus3`): asks QEMU's monitor which processors are halted. Those that take no frames
+  must be (the third of three; the fifth and on), and no other.
 - `make test` checks the asm crypto (`src/os.asm` built with `-DHOST`, driven by
   `test/test_asm.c`) against pyca/cryptography (hashes, both ciphers, X25519 with edge
   scalars, 70 signatures) and against the model (every pair of 22 edge numbers through
