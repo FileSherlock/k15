@@ -210,7 +210,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   marked as undefined memory: a jump decided by one, or an address made of one, is an
   error. Six runs with such a jump or address planted must each be found
   (`test/ct.c`).
-  `unshare -Urn tools/tlsfuzz.sh [NAME...]` (three minutes): 31 of tlsfuzzer's scripts
+  `unshare -Urn tools/tlsfuzz.sh [NAME...]` (three minutes): 30 of tlsfuzzer's scripts
   for TLS 1.3 against the image in `build/`, over tap: 1,300 conversations, most of
   them wrong in one place. The server must still serve after each script; a
   conversation may fail only if the script's line in `tools/tlsfuzz.sh` names it, with
