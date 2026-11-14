@@ -49,8 +49,7 @@ FR      equ 0               ; the Ethernet frame being handled. At address 0 (ol
 P_ADV   equ FR + 18         ; byte away: (where the IP header had its id) how far its ack moved,
 P_IP    equ FR + 26         ;   the client's address,
 P_PORTS equ FR + 34         ;   its port and ours (as on the wire),
-P_SEQ   equ FR + 38         ;   its sequence number (in host order once `tcp` has started;
-                            ;   moved on past bytes we already had)
+P_SEQ   equ FR + 38         ;   its sequence number (in host order once `tcp` has started)
 P_ACK   equ FR + 42         ;   its ack (the same)
 P_FL    equ FR + 47         ;   its flags
 P_WIN   equ FR + 48         ;   how much it takes beyond its ack (a word, as on the wire)
@@ -279,7 +278,7 @@ C_AGE   equ 7               ; when its last packet came (NOW; a byte, so after 2
 C_NXT   equ 8               ; next sequence number we expect from the client
 C_SND   equ 12              ; our next sequence number
 C_ACK   equ 16              ; the client's last ack
-PSLOT   equ 20
+PSLOT   equ 24
 C_ST    equ 20              ; 0 = waiting for the ClientHello, else 1 + the number of the
                             ; client's next record (of those under its application key)
 C_SR    equ 24              ; the response in hand (see `tcp.tx`): the number of its first record,
@@ -1585,8 +1584,8 @@ tcp:
         mov eax, [rbx+P_ACK]
         lea edx, [rax-1]        ; What the SYN-ACK noted in our sequence number: the client's
         shl edx, 2              ; window shift (the top four bits of C_FL2; in a slot for
-        mov dh, dl              ; port 80, which ends before that, rdi is at a byte of C_ACK
-        and dh, 0xF0            ; here, which is set next) and its segment size
+        mov dh, dl              ; port 80, which ends before that, rdi-2 is in the spare four
+        and dh, 0xF0            ; bytes at its end) and its segment size
         mov [rdi-2], dh
         and dl, 0x0C
         mov [rbp+C_FLG], dl
@@ -1660,7 +1659,6 @@ tcp:
         jz .old
 .trim:  add esi, eax            ; drop what we have, the rest is new
         sub ecx, eax
-        add [rbx+P_SEQ], eax
         jmp .new
 .early: count 3                 ; From further on: what comes before it is late (neighbours do
         neg eax                 ; get swapped on the way) or lost. Keep it for when that
@@ -1677,10 +1675,12 @@ tcp:
         jnz .resend             ; is why; if not, an ack will do
 .ack:   call sm
         jc .txa
-        mov esi, OB
-        xor ecx, ecx
-        mov al, 0x10
-        jmp .send
+        and byte [rbx+P_FL], ~1
+        mov edi, OB
+        mov eax, [rbp+C_SND]
+        cmp eax, [rbp+C_ACK]
+        je .reply
+        jmp .out
 .inord: test ecx, ecx
         jnz .new
         test byte [rbx+P_FL], 1
@@ -1700,7 +1700,9 @@ tcp:
         ; One that is not (and every ClientHello, whose buffer our flight will need) is put
         ; together in a handshake buffer: C_LEN bytes of it are there. Its header says how
         ; long it is; if that is more than the buffer holds, we can't go on.
-.walk:  test ecx, ecx
+.walk:  test byte [rbp+C_FLG], F_CLOSED ; (a client we are done with gets nothing more taken
+        jnz .out                ; from it)
+        test ecx, ecx
         jz .reply
         movzx eax, word [rbp+C_LEN]
         test eax, eax
@@ -1776,7 +1778,6 @@ tcp:
 .hello: push rsi                ; (the rest of this segment)
         push rcx
         push rbx
-        inc dword [rbp+C_ST]
         lea esi, [rbx+HS_CH+5]
         lea ecx, [rdx-5]
         call handshake          ; edi = end of our flight
@@ -1796,8 +1797,6 @@ tcp:
         pop rsi
         pop rbx
         mov [rbp+C_LEN], bx
-        test byte [rbp+C_FLG], F_CLOSED ; (a client we can't serve has been told so, and
-        jnz .out                ; nothing more is taken from it)
         jmp .walk
         ; A request whose response can't be the one in hand yet (`record`): it is as good
         ; as not arrived, and so is all that follows it in this segment. The client will
@@ -1811,9 +1810,14 @@ tcp:
         jmp .out
 
         ; Port 80. A request ends with an empty line (the top bit of C_FLG: the last line
-        ; has just ended; CRs don't count either way) and gets the response.
+        ; has just ended; CRs don't count either way) and gets the response, while nothing
+        ; sent before is unacknowledged and at most 4 KiB go in this turn: any more are
+        ; kept (`oohold`) for the ack, so a small ack cannot ask for 256 KiB at a time.
 .plain: test ecx, ecx
         jz .reply
+        mov eax, [rbp+C_SND]
+        cmp eax, [rbp+C_ACK]
+        jne .pwait
         movzx edx, byte [rbp+C_FLG]
         shr edx, 7
 .hb:    lodsb
@@ -1824,14 +1828,35 @@ tcp:
         inc edx
         cmp dl, 2
         jb .hn
-        cmp edi, OB + OBMAX - P80_LEN
-        ja .h0                  ; (no room for another response)
+%if P80_LEN <= 4096
+        cmp edi, OB + 4096 - P80_LEN
+        ja .pbusy
+%else
+        cmp edi, OB
+        jne .pbusy
+%endif
         call respond
 .h0:    xor edx, edx
 .hn:    loop .hb
         and byte [rbp+C_FLG], 0x7F
         shl edx, 7
         or [rbp+C_FLG], dl
+        jmp .reply
+.pbusy: dec esi
+        or byte [rbp+C_FLG], 0x80
+.pwait: sub [rbp+C_NXT], ecx
+        mov eax, [rbp+C_NXT]
+        xchg eax, [rbx+P_SEQ]
+        call oohold
+        and byte [rbx+P_FL], ~1
+        cmp edi, OB
+        jne .out
+        cmp eax, [rbp+C_NXT]
+        je .out
+        mov eax, [rbx+P_ACK]
+        cmp eax, [rbp+C_ACK]
+        je .resend
+        jmp .out
 
 .reply: xor ebx, ebx
         call ooent              ; Is a segment that came early next now? Then go on with it.
@@ -2455,9 +2480,16 @@ record: pushad
         test byte [SITE+AT_OFF+rax+12], 1
         jnz .last               ; One after which we close. And so we do when our key has
         cmp dword [rbp+C_SR], 1 << KEYLIFE ; sealed 2^24 records: it should not seal more
-        jb .count               ; than 2^24.5 (RFC 8446, 5.5; the response in hand may
-.last:  or byte [rbp+C_FLG], F_CLOSED ; take 2^22.4), and we have no way to change it
-.count: inc dword [rbp+C_ST]
+        jae .last               ; than 2^24.5 (RFC 8446, 5.5; the response in hand may
+.count:                         ; take 2^22.4), and we have no way to change it
+%ifdef STLIFE
+        cmp dword [rbp+C_ST], 1 << STLIFE ; (make STLIFE=n, for tests)
+%else
+        cmp dword [rbp+C_ST], -2 ; (nor may the client's counter wrap to "no ClientHello")
+%endif
+        jb .st
+.last:  or byte [rbp+C_FLG], F_CLOSED
+.st:    inc dword [rbp+C_ST]
 .no:    clc
         popad
         ret
@@ -3103,7 +3135,11 @@ tcp_send:
         shr ebx, 2
         and ebx, 3
         movzx ebx, word [MSSTAB+rbx*2]
-        mov edi, [rbp+C_NXT]
+        call ackno
+        test al, 1
+        jnz .fin
+        jrcxz .last
+.fin:   mov edi, [rbp+C_NXT]
         and byte [rbp+C_FLG], ~F_DEFER
         cmp ecx, ebx
         jbe .last
@@ -3340,7 +3376,8 @@ handshake:
         ; A client we can't serve is told so, and that is the connection: one that has no
         ; TLS 1.3 (an alert "protocol version"), one that does not name our cipher suite,
         ; one that has no x25519, or sent no share for it after being asked ("handshake
-        ; failure"). It gets nothing that only looks like an answer.
+        ; failure"), or one whose share makes the shared secret all zeros ("illegal
+        ; parameter", RFC 8446, 7.4.2). It gets nothing that only looks like an answer.
 .seen:  pop rsi
         mov al, 70
         test dl, 1
@@ -3353,21 +3390,12 @@ handshake:
         test byte [rbp+C_FL2], F_HRR
         jnz .alert
         test dl, 2
-        jnz .ask
-.alert: mov edi, OB
-        mov dword [rdi], 0x00030315 ; an alert record of two bytes:
-        mov word [rdi+4], 0x0202 ;  fatal,
-        mov [rdi+6], al         ;   and why
-        add edi, 7
-        or byte [rbp+C_FLG], F_CLOSED ; (our FIN goes with it: `tcp.fin`)
-        pop rbp
-        ret
+        jz .alert
         ; No share for x25519, but the client has it: it is asked for a ClientHello with
         ; one (a HelloRetryRequest, which is all of our flight this time). The connection
         ; goes on waiting for a ClientHello, and keeps, where its keys will be, the hash of
         ; this one: the transcript has that in its place.
-.ask:   or byte [rbp+C_FL2], F_HRR
-        dec dword [rbp+C_ST]
+        or byte [rbp+C_FL2], F_HRR
         push rsi
         mov esi, r10d
         mov ecx, ebx
@@ -3383,6 +3411,14 @@ handshake:
         sub eax, OB + 5
         xchg al, ah
         mov [OB+3], ax
+        pop rbp
+        ret
+.alert: mov edi, OB
+        mov dword [rdi], 0x00030315 ; an alert record of two bytes:
+        mov word [rdi+4], 0x0202 ;  fatal,
+        mov [rdi+6], al         ;   and why
+        add edi, 7
+        or byte [rbp+C_FLG], F_CLOSED ; (our FIN goes with it: `tcp.fin`)
         pop rbp
         ret
 .has:   mov eax, r11d
@@ -3412,6 +3448,12 @@ handshake:
         pop rsi
         lodsd
         call xdh                ; ... + our key share; R_X = the shared secret
+        mov rax, [R_X]
+        or rax, [R_X+8]
+        or rax, [R_X+16]
+        or rax, [R_X+24]
+        mov al, 47
+        jz .alert
         lea eax, [rdx+86]
         shl eax, 24
         mov al, 2
@@ -3554,6 +3596,7 @@ handshake:
         pop rcx
         rep movsd
         and byte [rbp+C_FL2], 0xF0 ; (the window's shift stays)
+        inc dword [rbp+C_ST]
         xchg eax, edi
         ret
 
@@ -3890,9 +3933,9 @@ R_D     equ REGS + 14*32
 R_C     equ REGS + 15*32
 
         HOT 0x00FFE0C0
-; xdh: our X25519 key share for the secret E to rdi (which moves on 32 bytes), and R_X = the
-; secret we share with the client whose key share is at rsi. E is used as it is, unclamped:
-; the other side only needs it to be the same number in our share and in the secret.
+; xdh: our X25519 key share for the secret E (clamped as in RFC 7748: a multiple of 8, so
+; every point of small order makes R_X = 0) to rdi (which moves on 32 bytes), and R_X = the
+; secret we share with the client whose key share is at rsi.
 ; Our share is E times the base point: 64 additions from the table TABE. The secret is E
 ; times the client's point: the ladder. Both end in a division, which they share.
 ; (Keeps the eight old registers, as do `sign` and the hashes: r8-r15 are scratch.)
@@ -3907,6 +3950,9 @@ xdh:    pushad
         pop rcx
         mov edx, X_MADDED
         mov ebx, E
+        and byte [rbx], 0xF8
+        and byte [rbx+31], 0x7F
+        or byte [rbx+31], 0x40
         call comb
         mov esi, X_KEYED
         call vm

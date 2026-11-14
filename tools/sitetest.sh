@@ -13,7 +13,7 @@
 # bits sooner, but then not with loss (the SYN cookie checks that many bits less, and a
 # connection whose first segment was lost can be begun by its second). KEYLIFE=n: an image
 # whose connections may seal 2^n records (make KEYLIFE=n), and the check that they don't
-# seal more. NOTSO=1: an image that sends a segment a frame also over tap, where the card
+# seal more; STLIFE=n: the same for 2^n records from the client. NOTSO=1: an image that sends a segment a frame also over tap, where the card
 # would cut frames into segments for it (a control for the runs that do).
 # SUITES=TLS_AES_128_GCM_SHA256: what the checker's clients offer (by themselves they
 # offer OpenSSL's three and get the one of them that is ours, AES-128-GCM).
@@ -22,7 +22,7 @@ export B=${B:-build-site}
 if [[ -z ${NOBUILD:-} ]]; then
   mkdir -p "$B"
   python3 tools/mksite.py "$B/www" ${BIG:-1.5} >/dev/null || exit 1
-  make -s B="$B" SITE="$B/www" CERT="${CERT:-cert}" ISNTOP="${ISNTOP:-}" ISNBITS="${ISNBITS:-}" KEYLIFE="${KEYLIFE:-}" NOTSO="${NOTSO:-}" BIGSH="${BIGSH:-}" >/dev/null || { echo "BUILD FAILED"; exit 1; }
+  make -s B="$B" SITE="$B/www" CERT="${CERT:-cert}" ISNTOP="${ISNTOP:-}" ISNBITS="${ISNBITS:-}" KEYLIFE="${KEYLIFE:-}" STLIFE="${STLIFE:-}" NOTSO="${NOTSO:-}" BIGSH="${BIGSH:-}" >/dev/null || { echo "BUILD FAILED"; exit 1; }
 fi
 if [[ -n ${SUITES:-} ]]; then         # (OpenSSL's own way to be told: Python's ssl has no other)
   TMP=$(mktemp)

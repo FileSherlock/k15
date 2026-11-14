@@ -26,6 +26,7 @@ that one's records, or a reset with its numbers, to X); the one that got in gets
 large file, whole, and the page after it; and the 31 are all still there.
 """
 import os
+import re
 import socket
 import ssl
 import subprocess
@@ -182,6 +183,20 @@ def main():
     return None
 
 
+def until_prompt(mon):
+    got = b""
+    while not got.endswith(b"(qemu) "):
+        got += mon.recv(65536)
+    return got
+
+
+def mon_qwords(mon, addr, count):
+    mon.sendall(("x /%dgx 0x%x\n" % (count, addr)).encode())
+    got = until_prompt(mon)
+    return [int(v, 16) for ln in got.decode(errors="replace").splitlines()
+            if ":" in ln for v in re.findall(r"0x[0-9a-fA-F]+", ln.split(":", 1)[1])]
+
+
 def gone():
     """N = 3. A new connection goes into the first free slot of the bucket that has more of
     them (`find`), and how many each has is counted before. If the last one is another
@@ -190,10 +205,12 @@ def gone():
     RACE=3 does that to itself: the one free slot that was counted becomes a made-up
     connection's before the walk. With CAP=16 each table is one bucket, and behind the
     table for TLS lies the one for port 80: there seven connections are made, and the
-    first of them ended, so that its slot, the table's first 20 bytes, is free and the
-    six behind it are held. Then connections to 443 until the bucket's last slot is
-    counted. A walk that leaves the bucket takes "a slot" of 128 bytes where the table
-    for port 80 begins, over the six: they must all still be answered."""
+    first of them ended, so that its slot, the table's first 24 bytes, is free and the
+    six behind it are held (while all seven sit there, QEMU's monitor also checks that the
+    slots are 24 bytes apart on a 64-byte line, so none has its first 8 bytes across two
+    lines). Then connections to 443 until the bucket's last slot is counted. A walk that
+    leaves the bucket takes "a slot" of 128 bytes where the table for port 80 begins,
+    over five of the six: they must all still be answered."""
     plain = []
     for _ in range(7):
         s = socket.create_connection((HOST, 80), timeout=5, source_address=(K_SRC[0], 0))
@@ -201,6 +218,21 @@ def gone():
         if not s.recv(4096).startswith(b"HTTP/1.1 "):
             return "port 80 does not answer"
         plain.append(s)
+    if os.environ.get("MON"):
+        site_len = os.path.getsize(os.path.join(os.environ.get("B", "build"), "site.bin"))
+        pt_ptr = ((0x110000 + site_len + 0x1FFFFF) >> 21 << 21) + 0x0F220
+        mon = socket.socket(socket.AF_UNIX)
+        mon.settimeout(5)
+        mon.connect(os.environ["MON"])
+        until_prompt(mon)
+        pt = mon_qwords(mon, pt_ptr, 1)[0]
+        words = mon_qwords(mon, pt, 48)
+        mon.close()
+        want_ip = int.from_bytes(socket.inet_aton(K_SRC[0]), "little")
+        if pt % 64 or any((pt + 24 * k) // 64 != (pt + 24 * k + 7) // 64 for k in range(16)):
+            return "a port-80 slot's first 8 bytes straddle a cache line (PT = %#x)" % pt
+        if [words[3 * k] & 0xFFFFFFFF for k in range(7)] != [want_ip] * 7 or words[21] & 0xFFFFFFFF:
+            return "port-80 slots are not 24 bytes apart in PT"
     plain.pop(0).close()
     time.sleep(0.5)
     made, why = [], "none"

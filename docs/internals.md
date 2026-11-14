@@ -107,7 +107,7 @@ What the page tables say (`start`):
   queue of 4 n connections that wait for an ack (64 bytes each: `tarm`), then the table
   for TLS (an eighth of the rest: `TSHARE`), then the table for port 80. In a 4 GiB
   machine n is 16,384, and the buffers, places, SYNs, rings and queues take 248 MiB of
-  it; on the server (3,982 MiB of table space) that leaves 3.8 million TLS slots and 172
+  it; on the server (3,982 MiB of table space) that leaves 3.8 million TLS slots and 143
   million for port 80.
 - The card's structures (and the local APIC), each in 4 MiB of its own in GiB 505.
 Variables in BSS are reached relative to the instruction pointer (`BSS equ mb + ...`:
@@ -271,7 +271,9 @@ it is decrypted, and if it holds application data that begins with `GET ` or `HE
 the path (up to a space, `?` or the line's end) is looked up in the site's table: the
 response for it, or the one that says 404. What begins with another word in capitals
 and a space gets the 405 and the end of the connection; anything else that is authentic
-(an alert, a header line in a record of its own) counts and gets nothing.
+(an alert, a header line in a record of its own) counts and gets nothing. After 2^32 - 2
+records from the client (`STLIFE` in tests), or once our key has sealed 2^24 (`KEYLIFE`),
+the connection is closed so neither counter wraps.
 
 The old way, and what both share:
 - In-order data is taken (a segment that overlaps what we have is trimmed), data from
@@ -318,12 +320,13 @@ The old way, and what both share:
   if TLS 1.3 is not among the versions it offers (extension 43; a client of TLS 1.2 has
   none), "handshake failure" if our cipher suite is not among its, if x25519 is
   not among its groups (extension 10: then there is nothing to ask for), or if it sent no
-  x25519 share after being asked. The alert is its connection's flight (kept, sent again
-  if lost), and the connection is closed from our side (`handshake` sets F_CLOSED,
-  `tcp.fin` sends the FIN). Before 2026-11-12 such a client got a ServerHello with a
-  suite it had not offered, or with its own random as a key share: scanners call that
-  intolerance, and it cost a handshake's work for every piece of junk. `tools/tlsprobe.sh
-  HOST[:PORT] [CA]` asks what a scanner asks, one thing at a time.
+  x25519 share after being asked, and "illegal parameter" if its x25519 share makes the
+  shared secret all zeros (a point of small order). The alert is its connection's flight
+  (kept, sent again if lost), and the connection is closed from our side (`handshake` sets
+  F_CLOSED, `tcp.fin` sends the FIN). Before 2026-11-12 such a client got a ServerHello
+  with a suite it had not offered, or with its own random as a key share: scanners call
+  that intolerance, and it cost a handshake's work for every piece of junk.
+  `tools/tlsprobe.sh HOST[:PORT] [CA]` asks what a scanner asks, one thing at a time.
 - A segment from further on than we expect is kept (`oohold`) and used as soon as what
   comes before it has arrived (`.reply`). There are n places of 2 KiB for such segments; a
   client's place is picked by its hash and holds one segment, the earliest; two clients
@@ -347,34 +350,35 @@ The old way, and what both share:
 - Port 80 has no keys and no files: every request gets the same response (pack.py:
   where the site is, or its front page), and requests are found by counting line ends
   (`.plain`: two in a row, CRs ignored, end a request; a request body would be read as
-  more request lines).
+  more request lines). At most 4 KiB go at a time while nothing sent before is
+  unacknowledged, and any further bytes wait in `oohold` for the ack (`.pbusy`, `.pwait`),
+  so a 54-byte duplicate ack never makes port 80 resend more than 4 KiB.
 
 ## The connection tables
-- Two tables, one per port, so that a connection to port 80 costs 20 bytes (address, port,
-  a byte of flags, a byte of time, `C_NXT`, `C_SND`, `C_ACK`) and a TLS connection 128: the
-  same, then the number of the client's next record (`C_ST`), the response in hand
-  (`C_SR`, `C_RS`, `C_AS`: ten bytes), its handshake buffer and how much of a record is
-  in it, a byte of flags and the window's shift (`C_FL2`), a byte of window (`C_CW`), and
-  88 bytes of keys (two of 32, of which AES-128 uses 16, with their 12 of iv). They fill the table
-  space behind the buffers: the TLS table gets an eighth (`TSHARE`), port 80 the rest.
+- Two tables, one per port, so that a connection to port 80 costs 24 bytes (address, port,
+  a byte of flags, a byte of time, `C_NXT`, `C_SND`, `C_ACK`, and four spare bytes) and a
+  TLS connection 128: the same twenty, then the number of the client's next record
+  (`C_ST`), the response in hand (`C_SR`, `C_RS`, `C_AS`: ten bytes), its handshake buffer
+  and how much of a record is in it, a byte of flags and the window's shift (`C_FL2`), a
+  byte of window (`C_CW`), and 88 bytes of keys (two of 32, of which AES-128 uses 16, with
+  their 12 of iv). They fill the table space behind the buffers: the TLS table gets an
+  eighth (`TSHARE`), port 80 the rest.
 - A connection is in one of two buckets of 16 slots, picked by two words of `prf(addresses,
   ports)`; a new one goes into the bucket with more free slots (`find`), into the first
   of them: a walk that ends with the bucket. (The free slots are counted first; if
   another processor has taken the last one by then, `find` looks again. Until
   2026-11-14 the walk had no end: it went on into the next bucket, where `find` never
   looks for that connection again, or out of the table: from the one for TLS into the
-  one for port 80, a slot of 128 bytes laid over six of 20. `tools/racetest.sh 3`.) A
-  slot is free when its address is 0. With two buckets to choose from the table fills
-  to 85% before anyone finds both full, and at 92% one in a thousand does; one run of
-  16 slots from one hash, as it was, lost 0.8% of the held connections at 70%
-  (`tools/rawc.c` measures it; both match a simulation).
-- A slot for port 80 is 20 bytes, and a bucket of 16 begins on a cache line: so the
-  fourth slot of every bucket has its address in one line and its port, flags and time
-  in the next. The `lock cmpxchg` that claims it (`tcp.make`) is then a lock on the
-  whole bus: as atomic as any, some thousand cycles slower, and something a host can
-  notice and slow down. One new connection in 16 on port 80; the slots of the TLS
-  table are 128 bytes and never lie so. (Slots of 24 bytes would end it: 143 million
-  on the server where there are 172 million.)
+  one for port 80, a slot of 128 bytes laid over five or six of port 80's.
+  `tools/racetest.sh 3`.) A slot is free when its address is 0. With two buckets to
+  choose from the table fills to 85% before anyone finds both full, and at 92% one in a
+  thousand does; one run of 16 slots from one hash, as it was, lost 0.8% of the held
+  connections at 70% (`tools/rawc.c` measures it; both match a simulation).
+- A slot for port 80 is 24 bytes, and a bucket of 16 (384 bytes) begins on a 64-byte
+  cache line: every slot's first 8 bytes lie inside one line, so the `lock cmpxchg` that
+  claims it (`tcp.make`) never crosses two lines and locks the bus (as every 16th slot
+  did when they were 20 bytes). The slots of the TLS table are 128 bytes and never lie
+  so either.
 - `prf` is eleven AES rounds (the processor's `aesenc`) over the frame's addresses and
   ports under round keys from rdrand at boot: about 50 cycles, and clients can't aim at
   each other's buckets. Its four words pick the two buckets, make the cookie's secret
@@ -455,8 +459,8 @@ model that asserts every bound.
   none. So a signature costs 89,000 cycles under full load and next to nothing below it.
 - `inv` is a^(m-2) by squaring and multiplying, for all three moduli: 20,000 to 31,000
   cycles, once a handshake (X25519) and twice per 64 (the signatures).
-- Our X25519 scalar is used unclamped (the peer only needs our share and the secret to
-  agree); the client's u has its top bit cleared (RFC 7748).
+- Our X25519 scalar is clamped and the client's u has its top bit cleared (RFC 7748), so
+  every point of small order makes the shared secret all zeros, which `handshake` refuses.
 - r and s go out as DER INTEGERs of whatever length they have (`derint`); nothing is
   retried.
 - `HOT mask` in front of a routine puts it where none of its jumps crosses a 32-byte
@@ -513,20 +517,12 @@ removing the ones about TLS.
   middleboxes.
 - A client record of more than 4 KB (a request with that many headers and cookies) ends
   the connection.
-- No check for an all-zero X25519 result (a client can only weaken its own connection).
-  Such a client's point is one of small order; the key share we send it is all zeros
-  too then (ours and the secret come out of one division, here by zero).
 - A ClientHello is one record. One that comes in two (TLS allows it; no browser does
   it) is taken for a short one, which has no TLS 1.3 in it: "protocol version".
 - What a client says it can verify (signature_algorithms) is not looked at, nor its
   legacy_version, nor whether its second ClientHello is its first with a key share. A
   malformed x25519 share is no share: it is asked for one (a HelloRetryRequest), where
   a server is to refuse.
-- After 2^32 records from the client (95 GB of them) its counter wraps to "no
-  ClientHello yet", and the connection then takes one. What comes of that is the same
-  client's own connection's affair: by reading (not tried), a response sent again
-  unasked, and with a frame for the card to cut, a record a byte short under a number
-  that has been used. Closing the connection there instead would take 9 bytes.
 - HTTP: GET and HEAD, the path compared byte for byte with what pack.py made of the file
   names (so `/a%20b.txt`, not `/a b.txt`; a query is cut off; no `..` to resolve: a path
   is in the table or it is not). A request is a record that begins with its request
@@ -539,18 +535,14 @@ removing the ones about TLS.
   site), no Range, no If-Modified-Since (there are no dates), no `Connection: close`
   (the client has the Content-Length; we close first only after a 405). No Date
   header: there is no clock.
-- Two requests at once: the second waits for the client's retransmission timer (0.2 s).
+- Two requests at once on 443: the second waits for the client's retransmission timer
+  (0.2 s).
 - TCP: no SACK and no timestamps (so what is lost is found a segment a round trip, and
   a window past 64 KB opens slowly: "How TCP works here"), no pacing (what an ack lets
   go goes at once), a first timeout of 0.25 s whatever the round trip is (a path
   slower than that gets a segment twice), and the old way (`tcp_send`) for the flight
-  and port 80: all at once, no window. On port 80 that means much for little: a
-  segment full of line ends is answered with as many responses as 256 KiB hold, at
-  once, and while they are unacknowledged every ack that repeats gets all of them
-  again (some 1,200 frames for one of 54 bytes). Whoever does that must be at its
-  address (the SYN cookie), so it is its own line that fills, and our processors'
-  time and the transmit ring that all share. A bound on what port 80 lets be
-  unacknowledged would end it. Our own window is 64 KB, unscaled. The IP header's checksum is not looked at: what we use of that header is
+  and port 80 (capped at 4 KiB unacknowledged on port 80). Our own window is 64 KB,
+  unscaled. The IP header's checksum is not looked at: what we use of that header is
   fixed or goes into TCP's checksum, which is.
 - Port 80: one response, whatever is asked; a request body is not understood.
 - `keys` writes 20 junk bytes after an IV: the handshake makes both key blocks in `KA` and

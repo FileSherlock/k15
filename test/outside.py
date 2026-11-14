@@ -7,13 +7,12 @@ testvectors_v1: `tools/outside.sh fetch` gets them), which are made to sit on th
 that hand-written arithmetic gets wrong (carries, non-canonical inputs, points of small
 order, tags that differ in one bit), and RFC 6979's signatures.
 
-  X25519                  x25519_test.json, all of it: `xdh` uses our scalar as it is, so the
-                          clamping (RFC 7748) is done here; the shared secret must be the
-                          vector's, and our key share what OpenSSL makes of that scalar.
-                          (But where the secret is all zeros, the client's point being one
-                          of small order, our key share is zeros too: the two come out of
-                          one division, here by zero. We don't refuse such a client: see
-                          "Shortcuts that remain" in docs/internals.md.)
+  X25519                  x25519_test.json, all of it: `xdh` clamps our scalar as in RFC 7748,
+                          so the shared secret must be the vector's, and our key share what
+                          OpenSSL makes of that private key. (Where the secret is all zeros,
+                          the client's point being one of small order, `xdh`'s shared division
+                          is by zero, so our key share is zeros too; `handshake` refuses such a
+                          client with "illegal parameter" before sending anything.)
   AES-128-GCM             aes_gcm_test.json: the vectors with a nonce of 12 bytes, a tag of
                           16, a key of 128 bits and no more than 16 bytes of associated data. `seal` makes its tag
                           over a record's header there; the host build can be given other
@@ -62,11 +61,8 @@ def x25519():
     for g in load("x25519_test.json"):
         for t in g["tests"]:
             priv, pub, want = (bytes.fromhex(t[k]) for k in ("private", "public", "shared"))
-            e = bytearray(priv)
-            e[0] &= 248
-            e[31] = e[31] & 127 | 64
             ours = X25519PrivateKey.from_private_bytes(priv).public_key().public_bytes_raw()
-            jobs.append(("X25519 (Wycheproof)", "%d: %s" % (t["tcId"], t["comment"]), "xdh %s %s" % (h(e), h(pub)),
+            jobs.append(("X25519 (Wycheproof)", "%d: %s" % (t["tcId"], t["comment"]), "xdh %s %s" % (h(priv), h(pub)),
                          lambda o, ours=ours, want=want: o[32:] == want and o[:32] == (ours if any(want) else bytes(32))))
 
 

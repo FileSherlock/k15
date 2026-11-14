@@ -17,7 +17,10 @@ mkdir -p "$B"
 python3 tools/mksite.py "$B/www" >/dev/null || exit 1
 if [[ $N == 3 ]]; then    # (a bucket in each table, and nothing to wait for)
   make -s B="$B" SITE="$B/www" CERT="${CERT:-cert}" RACE=3 CAP=16 >/dev/null || { echo "BUILD FAILED"; exit 1; }
-  exec ./tap.sh python3 tools/racetest.py 3
+  MON=/tmp/k15mon.r3.$$
+  trap 'rm -f "$MON"' EXIT
+  MON=$MON ./tap.sh python3 tools/racetest.py 3
+  exit $?
 fi
 make -s B="$B" SITE="$B/www" CERT="${CERT:-cert}" RACE="$N" IDLE=1 CAP=32 >/dev/null || { echo "BUILD FAILED"; exit 1; }
 exec env DELAY=20 ./tap.sh python3 tools/racetest.py "$N"

@@ -56,9 +56,67 @@ def sums_right(total):
     return None
 
 
+def csum(b):
+    if len(b) & 1:
+        b += b"\0"
+    s = sum(struct.unpack(">%dH" % (len(b) // 2), b))
+    while s >> 16:
+        s = (s & 0xFFFF) + (s >> 16)
+    return ~s & 0xFFFF
+
+
+def seg80(eth, src, sport, flags, seq, ack, body=b"", opts=b""):
+    th = struct.pack(">HHIIBBHHH", sport, 80, seq, ack, (5 + len(opts) // 4) << 4, flags, 65535, 0, 0) + opts
+    th = th[:16] + struct.pack(">H", csum(src + OURS + struct.pack(">BBH", 0, 6, len(th) + len(body)) + th + body)) + th[18:]
+    ih = ip(20 + len(th) + len(body), src)
+    ih = ih[:10] + struct.pack(">H", csum(ih)) + ih[12:]
+    return eth + ih + th + body
+
+
+def plain_bound(s, eth):
+    """600 empty lines in one segment to port 80, then duplicate 54-byte acks: neither may
+    draw more than 4 KiB (before 2026-11-14 each drew up to 256 KiB)."""
+    src, sport = socket.inet_aton("10.64.0.1"), 51000
+
+    def drain(wait=0.1):
+        s.settimeout(wait)
+        got, gseq, gack = 0, None, None
+        while True:
+            try:
+                f = s.recv(65536)
+            except TimeoutError:
+                break
+            if len(f) >= 54 and f[12:14] == b"\x08\x00" and f[23] == 6 and f[26:30] == OURS and f[30:34] == src:
+                ihl = 14 + (f[14] & 15) * 4
+                if int.from_bytes(f[ihl + 2:ihl + 4], "big") == sport:
+                    off = (f[ihl + 12] >> 4) * 4
+                    tot = 14 + int.from_bytes(f[16:18], "big")
+                    got += max(0, min(len(f), tot) - ihl - off)
+                    gseq = int.from_bytes(f[ihl + 4:ihl + 8], "big")
+                    gack = int.from_bytes(f[ihl + 8:ihl + 12], "big")
+        s.settimeout(None)
+        return got, gseq, gack
+
+    s.send(seg80(eth, src, sport, 0x02, 1000, 0, opts=b"\x02\x04\x05\xb4"))
+    _, iss, _ = drain(0.5)
+    if iss is None:
+        return "port 80 did not answer a raw SYN"
+    s.send(seg80(eth, src, sport, 0x18, 1001, (iss + 1) & 0xFFFFFFFF, b"\n\n" * 600))
+    first, _, gack = drain(0.15)
+    if not (0 < first <= 4096):
+        return "port 80 sent %d bytes unacknowledged (expected 1..4096)" % first
+    # Duplicate 54-byte acks at the guest's C_NXT (F_DEFER withheld 1 byte from gack)
+    for _ in range(2):
+        s.send(seg80(eth, src, sport, 0x10, (gack + 1) & 0xFFFFFFFF, (iss + 1) & 0xFFFFFFFF))
+        again, _, _ = drain(0.15)
+        if not (0 < again <= 4096):
+            return "port 80 resent %d bytes on duplicate ack (expected 1..4096)" % again
+    return None
+
+
 def main():
     rng = random.Random(SEED)
-    s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+    s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
     s.bind((TAP, 0))
     eth = b"\xff" * 6 + s.getsockname()[4] + b"\x08\x00"
     src = socket.inet_aton("10.0.2.34")
@@ -95,8 +153,12 @@ def main():
                 print("FAIL: the machine was gone after frame %d: %s" % (i, f[:54].hex()))
                 return 1
     time.sleep(0.3)
+    why = plain_bound(s, eth)
+    if why:
+        print("FAIL:", why)
+        return 1
     ok = alive() and real()
-    print("ok: the machine is there and serves as before" if ok else "FAIL: the machine no longer serves (seed %d)" % SEED)
+    print("ok: the machine is there, port 80 is bounded, and it serves as before" if ok else "FAIL: the machine no longer serves (seed %d)" % SEED)
     return 0 if ok else 1
 
 

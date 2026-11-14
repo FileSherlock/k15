@@ -402,7 +402,8 @@ def main():
     check("clients that go away in the middle of a file", goes_away)
 
     # In an image built with KEYLIFE=n a connection's key seals 2^n records and no more
-    # than one response beyond (in a real one n is 24: too many to wait for here)
+    # than one response beyond; with STLIFE=n a client sends 2^n records and no more (in a
+    # real image n is 24 and 32: too many to wait for here)
     if os.environ.get("KEYLIFE"):
         def key_life():
             c = Conn()
@@ -416,6 +417,34 @@ def main():
             return ok and same(c2.response(), paths["/"])
 
         check("a connection whose key has sealed its share of records is ended after the response in hand", key_life)
+
+    if os.environ.get("STLIFE"):
+        def st_life():
+            lim = 1 << int(os.environ["STLIFE"])
+            c = Conn()
+            for _ in range(lim - 2):
+                c.send(b"\0")
+            c.get("/")                  # the (lim - 1)th record: connection stays open
+            ok = same(c.response(), paths["/"])
+            c.get("/")                  # the lim-th record: answered, then closed
+            ok &= same(c.response(), paths["/"]) and c.closed()
+            c.close()
+            c2 = Conn()                 # and two records in one segment across the limit:
+            for _ in range(lim - 1):    # the one after the limit is not taken
+                c2.send(b"\0")
+            req = b"GET / HTTP/1.1\r\nHost: " + NAME.encode() + b"\r\n\r\n"
+            c2.tls.write(req)
+            c2.tls.write(req)
+            c2.sock.sendall(c2.out.read())
+            ok &= same(c2.response(), paths["/"]) and c2.closed()
+            c2.close()
+            c3 = Conn()
+            c3.get("/")
+            ok &= same(c3.response(), paths["/"])
+            c3.close()
+            return ok
+
+        check("a connection whose client has sent its share of records is ended after that record", st_life)
 
     # A client that vanishes in the middle of a file, and one that only stops reading (GONE=1:
     # over tap, as root in tap.sh's namespace; two or three minutes). What the first sends

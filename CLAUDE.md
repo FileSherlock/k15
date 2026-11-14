@@ -39,10 +39,10 @@ is history, a measurement series or a description of how a routine works. Those 
   or two lines, or fix the docs it contradicts. Delete what is no longer true.
 
 ## Where it stands
-- The system is 13,731 bytes. It boots from GRUB or a BIOS boot sector, uses all the
+- The system is 13,859 bytes. It boots from GRUB or a BIOS boot sector, uses all the
   RAM and up to 4 processors, modern virtio-net, and serves GET and HEAD by path with
   compressed forms, ETag and 304, keep-alive, and a redirect on port 80.
-- Memory per held connection: 20 bytes on port 80, 128 bytes for TLS.
+- Memory per held connection: 24 bytes on port 80, 128 bytes for TLS.
 - 15kb.org runs the image in `build-15kb.org` (24,733 bytes) with a Let's Encrypt
   certificate for 15kb.org and www.15kb.org, HSTS, `--persist`. SSL Labs: A.
 - On the server (2 shared vCPUs; last measured 2026-11-14) it does 7,300 to 8,800 new
@@ -56,14 +56,9 @@ is history, a measurement series or a description of how a routine works. Those 
 
 ## Next
 1. For the user to decide, each described in `docs/internals.md` ("Shortcuts that
-   remain", "The connection tables"). Three TLS shortcuts that the tests from outside
-   point at: a ChangeCipherSpec after the ServerHello, which RFC 8446 wants sent to a
-   client that has a session id (30 bytes or so); refusing a client whose X25519 point
-   makes the secret all zeros (a MUST; 25 bytes); a ClientHello in two records. And
-   three that reviews of the code point at: port 80 has no window, so a few bytes make
-   it send 256 KiB, again and again; a slot for port 80 is 20 bytes, so one in 16 lies
-   across two cache lines and is claimed with a lock on the bus (24 would end that);
-   a client that has sent 2^32 records starts over instead of being closed.
+   remain"): two TLS shortcuts that the tests from outside point at: a ChangeCipherSpec
+   after the ServerHello, which RFC 8446 wants sent to a client that has a session id
+   (30 bytes or so); and a ClientHello in two records.
 2. The handshake further: OpenSSL's assembly does the ladder and the signature in
    about a fifth fewer cycles.
 3. Later: IPv6, DHCP, a retransmission timer that knows the round trip, pacing, zstd,
@@ -82,10 +77,11 @@ secrecy against a network attacker, and no packet makes the server leak its key:
 - only code is executed and it is never written; nor is the site. Everything a packet
   can fill is data the processor refuses to run
 - a fault is the machine's end on every processor: each has an empty interrupt table
-- a connection's key seals 2^24 records, then the connection is closed
+- a connection's key seals 2^24 records (and takes at most 2^32 - 2 from the client),
+  then the connection is closed
 - nothing of a request is reflected in an answer
 - nothing in the curve arithmetic, table lookups or ciphers branches on or indexes with
-  a secret
+  a secret; an X25519 key share that makes the shared secret zero is refused
 - attacker-controlled lengths and indices are bounded
 - nothing is traded for forward secrecy: no reused key shares, no derived secrets
 

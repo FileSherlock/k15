@@ -392,10 +392,11 @@ class Machine:
 
     # --- what a handshake does ---
     def x25519(self, table, e, u):
-        """(our public key, the shared secret) for our secret e (256 bits, as they come) and
+        """(our public key, the shared secret) for our secret e (clamped as in RFC 7748) and
         the client's public key u."""
         r = self.r
         self.f = F25519
+        e = e & ((1 << 255) - 8) | (1 << 254)
         self.run(INITED)
         self.comb(table, e, MADDED)
         self.run(KEYED)
@@ -462,16 +463,21 @@ def selftest():
             assert y % f.m == mach.r[REG["T1"]] % f.m
     mach.muls = 0
     for t in range(8):
-        # X25519: our scalar is unclamped, so compare shared secrets, both ways round
+        # X25519: compare both public key and shared secret, and check small-order points
         peer = X25519PrivateKey.generate()
-        e = int.from_bytes(os.urandom(32), "little") if t > 1 else ((1 << 256) - 1) * t
+        e_bytes = os.urandom(32) if t > 1 else bytes([255 * t]) * 32
+        e = int.from_bytes(e_bytes, "little")
         u = int.from_bytes(peer.public_key().public_bytes_raw(), "little")
         if t == 3:
             u |= 1 << 255                           # (a top bit that is to be ignored)
-        if t == 4:
-            u = 0                                   # (a point of small order: nothing must break)
+        if t in (4, 5):
+            u = t - 4                               # (points of small order: 0 and 1 -> secret 0)
         pub, ours = mach.x25519(t25519, e, u)
-        if t != 4 and e:
+        if t in (4, 5):
+            assert ours == 0, "small-order x25519"
+        else:
+            sk = X25519PrivateKey.from_private_bytes(e_bytes)
+            assert pub.to_bytes(32, "little") == sk.public_key().public_bytes_raw(), "x25519 pub"
             theirs = peer.exchange(X25519PublicKey.from_public_bytes(pub.to_bytes(32, "little")))
             assert ours.to_bytes(32, "little") == theirs, "x25519"
         # ECDSA

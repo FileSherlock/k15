@@ -367,8 +367,9 @@ the ports allow):
   not start (its port was taken). The same with 60,000 plain connections. (Some 17 such
   runs earlier in the night had two failed handshakes between them: that is how the bug in
   finding the key share was found, see docs/pitfalls.md.)
-- A held connection costs k15 20 bytes on port 80 and 128 bytes on 443, by construction:
-  on this server there is room for 172 million and 3.8 million.
+- A held connection costs k15 24 bytes on port 80 and 128 bytes on 443, by construction:
+  on this server there is room for 143 million and 3.8 million (20 bytes and 172 million
+  when these runs were made).
 - nginx: the same 60,000, and what the server's `MemAvailable` loses while they are held:
   4.0 KiB a plain connection; 25.8 KiB a TLS connection with OpenSSL (22 KiB of it in the
   workers), 7.1 KiB with BoringSSL. In the 3 GiB this server has free under Linux that is

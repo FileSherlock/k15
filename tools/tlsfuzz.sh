@@ -74,8 +74,8 @@ go unrecognised-groups '(?!sanity)' 'a ClientHello of more than 4 KB'
 go version-negotiation 'fallback from TLS|TLS 1\.[0-9]+ in client hello legacy field' 'no TLS 1.2 to fall back to'
 go serverhello-random '(?!sanity)' 'no TLS 1.2, and one group'
 go 0rtt-garbage 'handshake with (invalid )?0-RTT|undecryptable record later in handshake together with early_data' 'early data in records of more than 4 KB; no TLS 1.2'
-NOSWAP=1 go crfg-curves 'sanity|.*(x448|secp)|(empty|too small|too big) x25519 key share|x25519 key share of "1"|all zero x25519 key share' \
-  'groups that are not ours; asked again where a server is to refuse; no check for an all-zero secret'
+NOSWAP=1 go crfg-curves 'sanity|.*(x448|secp)|(empty|too small|too big) x25519 key share' \
+  'groups that are not ours; asked again where a server is to refuse'
 NOSWAP=1 go ecdhe-curves 'sanity - (secp|x448)|secp|x448|x25519 - (point at infinity|right-truncated key_share|key share from other curve|right 0-padded key_share)' \
   'groups that are not ours; asked again where a server is to refuse'
 alive || { echo "FAIL the server no longer answers"; exit 1; }

@@ -62,14 +62,16 @@ for f, field in enumerate((curve.F25519, curve.FP256, curve.FN256)):
 bad += fbad
 print(("ok  " if not fbad else "FAIL"), "field arithmetic as the model has it (3 fields, 22 x 22 numbers, 3 operations)")
 
-# X25519: our scalar is unclamped, so check that the peer (whose private key is all zeros,
-# clamped) derives the same secret from our share
-for i in range(4):
+# X25519: our scalar is clamped as in RFC 7748, so both our share and the secret match
+# OpenSSL's, and points of small order (u = 0 and u = 1) give an all-zero secret
+for i in range(6):
     pub, shared = got[f"xpub{i}"], got[f"xshared{i}"]
-    if i == 2:      # our scalar 0: nothing times anything (u of the neutral point is 0 here)
-        ok = pub == bytes(32) and shared == bytes(32)
+    e_bytes = bytes([0xff]) * 32 if i == 1 else bytes(32) if i == 2 else m[500 + 40 * i:532 + 40 * i]
+    if i >= 4:
+        ok = shared == bytes(32)
     else:
-        ok = sk.exchange(X25519PublicKey.from_public_bytes(pub)) == shared
+        ours = X25519PrivateKey.from_private_bytes(e_bytes)
+        ok = pub == ours.public_key().public_bytes_raw() and sk.exchange(X25519PublicKey.from_public_bytes(pub)) == shared
     bad += not ok
     print(("ok  " if ok else "FAIL"), f"x25519_{i}")
 

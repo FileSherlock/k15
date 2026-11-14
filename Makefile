@@ -37,7 +37,7 @@ COMPRESS ?= 1
 # BIGSH=n (tests): each processor has 2^n buffers for the frames the card cuts up (default 3)
 # RACE=n (tests): the timer stops in the middle of a connection it has in hand (tools/racetest.py)
 WIN ?=
-WINDEF := $(if $(WIN),-DWIN=$(WIN),) $(if $(WXTEST),-DWXTEST=$(WXTEST),) $(if $(ISNTOP),-DISNTOP=$(ISNTOP),) $(if $(ISNBITS),-DISNBITS=$(ISNBITS),) $(if $(KEYLIFE),-DKEYLIFE=$(KEYLIFE),) $(if $(NOTSO),-DNOTSO,) $(if $(BIGSH),-DBIGSH=$(BIGSH),) $(if $(RACE),-DRACE=$(RACE),)
+WINDEF := $(if $(WIN),-DWIN=$(WIN),) $(if $(WXTEST),-DWXTEST=$(WXTEST),) $(if $(ISNTOP),-DISNTOP=$(ISNTOP),) $(if $(ISNBITS),-DISNBITS=$(ISNBITS),) $(if $(KEYLIFE),-DKEYLIFE=$(KEYLIFE),) $(if $(STLIFE),-DSTLIFE=$(STLIFE),) $(if $(NOTSO),-DNOTSO,) $(if $(BIGSH),-DBIGSH=$(BIGSH),) $(if $(RACE),-DRACE=$(RACE),)
 
 # the routines a handshake spends its time in: none of their jumps may lie on a 32-byte
 # boundary (tools/jcc.py; of `xdh` and `seal` the jumps inside loops)

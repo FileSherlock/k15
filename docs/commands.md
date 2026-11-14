@@ -28,7 +28,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   for its owner's eyes only (umask 077), and /boot/k15.bin on the server for root's.
 - `make` assembles `src/os.asm` into `build/os.bin` (loaded at 1 MiB) and `build/disk.img`
   (`src/boot.asm` + the image; what the tests boot), with the site of `www/` in it.
-  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 13,731,
+  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 13,859,
   about: boot, clock calibration, page tables, driver and the other processors 2,700,
   network 4,300 with the timers, requests and the forms of a file 700, TLS handshake
   and key schedule 1,600, SHA-256 450, curves 3,000 with their programs and constants,
@@ -92,8 +92,8 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   still get its file after that.
 - Test images (make variables, each for its test): `ISNTOP=n ISNBITS=b` forces the top b
   bits (12) of every initial sequence number, so that what we send crosses 2^31 or 2^32
-  (the suite's `*isn*` and `site_wrap*` runs); `KEYLIFE=n`: a connection's key seals 2^n
-  records (`site_keylife`); `WXTEST=n`: do one thing that must be the machine's end
+  (the suite's `*isn*` and `site_wrap*` runs); `KEYLIFE=n` and `STLIFE=n`: a connection's
+  key seals 2^n records and a client sends 2^n records (`site_keylife`); `WXTEST=n`: do one thing that must be the machine's end
   (`tools/wxtest.sh`: 1 to 5 what the page tables forbid; 6 and 7 a fault while the
   frame in hand reads as an interrupt gate to our own code, on the first processor and
   on another; 8 a random number generator that says the same twice); `WIN=n`: so many segments may

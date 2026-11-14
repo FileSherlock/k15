@@ -14,7 +14,7 @@ static void hex(const char *tag, const u8 *p, u32 n)
 /* What the lines on the input ask for (hex throughout; "-" is no bytes):
  *   sha M                    SHA-256 of M
  *   hmac K M                 HMAC-SHA256 under the 32 bytes K of M (64 bytes at most)
- *   xdh E U                  our key share for the scalar E as it is, and the secret shared with U
+ *   xdh E U                  our key share for the scalar E (clamped), and the secret shared with U
  *   open KEY IV AAD CT       AES-128-GCM: what CT holds under KEY (16 bytes) and the nonce IV,
  *                            and the tag it should have, made over AAD (16 bytes at most) and CT
  *   seal KEY IV AAD M        the other way: the ciphertext of M (whose last byte goes in as
@@ -106,19 +106,21 @@ int main(int argc, char **argv)
         sprintf(t, "ungcm%u_%u", n, i * 77);
         hex(t, tmp, L);
     }
-    /* X25519 with our scalar e (unclamped): key share, and the secret with the public key
-     * of the all-zero private key; then with scalars of all ones and all zeros, and with a
-     * client's u that has its top bit set (which is to be ignored) */
+    /* X25519 with our scalar e (clamped as in RFC 7748): key share, and the secret with the
+     * public key of the all-zero private key; with scalars of all ones and all zeros, with a
+     * client's u that has its top bit set (which is to be ignored), and with points of small
+     * order (u = 0 and u = 1, which must both give an all-zero secret) */
     {
         static u8 peer[32] = {0x2f,0xe5,0x7d,0xa3,0x47,0xcd,0x62,0x43,0x15,0x28,0xda,0xac,0x5f,0xbb,0x29,0x07,
                               0x30,0xff,0xf6,0x84,0xaf,0xc4,0xcf,0xc2,0xed,0x90,0x99,0x5f,0x58,0xcb,0x3b,0x74};
-        static u8 pub[32], shared[32];
-        for (i = 0; i < 4; i++) {
+        static u8 pub[32], shared[32], small[32];
+        for (i = 0; i < 6; i++) {
             u32 j;
             char t[32];
             for (j = 0; j < 32; j++) E[j] = i == 1 ? 0xff : i == 2 ? 0 : m[500 + 40 * i + j];
             peer[31] = i == 3 ? peer[31] | 0x80 : peer[31] & 0x7f;
-            xdh_(pub, shared, peer);
+            memset(small, 0, 32), small[0] = i == 5;
+            xdh_(pub, shared, i >= 4 ? small : peer);
             sprintf(t, "xpub%u", i);
             hex(t, pub, 32);
             sprintf(t, "xshared%u", i);

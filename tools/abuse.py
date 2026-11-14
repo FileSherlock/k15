@@ -6,13 +6,13 @@
   2. a ClientHello without an x25519 key share gets no working session, and one with bytes
      that look like the start of one in another extension is served all the same; a
      client that can't be served (no TLS 1.3, not our cipher suite, no x25519, no
-     share for it after being asked) gets a fatal alert that says why, and the end of
-     the connection: nothing that only looks like an answer
+     share for it after being asked, or a share of small order) gets a fatal alert that
+     says why, and the end of the connection: nothing that only looks like an answer
   3. junk instead of a ClientHello, an oversized "ClientHello", and a real one cut short
      anywhere or with any of its lengths gone wrong, do no harm
   4. after all of that a normal client is still served
-  5. plain HTTP on port 80 (127.0.0.1:$HPORT): a request in pieces gets one response, two in
-     one segment get two, bytes without an empty line get none
+  5. plain HTTP on port 80 (127.0.0.1:$HPORT): a request in pieces gets one response, two
+     or 200 in one segment get them all, bytes without an empty line get none
 
 Uses Python's ssl with memory BIOs, so that raw bytes can be slipped into the TCP stream
 between TLS records.
@@ -158,15 +158,18 @@ def main():
     p += 2 + int.from_bytes(hello[p:p + 2], "big")
     p += 1 + hello[p] + 2
     shareless = bytearray(hello)
+    share_at = None
     while p + 4 <= len(hello):
         kind, n = int.from_bytes(hello[p:p + 2], "big"), int.from_bytes(hello[p + 2:p + 4], "big")
         if kind == 51:
             q = p + 6
             while q + 4 <= p + 4 + n:
                 if hello[q:q + 2] == b"\x00\x1d":
+                    share_at = q + 4
                     shareless[q:q + 2] = b"\x01\x00"        # (a group we don't have)
                 q += 4 + int.from_bytes(hello[q + 2:q + 4], "big")
         p += 4 + n
+    assert share_at is not None, "an x25519 share in ClientHello"
     shareless = bytes([22, 3, 1]) + len(shareless).to_bytes(2, "big") + bytes(shareless)
     ccs = bytes([20, 3, 3, 0, 1, 1])
     asked = True
@@ -212,7 +215,9 @@ def main():
     def record(body):
         return bytes([22, 3, 1]) + len(body).to_bytes(2, "big") + bytes(body)
 
-    PROTOCOL_VERSION, HANDSHAKE_FAILURE = bytes.fromhex("15030300020246"), bytes.fromhex("15030300020228")
+    PROTOCOL_VERSION = bytes.fromhex("15030300020246")
+    HANDSHAKE_FAILURE = bytes.fromhex("15030300020228")
+    ILLEGAL_PARAMETER = bytes.fromhex("1503030002022f")
     old = context()
     old.maximum_version = ssl.TLSVersion.TLSv1_2
     good &= check("a client without TLS 1.3 is told \"protocol version\", and that is all",
@@ -278,6 +283,16 @@ def main():
                   said(record(groupless)) == HANDSHAKE_FAILURE)
     good &= check("one that was asked for an x25519 share and sent none is told \"handshake failure\"",
                   said(shareless, ccs + shareless) == HANDSHAKE_FAILURE)
+
+    def with_share(u):
+        return record(hello[:share_at] + u + hello[share_at + 32:])
+
+    good &= check("an all-zero x25519 key share is told \"illegal parameter\"",
+                  said(with_share(bytes(32))) == ILLEGAL_PARAMETER)
+    good &= check("an x25519 key share of 1 (order 4 on the twist) is told \"illegal parameter\"",
+                  said(with_share(b"\x01" + bytes(31))) == ILLEGAL_PARAMETER)
+    good &= check("and so is one sent after being asked",
+                  said(shareless, ccs + with_share(b"\x01" + bytes(31))) == ILLEGAL_PARAMETER)
     good &= check("junk in a handshake record is told \"protocol version\"",
                   said(record(os.urandom(300))) == PROTOCOL_VERSION)
     good &= check("and a normal client is served after them", served())
@@ -337,6 +352,7 @@ def main():
     good &= check("port 80: a request gets a response", plain([REQ], 1))
     good &= check("port 80: a request in three pieces gets one", plain([REQ[:5], REQ[5:-2], REQ[-2:]], 1))
     good &= check("port 80: two requests at once get two", plain([REQ + REQ], 2))
+    good &= check("port 80: 200 requests in one segment all get their responses", plain([b"\n\n" * 200], 200))
     good &= check("port 80: bytes without an empty line get none", plain([os.urandom(64).replace(b"\n", b"x") * 40], 0))
     good &= check("port 80: still serving", plain([REQ], 1))
     return 0 if good else 1

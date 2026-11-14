@@ -75,8 +75,8 @@ T[site_wrap31]="B=build-wrap31 $SITE"
 T[site_wrap32]="B=build-wrap32 $SITE"
 T[site_wrap31_loss3]="LOSS=3 B=build-wrapl31 $SITE quick"
 T[site_wrap32_loss3]="LOSS=3 B=build-wrapl32 $SITE quick"
-# a connection's key is not used for more records than it should be (here: 2^10)
-T[site_keylife]="B=build-keylife ONLY=sealed $SITE"
+# a connection's keys are not used for more records than they should be (here: 2^10 and 2^6)
+T[site_keylife]="KEYLIFE=10 STLIFE=6 B=build-keylife ONLY='share of records' $SITE"
 # a client that vanishes in the middle of a file is given up after a minute or two, and one
 # that only stops reading is not (three minutes)
 T[site_gone]="GONE=1 ONLY=vanishes $SITE"
@@ -132,9 +132,9 @@ for w in "wrap31 0x7FFF8000 17" "wrap32 0xFFFF8000 17" "wrapl31 0x7FF00000 12" "
   set -- $w
   mkdir -p build-$1 && python3 tools/mksite.py build-$1/www >/dev/null && make -s B=build-$1 SITE=build-$1/www ISNTOP=$2 ISNBITS=$3 >/dev/null || { echo "BUILD FAILED (wrap)"; exit 1; }
 done
-mkdir -p build-keylife && python3 tools/mksite.py build-keylife/www >/dev/null && make -s B=build-keylife SITE=build-keylife/www KEYLIFE=10 >/dev/null || { echo "BUILD FAILED (keylife)"; exit 1; }
+mkdir -p build-keylife && python3 tools/mksite.py build-keylife/www >/dev/null && make -s B=build-keylife SITE=build-keylife/www KEYLIFE=10 STLIFE=6 >/dev/null || { echo "BUILD FAILED (keylife)"; exit 1; }
 mkdir -p build-site && python3 tools/mksite.py build-site/www >/dev/null && make -s B=build-site SITE=build-site/www >/dev/null || { echo "BUILD FAILED (site)"; exit 1; }
-mkdir -p build-site-notso && python3 tools/mksite.py build-site-notso/www >/dev/null && make -s B=build-site-notso SITE=build-site-notso/www NOTSO=1 >/dev/null || { echo "BUILD FAILED (site, no TSO)"; exit 1; }
+mkdir -p build-site-notso && python3 tools/mksite.py build-site-notso/www >/dev/null && make -s B=build-site-notso SITE=build-site/www NOTSO=1 >/dev/null || { echo "BUILD FAILED (site, no TSO)"; exit 1; }
 [[ -x build/rawc && build/rawc -nt tools/rawc.c ]] || gcc -O2 -o build/rawc tools/rawc.c || exit 1
 for b in build build-real build-small build-small-idle build-isn31 build-isn32 build-real-isn31 build-real-isn32; do
   [[ -x $b/tapc && $b/tapc -nt tools/tapc.c ]] || gcc -O2 -o $b/tapc tools/tapc.c -lssl -lcrypto || exit 1
@@ -152,7 +152,7 @@ verdict() {  # name, exit code -> one line
     wx) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 9 ok; $(grep -m1 '^FAIL' "$f")";;
     bneck) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 4 ok; $(grep -m1 '^FAIL' "$f" | cut -c1-80)";;
     k15) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 24 ok; $(grep -m1 '^FAIL' "$f")";;
-    site*) [[ $rc == 0 ]] && grep -q '^all ok' "$f" && v=ok; note="$(grep -c '^ok' "$f") checks ok; $(grep -m2 '^FAIL' "$f" | cut -c1-90 | tr '\n' ';')";;
+    site*) [[ $rc == 0 ]] && grep -q '^ok' "$f" && grep -q '^all ok' "$f" && v=ok; note="$(grep -c '^ok' "$f") checks ok; $(grep -m2 '^FAIL' "$f" | cut -c1-90 | tr '\n' ';')";;
     *) note=$(grep '^SCORE' "$f"); [[ $note == SCORE* && $note != "SCORE 0.0"* ]] && ! grep -q FAILED "$f" && v=ok
        note="${note#*= }; $(grep -c FAILED "$f") failed; $(grep -m1 -o 'open_s [0-9.]*' "$f")";;
   esac
