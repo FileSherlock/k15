@@ -37,7 +37,7 @@ LOG=$(mktemp)
 # MON=path: QEMU's monitor on that unix socket (to ask a guest that hangs where it is)
 qemu-system-x86_64 -nodefaults -display none ${MON:+-monitor unix:$MON,server,nowait} -no-reboot -machine q35 -smp "${SMP:-2}" "${ACCEL[@]}" -m "${MEM:-256}" -drive "file=${IMG%os.bin}disk.img,format=raw,if=none,id=d0,snapshot=on" \
   -netdev "tap,id=n0,ifname=$TAP,script=no,downscript=no" -device pcie-root-port,id=rp1,chassis=1 -device virtio-net-pci,bus=rp1,netdev=n0,disable-legacy=on,romfile= -device pcie-root-port,id=rp2,chassis=2 -device virtio-scsi-pci,bus=rp2 -device scsi-hd,drive=d0 >"$LOG" 2>&1 &
-QEMU_PID=$!
+export QEMU_PID=$!
 trap 'kill $QEMU_PID 2>/dev/null || true; wait $QEMU_PID 2>/dev/null || true; ip link del '"$TAP"' 2>/dev/null || true; rm -f "$LOG"' EXIT
 
 CURL=(curl -s --max-time 3 -o /dev/null --interface 10.0.2.32 --connect-to "$NAME:443:10.0.2.15:443")

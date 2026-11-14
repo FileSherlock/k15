@@ -69,6 +69,11 @@ One or two lines each. Add to it when something costs an hour; delete what stops
   loop that waits.
 - Under overload what matters is where frames wait: deep rings of our own, not the
   device's 256.
+- "It takes an hour and a nanosecond" is no reason to leave a race: a host takes a
+  processor away for milliseconds, in the middle of anything. Close it, and make the
+  test hold one side still (`RACE=n`, `tools/racetest.py`).
+- In Poly1305 a block of zeros counts (every block has a bit added on top); in GHASH it
+  does not. So "no associated data" is no block, not an empty one.
 
 ## Measuring
 - Where a frame's time goes can't be seen from outside. Over tap QEMU's packet path
@@ -81,6 +86,11 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - A number nobody measured is a guess. A feature somebody else sized is not sized.
 - A grade is what the grader says today. Compare with a site that has the grade
   before writing down why.
+- A test written beside the code knows what the code knows. Vectors made elsewhere
+  found in a minute that a client's point of small order makes our own key share zero.
+- tlsfuzzer's scripts fail in their first lines against us for four reasons that are
+  shortcuts of ours, not faults (`tools/tlsfuzz.py` says which). What it is good for
+  here: the server stays up, and another implementation checks every signature and tag.
 - A connection that fails at once from here is ours: another program has the port.
   Use base ports below 32768.
 
@@ -115,7 +125,5 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - Three bits for the client's window shift: Linux says 10. Four bits.
 - Taking the order of a client's suites for its wish: OpenSSL's order goes by key
   length.
-- Marking a slot in use from `tqrun` by changing C_AGE: C_AGE is when the client was
-  last heard, which is what `tqrun` gives up by.
 - Getting past 130,000 frames a second on the server: a second generator, one
   processor, no interrupts: the same ceiling each time.

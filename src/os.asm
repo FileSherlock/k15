@@ -300,14 +300,13 @@ C_CW    equ 39              ; a byte: so many segments of a response may be on t
 C_KIV   equ 40              ; our application key | iv (44 bytes), then the client's
 TSLOT   equ 128
 
-; What 32-bit code calls pushad and popad: all eight registers of old, in that order (so
-; the one a routine returns is at twice the offset it had: ebx at [rsp+32], ebp at
-; [rsp+16], edi at [rsp])
+; What 32-bit code calls pushad and popad: the seven registers of old besides rsp (so the
+; one a routine returns is at [rsp+48] for eax, [rsp+24] for ebx, [rsp+16] for ebp,
+; [rsp] for edi)
 %macro pushad 0
         push rax
         push rcx
         push rdx
-        push rbx
         push rbx
         push rbp
         push rsi
@@ -318,25 +317,30 @@ TSLOT   equ 128
         pop rsi
         pop rbp
         pop rbx
-        pop rbx
         pop rdx
         pop rcx
         pop rax
 %endmacro
-; HOT n: the routine that follows begins n bytes behind a 32-byte boundary. The routines a
-; handshake spends its time in are placed so, each where none of its jumps crosses such a
-; boundary or ends on one: on Intel's processors from Skylake to Cascade Lake (the cloud
-; server's is one) such a jump is decoded again every time it is met, and so is all that
-; shares its 32 bytes. Without this, how fast a handshake is there depends on how many
-; bytes of code happen to lie in front (6% between two builds, measured). tools/jcc.py
-; finds such jumps, and for a routine the n that leaves none; the build asks it.
+; HOT mask: the routine that follows begins where none of its jumps crosses a 32-byte
+; boundary or ends on one. The routines a handshake spends its time in are placed so: on
+; Intel's processors from Skylake to Cascade Lake (the cloud server's is one) such a jump
+; is decoded again every time it is met, and so is all that shares its 32 bytes. Without
+; this, how fast a handshake is there depends on how many bytes of code happen to lie in
+; front (6% between two builds, measured). Bit k of the mask says that the routine may
+; begin k bytes behind a boundary; it gets as few bytes of padding as take it to such a
+; place (35 bytes in all; it was the next boundary and some more for each: 226 bytes).
+; `tools/jcc.py build/os.lst mask ROUTINE` says the mask, and the build says when
+; a routine that was changed needs a new one. (Of `xdh` and `seal`, which are called
+; once a handshake and once a record, the jumps inside loops count: ROUTINE:loops.)
 %macro HOT 1
-        align 32
-        times %1 nop
+%assign %%k 32
+%define %%pad 0
+%rep 32
+%assign %%k %%k - 1
+%xdefine %%pad ((((%1) >> ((($ - $$) + %%k) & 31)) & 1) ? %%k : %%pad)
+%endrep
+        times %%pad nop
 %endmacro
-; (Routines that k2 reached through interrupt gates, to save bytes: plain calls now.)
-%define icall call
-%define fret ret
 ; Development builds (make DEBUG=1) count things in DBG and show six counters, four hex
 ; digits each, in place of the end of the page on port 80: `count n` adds one to counter n.
 ; 0: frames with a bad length or checksum, 1: cycles per frame handled (an average, made when
@@ -365,9 +369,37 @@ DBG     equ BSS + 0x0F500
         ud2
 %endmacro
 
+; RACEWAIT age (make RACE=n IDLE=1, for tools/racetest.py): `tqrun`, with a connection in
+; hand that has been quiet for long enough to be taken (%1: its C_AGE as it was), stops
+; there for up to 30 s, or until another processor has made the slot its own and has just
+; taken that connection's first request: the moment at which going on as if the slot were
+; still ours shows. RACE=1: before `tqrun` has said "in use" (`hold`), 2: after.
+%macro RACEWAIT 1
+        mov al, [NOW]
+        sub al, %1
+        cmp al, IDLE
+        jbe %%go
+        call clock
+        mov r10d, eax
+        xor r11d, r11d
+%%w:    call bdrain
+        pause
+        call clock
+        sub eax, r10d
+        cmp eax, 30 * 2048
+        jae %%go
+        cmp dword [rbp+C_ST], 2
+        jae %%two
+        or r11d, -1             ; (below 2: it is another's, before its first request)
+        jmp %%w
+%%two:  test r11d, r11d
+        jz %%w
+%%go:
+%endmacro
+
 %ifdef HOST
 BITS 64
-        section .text
+        section .text align=32
         global sha256, hmac, expand, seal, shaconst, echost, xdh, sign
         global E, REGS, CIPH
 %else
@@ -405,8 +437,8 @@ start:                          ; Entered in 32-bit protected mode by whoever lo
         mov edx, 0x80000000     ; not to be executed
         cmp ecx, TRAMP >> 12
         je .x
-        cmp ecx, 0x100
-        jb .put
+        test ch, ch
+        jz .put
         mov al, 1               ; the image: not to be written,
         cmp ecx, CODEPG
         jae .put                ; and behind its code not to be executed
@@ -419,11 +451,12 @@ start:                          ; Entered in 32-bit protected mode by whoever lo
         cmp ch, 2
         jb .pg
         mov edi, PDT + 8        ; From 2 MiB up, pages of 2 MiB: more of the image if it is
-        mov eax, 0x200081       ; long (only read), then, from BSS on, data. (That these
-.low:   cmp eax, BSSN           ; are not to be executed is said from long mode, below.)
+        mov eax, 0x200081       ; long (only read), then, from BSS on, data; none of it to be
+.low:   cmp eax, BSSN           ; executed
         jb .ro
         or al, 2
 .ro:    stosd
+        mov byte [edi+3], 0x80
         scasd
         add eax, 0x200000
         cmp eax, TABV
@@ -470,10 +503,12 @@ BITS 64
         cmp rax, rdx
         jae .piece
         mov rax, rdx
-.piece: add rax, 0x1FFFFF       ; in whole pages
+.piece: add rax, 0x1FFFFF       ; in whole pages, not to be executed
         and rax, -0x200000
         and r8, -0x200000
         mov al, 0x83
+        bts rax, 63
+        bts r8, 63
 .page:  cmp rax, r8
         jae .nent
         cmp edi, PDT_END
@@ -486,13 +521,6 @@ BITS 64
         jmp .ent
 .mapped:
         mov ebx, edi
-        mov edi, PDT + 15       ; None of all these pages of 2 MiB is to be executed (the
-.nx:    or byte [rdi], 0x80     ; top bit of each entry),
-        add edi, 8
-        cmp edi, ebx
-        jb .nx
-        mov rax, cr3
-        mov cr3, rax            ; and none is remembered otherwise
         mov edi, PDPT0          ; the page directories, one for each GiB
         mov eax, PDT + 3
         mov ecx, (PDT_END - PDT) >> 12
@@ -534,15 +562,11 @@ BITS 64
         add eax, ecx
         mov [RBASE], eax        ; for each processor a ring of frames (n frames, and 2 KiB in
         mov [MYRING], eax       ; front for how far it is) and behind it a queue of 4 n
-        mov ecx, [HSMASK]       ; connections that wait for an ack (64 bytes each: `tarm`)
-        add ecx, 2
-        shl ecx, 11
-        lea edx, [rax+rcx]
-        mov [TQB], edx
-        mov edx, [TMMASK]
-        inc edx
-        shl edx, 6
+        shl ecx, 4              ; connections that wait for an ack (64 bytes each: `tarm`)
+        lea edx, [rcx*8+2048]
         add ecx, edx
+        add edx, eax
+        mov [TQB], edx
         mov [RSTEP], ecx
         shl ecx, 2              ; (MAXCPU of them)
         add eax, ecx            ; rax = where the tables start
@@ -875,7 +899,6 @@ shaconst:
         lea eax, [r8+0x2003]
         mov [r8+0x1000], rax
         mov esi, PDT
-        lea edi, [r8+0x2000]
         mov ch, 2
         rep movsq               ; a copy of our first page directory, whose first 2 MiB
         lea eax, [r8+0x3003]    ; are in pages of 4 KiB,
@@ -886,7 +909,6 @@ shaconst:
         bts rax, 63
         mov [r8+0x2000+(BSSN>>21)*8], rax ; and whose 2 MiB at BSS are its own
         mov esi, PT0
-        lea edi, [r8+0x3000]
         mov ch, 2
         rep movsq
         lea eax, [r8+0x4003]
@@ -905,11 +927,10 @@ shaconst:
         mov eax, 0xFEE0009B     ; The local APIC, mapped where the card's structures are:
         mov [abs PDDEV+10*8], rax ; INIT to all the others, then twice "start at TRAMP"
         mov rsi, (DEVG << 30) + (10 << 21) + 0x300
-        mov dword [rsi], 0x000C4500
+        mov ebx, 0x000C4500
         call .wait
-        mov dword [rsi], 0x000C4600 + (TRAMP >> 12)
+        mov bx, 0x4600 + (TRAMP >> 12)
         call .wait
-        mov dword [rsi], 0x000C4600 + (TRAMP >> 12)
         call .wait
         mov eax, [abs TRAMP+apcount-tramp] ; So many came. Frames go to a power of two of us.
         cmp eax, MAXCPU - 1
@@ -942,11 +963,12 @@ shaconst:
         mov byte [rax], 0xC3
         call rax
 %elif WXTEST = 6                ; a fault, with a handler for it named where the frame in hand
-        WXGATE .poll            ; lies (as a client's packet could name one)
+        WXGATE poll             ; lies (as a client's packet could name one)
 %endif
 %endif
-        jmp .poll
-.wait:  call clock              ; (22 ticks: 10.7 ms)
+        jmp poll
+.wait:  mov [rsi], ebx
+        call clock              ; (22 ticks: 10.7 ms)
         mov ecx, eax
 .w:     pause
         call clock
@@ -955,26 +977,28 @@ shaconst:
         jb .w
         ret
 
-.poll:
+poll:
 %ifdef LIFE                     ; development builds (make LIFE=n): after n minutes the
         call clock              ; machine is reset, whatever happens: a test server then
         sub eax, [BORN]         ; boots what its disk boots by default, also when the network
         cmp eax, LIFE * 60 * 2048 ; side of a new image turns out not to work
         ja reset
 %endif
+        cmp dword [CPUN], 0
+        jne .ring
         call drain
-.work:  call ring1              ; then one frame of our own, if there is one
-        jnz .poll
+.ring:  call ring1              ; then one frame of our own, if there is one
+        jnz poll
         call txkick             ; none: time to tell the device what we have queued for it,
         call tidle              ; to see who has waited too long for an ack,
         call tqrun
         cmp dword [POOLN], 0    ; and to get on with the next signatures if there are none
         jne .idle
         call stock
-        jmp .poll
+        jmp poll
 .idle:  count 9                 ; (a turn with nothing to do)
         pause
-        jmp .poll
+        jmp poll
 
 ; ring1: the next frame in this processor's ring goes through `tcp`; ZF if there is none.
 ; (Clobbers everything.)
@@ -1123,21 +1147,10 @@ apstart: mov esp, STACK
         mov [MYRING], eax
 %ifdef WXTEST
 %if WXTEST = 7                  ; (the same on a processor that was started up: its table is
-        WXGATE .poll            ; at address 0 whatever loaded us)
+        WXGATE poll             ; at address 0 whatever loaded us)
 %endif
 %endif
-.poll:  call ring1
-        jnz .poll
-        call txkick
-        call tidle
-        call tqrun
-        cmp dword [POOLN], 0
-        jne .rest
-        call stock
-        jmp .poll
-.rest:  count 9
-        pause
-        jmp .poll
+        jmp poll
 
 %ifdef DEBUG
 tcpd:   rdtsc                   ; (`tcp`, with the cycles spent on frames, and how many frames)
@@ -1195,7 +1208,7 @@ txbuf:  pushad
 .room:  and eax, [Q1+12]        ; buffer = descriptor = ring position
         shl eax, 11
         add eax, TXB + 12
-        mov [rsp+32], rax
+        mov [rsp+24], rax
         popad
         ret
 
@@ -1333,8 +1346,7 @@ tcp:
         mov cl, 10
         rep movsb
         mov cl, 42
-        call txgo
-        ret
+        jmp txgo
 .ip:    cmp word [rbx+12], 0x0008 ; IPv4, no options, not a fragment, TCP, to us, all of it
         jne .ret                ; in this frame, the TCP checksum right: nothing else gets
         cmp byte [rbx+14], 0x45 ; any further. (The IP header has a checksum of its own, but
@@ -1407,15 +1419,9 @@ tcp:
         call find               ; ebp = the connection's slot; or, if it has none, eax = -1
         sbb eax, eax            ; and ebp = a slot for a new one (0: there is no room)
         jnz .slot
-        mov al, [NOW]           ; Its slot. If the connection has been quiet for an hour and
-        xchg [rbp+C_AGE], al    ; there is no room, another processor may be taking the slot
-        mov eax, [rbx+P_IP]     ; for one of its own this very moment (`find`). So first we
-        cmp eax, [rbp+C_IP]     ; say "in use", in one step (xchg): C_AGE is one of the eight
-        jne .gone               ; bytes the other asks for, which then are not as it saw
-        mov ax, [rbx+P_PORTS]   ; them, and it gets nothing. And then we look whether the
-        cmp ax, [rbp+C_PORT]    ; slot still is ours: if the other got there first, this
-        jne .gone               ; packet is as good as lost.
-        xor eax, eax
+        call hold               ; Its slot, which is in use from here on (`hold`): unless
+        jne .gone               ; another processor has just made it its own, and then
+        xor eax, eax            ; this packet is as good as lost
 .slot:  test dl, 4
         jz .nrst
         inc eax                 ; RST: if it is the next thing its connection expects, that
@@ -1506,8 +1512,7 @@ tcp:
         test r8d, r8d
         jz .seg
         mov cl, 8
-.seg:   call tcp_seg
-        ret
+.seg:   jmp tcp_seg
 .deny:  count 2
         mov al, 0x14            ; RST|ACK: connection refused
         mov edi, [rbx+P_SEQ]
@@ -1590,21 +1595,21 @@ tcp:
         cmp eax, edi
         ja .odd
         jb .ak0
-        cmp [rbx+P_PORTS+2], bl ; It has all we sent. If that includes our FIN, that was the
-        je .all80               ; connection
-        test byte [rbp+C_FLG], F_CLOSED
-        jz .nfin
+        test byte [rbp+C_FLG], F_CLOSED ; It has all we sent. If that includes our FIN, that
+        jz .nfin                ; was the connection
+        cmp [rbx+P_PORTS+2], bl
+        je .free
         test byte [rbp+C_FL2], F_FIN
         jnz .free
-.nfin:  cmp [rbp+C_ST], ebx
+.nfin:  cmp [rbx+P_PORTS+2], bl
+        je .nhs
+        cmp [rbp+C_ST], ebx
         je .nhs
         cmp [rbp+C_LEN], bx
         jne .nhs
         mov [rbp+C_HS], bx      ; (it has our flight, and no record of its own is being put
-        jmp .nhs                ; together: the handshake buffer can go to another)
-.all80: test byte [rbp+C_FLG], F_CLOSED
-        jnz .free
-.nhs:   btr dword [rbp+C_FLG], F_DEFER_BIT ; If that was an answer of several segments, its
+.nhs:   btr dword [rbp+C_FLG], F_DEFER_BIT ; together: the handshake buffer can go to another)
+                                ; If that was an answer of several segments, its
         jnc .ak1                ; data is acknowledged only now
         inc byte [rbx+P_MORE]
         jmp .ak1
@@ -1765,7 +1770,7 @@ tcp:
         inc dword [rbp+C_ST]
         lea esi, [rbx+HS_CH+5]
         lea ecx, [rdx-5]
-        icall handshake         ; edi = end of our flight
+        call handshake          ; edi = end of our flight
         pop rbx
         mov ecx, edi            ; keep the flight, where the ClientHello was: a client that
         sub ecx, OB             ; sends its ClientHello again has to get this one again (it
@@ -1868,8 +1873,7 @@ tcp:
         jnz .sq                 ; slot stays until the client has the rest.
         call tcp_send
         jmp .free
-.sq:    call tcp_send
-        ret
+.sq:    jmp tcp_send
 
         ; A TLS connection whose client has had our flight (`sm`). What we send from then
         ; on is cut from the response in hand, which is a stretch of the image (`geom`):
@@ -1943,8 +1947,9 @@ tcp:
         jz .a16
         shr eax, 2
 .a16:   test eax, eax
-        setnz al
-        movzx eax, al
+        jz .pump
+        push 1
+        pop rax
 .grow:  movzx edx, byte [rbp+C_CW]
         add eax, edx
         cmp eax, 255
@@ -1975,13 +1980,11 @@ tcp:
         movzx edx, byte [rbp+C_CW]
         imul edx, ecx           ; and what we let be on its way
         cmp eax, edx
-        jbe .w1
-        mov eax, edx
-.w1:    test eax, eax
+        cmova eax, edx
+        test eax, eax
         jz .w2
         cmp eax, ecx
-        jae .w2
-        mov eax, ecx            ; (a segment at least, unless it takes nothing at all)
+        cmovb eax, ecx          ; (a segment at least, unless it takes nothing at all)
 .w2:    add eax, [rbp+C_ACK]
         mov [TXLIM], eax
         mov edx, [rbp+C_SND]    ; At the start of a response that takes several segments
@@ -2513,7 +2516,7 @@ pick:   pushad
         call seek
         jc .done
         inc ebp
-.done:  mov [rsp+56], ebp
+.done:  mov [rsp+48], ebp
         popad
         ret
 .line:  mov esi, r10d           ; (rsi, ecx = what follows the header name at rdi, if the
@@ -2570,10 +2573,7 @@ tarm:   pushad
         sub edx, [TQH]
         cmp edx, [TMMASK]
         ja .full
-        and eax, [TMMASK]
-        shl eax, 6
-        add eax, [TQB]
-        mov edi, eax
+        call tqslot
         xor esi, esi            ; FR
         push 8
         pop rcx
@@ -2587,6 +2587,11 @@ tarm:   pushad
         inc dword [TQT]
         or byte [rbp+C_FL2], F_ARMED
 .full:  popad
+        ret
+tqslot: and eax, [TMMASK]
+        shl eax, 6
+        add eax, [TQB]
+        mov edi, eax
         ret
 
 ; tqrun: the connection that has been in that queue the longest (if there is one). If it
@@ -2605,26 +2610,19 @@ tqrun:  mov eax, [TQH]
         cmp eax, [TQT]
         je .none
         inc dword [TQH]
-        and eax, [TMMASK]
-        shl eax, 6
-        add eax, [TQB]
-        mov esi, eax
-        push 8
-        pop rcx
+        call tqslot
+        xchg eax, esi
         mov edx, [TNOW]         ; (`tidle` has just read the clock)
         sub edx, [rsi+T_TIME]
-        push rcx
         mov cl, [rsi+T_TRY]
         shr edx, cl
+        push 8
         pop rcx
         cmp edx, 512
         jae .due
         mov eax, [TQT]
         inc dword [TQT]
-        and eax, [TMMASK]
-        shl eax, 6
-        add eax, [TQB]
-        mov edi, eax
+        call tqslot
         rep movsq
 .none:  ret
 .due:   xor edi, edi            ; FR
@@ -2634,9 +2632,22 @@ tqrun:  mov eax, [TQH]
         mov word [rbx+P_MORE], E_RTO << 8
         call find
         jc .none                ; (the connection is no more,
+%ifdef RACE
+%if RACE = 1
+        RACEWAIT [rbp+C_AGE]
+%endif
+%endif
+        call hold               ; or its slot another's by now.) In use from here on, as
+        jne .none               ; for a packet of its client's. But this is none: when the
+        push rax                ; client was last heard is kept, and put back at the end
+%ifdef RACE
+%if RACE = 2
+        RACEWAIT [rsp]
+%endif
+%endif
         and byte [rbp+C_FL2], ~F_ARMED
         call sm
-        jnc .none               ; or another)
+        jnc .back               ; (another connection of that client's)
         call geom
         mov eax, [TXEND]
         test byte [rbp+C_FL2], F_FIN
@@ -2644,7 +2655,7 @@ tqrun:  mov eax, [TQH]
         inc eax
 .nf:    mov edx, [rbp+C_ACK]
         cmp eax, edx
-        je .none                ; (it has everything)
+        je .back                ; (it has everything)
         mov cl, [rbx+T_TRY]
         cmp edx, [rbx+T_ACK]
         je .vain
@@ -2655,13 +2666,19 @@ tqrun:  mov eax, [TQH]
         jbe .t
         mov cl, 6               ; (16 s at a time from here on.) And a client that has said
         mov al, [NOW]           ; nothing at all for a minute or two while we sent to it in
-        sub al, [rbp+C_AGE]     ; vain has gone: that was the connection. (One that takes
+        sub al, [rsp]           ; vain has gone: that was the connection. (One that takes
         cmp al, 2               ; no more for now, and says so each time it is sent to,
-        jae tcp.reset           ; stays.)
+        jb .t                   ; stays.)
+        pop rax
+        jmp tcp.reset
 .t:     mov [TQTRY], cl
         call tcp.tx
         mov byte [TQTRY], 0
-        ret
+.back:  pop rax                 ; The slot, if it still is this connection's (that may have
+        call own                ; been its end), says again when its client was last heard:
+        jne .kept               ; a slot the timer alone keeps busy is a quiet one, to be
+        mov [rbp+C_AGE], al     ; taken when there is no room
+.kept:  ret
 ; The one thing we send unasked: a SYN-ACK again. We keep no connection for a SYN, so a
 ; lost SYN-ACK costs the client a second, and after that a retransmission timeout of
 ; seconds for the rest of the connection (it has sent its SYN twice, so it has no round
@@ -2782,10 +2799,10 @@ clock:  call tsc
 ; The processors take slots from each other, and a slot changes hands in one step: its
 ; first eight bytes (address, port, flags, C_AGE) become the new connection's if they still
 ; are as they were seen here (`tcp.make`). The processor whose connection it was says "in
-; use" in one step as well, by changing C_AGE, before it does anything else with a packet
-; of that connection, and then looks whether the slot still is that connection's (`tcp`,
-; after it has called us). So one of the two finds out: the new connection that the slot
-; is not as it was, or the old one that it has none.
+; use" in one step as well, by changing C_AGE, before it does anything else with that
+; connection, and then looks whether the slot still is that connection's (`hold`, which
+; `tcp` and `tqrun` call after us). So one of the two finds out: the new connection that
+; the slot is not as it was, or the old one that it has none.
 find:   pushad
         xor esi, esi
         call prf
@@ -2868,6 +2885,26 @@ find:   pushad
         dec dh
         jnz .s
         ret
+
+; hold: the slot at rbp, which `find` says is the connection's whose packet is in FR, is in
+; use from here on: its C_AGE says now, and al = what it said (when the client was last
+; heard). ZF unless the slot is another connection's by now.
+; This is the owner's half of how a slot changes hands between processors (`find` has the
+; taker's): before anything is done with a connection, for a packet of its client's or
+; because its timer has run (`tqrun`), its processor says "in use", in one step (xchg), by
+; changing one of the eight bytes a taker asks for. They are then not as a taker saw them,
+; and it gets nothing; and whoever looks from now on sees a slot that is not quiet. Then,
+; in one look, whether the slot still is this connection's: if a taker was quicker, there
+; is no connection, and the packet is as good as lost.
+; own: only that look. (ebx = 0; both clobber rdi.)
+hold:   mov al, [NOW]
+        xchg [rbp+C_AGE], al
+own:    mov rdi, [rbp]
+        cmp edi, [rbx+P_IP]
+        jne .no
+        shr rdi, 32
+        cmp di, [rbx+P_PORTS]
+.no:    ret
 
 ; prf: xmm0 = a keyed hash of the client's address and ports (and ours: twelve bytes of the
 ; frame at rsi; `find` keeps it in HKO): eleven rounds of AES, as the processor has them, with round keys that are simply
@@ -3345,8 +3382,8 @@ handshake:
         push rsi
         mov esi, HT             ; the transcript's hash starts over
         mov edi, TSH
-        xor ecx, ecx
-        mov cl, 8
+        push 8
+        pop rcx
         rep movsd
         mov dword [TPOS], TR
         pop rsi
@@ -3380,14 +3417,14 @@ handshake:
         lea ebx, [rbp+S_D1]
         mov esi, R_X
         mov cl, 32
-        lea edi, [rbp+S_HS]
+        mov edi, ebp
         call hmac               ; handshake secret
         pop rbx
         lea eax, [rbx+rdx+90]   ; P1 = end of ServerHello
         call thash
         push rbx
         push rdx
-        lea ebx, [rbp+S_HS]
+        mov ebx, ebp
         mov esi, L_SHTS
         lea edx, [rbp+S_TH]
         lea edi, [rbp+S_TS]
@@ -3479,11 +3516,18 @@ handshake:
         pop rax
 
         call thash              ; application traffic secret
-        lea ebx, [rbp+S_HS]
-        lea esi, [rbp+S_Z]
         push rdi
+        mov ebx, ebp
+        mov esi, L_DER
+        lea edx, [rbp+S_EH]
+        lea edi, [rbp+S_D]
+        call expand
+        mov ebx, edi
+        lea esi, [rbp+S_Z]
+        push 32
+        pop rcx
         lea edi, [rbp+S_ES]
-        call stage              ; master secret
+        call hmac               ; master secret
         mov ebx, edi
         mov esi, L_CATS
         lea edx, [rbp+S_TH]
@@ -3597,24 +3641,6 @@ thash:
         call shaout
         popad
         ret
-
-; stage: edi = HKDF-Extract(Derive-Secret(ebx, "derived", ""), 32 bytes at esi)
-stage:
-        pushad
-        push rsi
-        push rdi
-        mov esi, L_DER
-        lea edx, [rbp+S_EH]
-        lea edi, [rbp+S_D]
-        call expand
-        mov ebx, edi
-        pop rdi
-        pop rsi
-        push 32
-        pop rcx
-        call hmac
-        popad
-        ret
 %endif
 
 ; keys: edi = key | iv from traffic secret ebx, for the cipher SUITE names: 32 bytes of key
@@ -3694,7 +3720,7 @@ shaend: push rdx
         mov esi, PADB
         mov edi, SH
         ; fall through
-        HOT 2
+        HOT 0x00FC00E4
 ; shablk: the state at rdi (8 dwords) takes in the ecx blocks of 64 bytes at rsi (rsi moves
 ; on; ecx may be 0). Clobbers rax, rcx, rdx, rbx, rbp, r8-r15.
 ; a-h are eax ebx ecx edx r8d-r11d; the 64 words of the message schedule are on the stack.
@@ -3804,15 +3830,15 @@ hmac:
         add ecx, 64
         mov esi, HB
         lea edi, [rsi+64]
-        icall sha256             ; inner hash
+        call sha256             ; inner hash
         mov cl, 64
 .o:     xor byte [HB+rcx-1], 0x36 ^ 0x5c
         loop .o
         mov cl, 96
         pop rdi
-        icall sha256             ; outer hash
+        call sha256             ; outer hash
         popad
-        fret
+        ret
 
 ; expand: edi = HKDF-Expand-Label(secret ebx, label esi = {L, len, text}, context edx or 0), 32 bytes
 expand:
@@ -3847,9 +3873,9 @@ expand:
         lea ecx, [rdi-INFO]
         mov esi, INFO
         pop rdi
-        icall hmac
+        call hmac
         popad
-        fret
+        ret
 
 ; ----------------------------------------------------------------------------
 ; Elliptic curves: 256-bit arithmetic mod m in four limbs of 64 bits, weakly reduced, in a
@@ -3868,7 +3894,7 @@ R_A24   equ REGS + 13*32
 R_D     equ REGS + 14*32
 R_C     equ REGS + 15*32
 
-        HOT 5
+        HOT 0x00FFE0C0
 ; xdh: our X25519 key share for the secret E to rdi (which moves on 32 bytes), and R_X = the
 ; secret we share with the client whose key share is at rsi. E is used as it is, unclamped:
 ; the other side only needs it to be the same number in our share and in the secret.
@@ -3896,25 +3922,23 @@ xdh:    pushad
         rep movsq               ; the client's u,
         and byte [rdi-1], 0x7F  ; which has 255 bits (RFC 7748)
         mov esi, X_INIT25519
-        call vm                 ; (leaves rsi at STEP25519)
+        call vm
         xor edx, edx            ; The ladder, from the top bit down. The two points change
         mov ecx, 255            ; places when a bit differs from the one before it.
 .l:     test cl, 63
         jnz .step
         call bdrain             ; (four times on the way: see `drain`)
-.step:  push rsi
-        xor eax, eax
+.step:  xor eax, eax
         bt [E], ecx
         adc eax, eax
         push rax
         push rcx
         xor edx, eax
         call cswap
-        mov rsi, [rsp+16]
+        mov esi, X_STEP25519
         call vm
         pop rcx
         pop rdx
-        pop rsi
         dec ecx
         jns .l
         call cswap
@@ -3935,7 +3959,7 @@ xdh:    pushad
         popad
         ret
 
-        HOT 2
+        HOT 0x7FFFFFFC
 ; cswap: swap (X, Y) with (Z, T) if edx = 1, not if edx = 0 (clobbers rax, rcx, rdx, rdi)
 cswap:  neg rdx
         mov edi, R_X
@@ -4011,7 +4035,10 @@ sign:   pushad
         mov ebp, FN256
         pop rsi
         mov edi, R_E0
-        call rev32              ; the hash as a number
+        mov cl, 32              ; the hash as a number
+.rev:   mov al, [rsi+rcx-1]
+        stosb
+        loop .rev
         mov esi, X_SIGN
         call vm
         popad
@@ -4054,12 +4081,17 @@ stock:  mov ebx, [POOLFILL]
         pop rcx
         call rand
 %ifdef HOST
-        cmp ebx, (NPOOL - 1) * 32 ; (the tests choose the nonce that is used first)
+        mov al, [HKSET]         ; (the tests choose the nonce that is used first: HKSET = 1;
+        mov esi, HK             ; or all of them: 2, and then they are at HK in the order
+        cmp al, 2               ; they are made in, the one used first last)
+        jne .one
+        add esi, ebx
+        jmp .mine
+.one:   cmp ebx, (NPOOL - 1) * 32
         jne .k
-        cmp byte [HKSET], 0
-        je .k
-        mov esi, HK
-        lea edi, [rbx+POOLK]
+        test al, al
+        jz .k
+.mine:  lea edi, [rbx+POOLK]
         mov cl, 4
         rep movsq
 .k:
@@ -4179,7 +4211,7 @@ binv:   mov esi, ebx
         rep movsq
         ret
 
-        HOT 0
+        HOT 0xE0F80E0F
 ; comb: to the point in X.. are added, for i = 0 .. 63, entry number (nibble i of the 32 bytes
 ; at rbx) of the 16 entries (ecx bytes each) of window i of the table at rsi, each by the
 ; program at rdx. Clobbers all but rbp.
@@ -4209,7 +4241,7 @@ comb:   xor eax, eax
         jb .w
         ret
 
-        HOT 0
+        HOT 0xFFE1F8FF
 ; select: entry number edx of the 16 entries (ecx bytes each, a multiple of 16) at rsi to the
 ; registers from E0 on. All 16 are read, and what is kept is picked with masks: which one it
 ; was shows neither in time nor in what the cache holds. rsi moves on past the 16; clobbers
@@ -4242,7 +4274,7 @@ select: mov edi, REGS
         jnz .e
         ret
 
-        HOT 16
+        HOT 0x40F70000
 ; vm: run the program at rsi in the field at rbp. Returns rsi = after the program; clobbers
 ; all else but rbp. In the image a program is 2 bytes per operation (a << 4 | b, op << 4 |
 ; dst; a zero byte ends it: tools/ec.py); what runs is what boot made of that (`ecinit`,
@@ -4266,7 +4298,7 @@ vm:     mov edi, [rsi]
 .end:   add rsi, 4
         ret
 
-        HOT 1
+        HOT 0xF9FFC3FE
 ; fas: the four limbs at rdi = those at rsi + those at rbx if ecx = 0, minus them if ecx = 1,
 ; in the field at rbp: weakly reduced, as its operands are. (Clobbers rax, rcx, rdx, rsi,
 ; r8-r15.) If the sum left [0, 2^256) (a carry adding, a borrow subtracting), M is taken
@@ -4322,23 +4354,6 @@ fas:    mov r8, [rsi]
         mov [rdi+24], r11
         ret
 
-        HOT 1
-; addk: r8-r11 += the four limbs at rdx if rax = -1, not if rax = 0; CF = the carry
-; (clobbers r12-r15)
-addk:   mov r12, [rdx]
-        mov r13, [rdx+8]
-        mov r14, [rdx+16]
-        mov r15, [rdx+24]
-        and r12, rax
-        and r13, rax
-        and r14, rax
-        and r15, rax
-        add r8, r12
-        adc r9, r13
-        adc r10, r14
-        adc r11, r15
-        ret
-
 ; fmul: the four limbs at rdi = those at rsi times those at rbx in the field at rbp: mod
 ; 2^255 - 19, or divided by 2^256 mod M for the Montgomery fields; below 2^256 either way.
 ; (Clobbers rax, rcx, rdx, rsi, r8-r15.)
@@ -4360,6 +4375,7 @@ addk:   mov r12, [rdx]
         adox %5, rcx
         adc %5, 0
 %endmacro
+        HOT 0xCF07FE0F
 fmul:   mov r13, rsi
         mov rsi, rbx
         mov rdx, [r13]          ; the product, eight limbs, a row for each limb of the one
@@ -4427,17 +4443,25 @@ fmul:   mov r13, rsi
         mov r14d, eax
         dec r15b
         jnz .r
-        mov rax, r14            ; below 2^256 + M: if it left 2^256, take M off
-        neg rax
-        mov rdx, rbp
-        call addk
+        neg r14                 ; below 2^256 + M: if it left 2^256, take M off
+        mov r12, [rbp]
+        mov r13, [rbp+8]
+        mov r15, [rbp+24]
+        and r12, r14
+        and r13, r14
+        and r15, r14
+        and r14, [rbp+16]
+        add r8, r12
+        adc r9, r13
+        adc r10, r14
+        adc r11, r15
 .done:  mov [rdi], r8
         mov [rdi+8], r9
         mov [rdi+16], r10
         mov [rdi+24], r11
         ret
 
-        HOT 0
+        HOT 0x07CFF071
 ; inv: T1 = (the four limbs at rsi) ^ (m - 2) in the field at rbp: the inverse, or for a
 ; Montgomery field R^2 / it of a raw number, 1 / it of a stored one. Clobbers T0 and all
 ; registers but rbp. (The exponent is no secret.)
@@ -4464,14 +4488,6 @@ inv:    mov edi, R_T0
         pop rcx
 .s:     inc cl
         jnz .l
-        ret
-
-; rev32: the 32 bytes at rsi, reversed, to rdi (rdi += 32; clobbers al, ecx = 0)
-rev32:  push 32
-        pop rcx
-.l:     mov al, [rsi+rcx-1]
-        stosb
-        loop .l
         ret
 
 ; ecinit (boot): the three fields, the constant registers and the two tables.
@@ -4517,8 +4533,7 @@ ecinit: mov edi, BSWAPM         ; (and what GHASH needs: how pshufb reverses 16 
         mov eax, eax
         stosq
         scasq
-        not rax
-        inc rax
+        neg rax
         stosq
         inc byte [rdi]          ; (-1/p = 1)
         add edi, FSIZE - 32     ; n of P-256: its low half is data, then 2^64 - 1, 2^64 - 2^32
@@ -4664,9 +4679,29 @@ echost: pushad                  ; (for the tests: C wants its registers back)
         popad
         ret
 ; (for test/bench.c: one operation, or one program, in the field number ecx)
-        global hfmul, hfas, hfsub, hvm, hinv, F25519, HK, HKSET, POOLN, hstock
-HK      equ BSS + 0x18000       ; (a nonce for the first signature after the next `stock`)
-HKSET   equ HK + 32
+        global hfmul, hfas, hfsub, hvm, hinv, F25519, HK, HKSET, POOLN, hstock, HAAD, HAADN
+HK      equ BSS + 0x18000       ; (nonces for the signatures after the next `stock`: see there)
+HKSET   equ HK + NPOOL * 32
+HAAD    equ HKSET + 16          ; (16 bytes to make a tag over in place of a record's header,
+HAADN   equ HAAD + 16           ; if HAADN is not 0: then so many of them count, less 1)
+; haad (`seal`, before it makes the tag of the ebp blocks at rsi; rax = where the lengths
+; are): Wycheproof's vectors for the two ciphers have data of their own where a record has
+; its header, or none: then the header's block is not part of what is hashed.
+haad:   movzx edx, byte [HAADN]
+        dec edx
+        js .no
+        jnz .some
+        add esi, 16
+        dec ebp
+.some:  movdqu xmm5, [HAAD]
+        movdqa [SB], xmm5
+        cmp byte [CIPH], 0
+        jne .gcm
+        mov [rax], dl
+        ret
+.gcm:   shl edx, 3
+        mov [rax+7], dl
+.no:    ret
 hstock: pushad
         call stock
         popad
@@ -4705,7 +4740,7 @@ hinv:   pushad
 %endif
 
 ; ----------------------------------------------------------------------------
-        HOT 0
+        HOT 0xC1F3F01F
 ; chacha: xmm0-xmm3 = the ChaCha20 block of the 16-dword state at ST (its four rows:
 ; a quarter round does all four columns at once), and the counter moves on. Clobbers eax,
 ; xmm4.
@@ -4754,7 +4789,7 @@ chacha: movdqa xmm0, [ST]
         por xmm1, xmm4
         ret
 
-        HOT 10
+        HOT 0x00038000
 ; seal: a TLS 1.3 record at rdi for the ecx bytes at rsi and, behind them inside it, the
 ; byte al that says what they are; key | iv at rbx (32 and 12 bytes), number edx; the
 ; cipher is the one CIPH names. Returns rdi = the record's end.
@@ -4835,7 +4870,7 @@ seal:   pushad
         jmp .hp
 .sb:    mov rdi, [rsp]          ; o
         mov rsi, [rsp+8]        ; m
-        mov ebx, [rsp+48]       ; n
+        mov ebx, [rsp+40]       ; n
         mov rdx, r12
         pxor xmm0, xmm0
         mov ebp, SB             ; SB = header, 0 pad | ciphertext, 0 pad | lengths
@@ -4847,10 +4882,9 @@ seal:   pushad
         test edx, edx
         jnz .go
         mov eax, [rbp]          ; encrypting: the record starts with that header
-        mov [rdi], eax
+        stosd
         mov al, [rbp+4]
-        mov [rdi+4], al
-        add rdi, 5
+        stosb
 .go:    add ebp, 16
 .bulk:  cmp ebx, 64             ; 64 bytes at a time, in registers, while there are that many,
         jb .tail
@@ -4888,7 +4922,7 @@ seal:   pushad
         rep movsb
         test edx, edx
         jnz .tlen
-        mov al, [rsp+64]
+        mov al, [rsp+56]
         stosb
         inc ebx
 .tlen:  pop rdi
@@ -4930,6 +4964,9 @@ seal:   pushad
 .mac:   lea ebp, [rax+16-SB]
         shr ebp, 4              ; blocks to hash
         mov esi, SB
+%ifdef HOST
+        call haad               ; (the tests may have other bytes hashed than a header's)
+%endif
         cmp byte [CIPH], 0
         jne .ghash
         ; Poly1305 tag of the ebp 16-byte blocks at SB, key at PK (r, then s), to rdi.
@@ -5041,7 +5078,7 @@ ks64:   cmp byte [CIPH], 0
         pshufb xmm3, xmm7
         jmp aes4
 
-        HOT 0
+        HOT 0xFFB39FFF
 ; gh1: xmm2 = sum of eax/16 products (xmm0, then blocks from rsi+16) with H^m .. H^1 at rbx,
 ; three multiplies each (Karatsuba), reduced once (xmm6 = 0xC2..00, xmm7 = BSWAPM)
 gh1:    pxor xmm1, xmm1
@@ -5077,7 +5114,7 @@ gh1:    pxor xmm1, xmm1
         pxor xmm2, xmm0
         ret
 
-        HOT 0
+        HOT 0xFFFF0F3D
 ; aeskey: the eleven round keys of the AES-128 key at rsi, to RK (clobbers eax, ecx, edi,
 ; xmm0-xmm2)
 aeskey: movdqu xmm0, [rsi]
@@ -5108,7 +5145,7 @@ aeskey: movdqu xmm0, [rsi]
         movdqa [rdi], xmm0
         ret
 
-        HOT 0
+        HOT 0xFFFFF79F
 ; aes4: xmm0-xmm3 = AES of xmm0-xmm3 under the round keys at RK (clobbers eax, xmm5)
 aes4:   mov eax, RK
         movdqa xmm5, [rax]

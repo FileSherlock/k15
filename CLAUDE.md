@@ -39,28 +39,31 @@ is history, a measurement series or a description of how a routine works. Those 
   or two lines, or fix the docs it contradicts. Delete what is no longer true.
 
 ## Where it stands
-- The system is 14,747 bytes. It boots from GRUB or a BIOS boot sector, uses all the
+- The system is 14,364 bytes. It boots from GRUB or a BIOS boot sector, uses all the
   RAM and up to 4 processors, modern virtio-net, and serves GET and HEAD by path with
   compressed forms, ETag and 304, keep-alive, and a redirect on port 80.
 - Memory per held connection: 20 bytes on port 80, 128 bytes for TLS.
-- 15kb.org runs the image in `build-15kb.org` (25,084 bytes) with a Let's Encrypt
+- 15kb.org runs the image in `build-15kb.org` (24,701 bytes) with a Let's Encrypt
   certificate for 15kb.org and www.15kb.org, HSTS, `--persist`. SSL Labs: A.
-- On the server (2 shared vCPUs) it did 7,500 to 9,000 new TLS connections a second
-  and about 110,000 requests a second on kept connections, two to three times nginx;
-  large files about as fast as nginx. Numbers and method: `bench/README.md`.
-- Not measured on the server: the four-block sealing and the fixes of 2026-11-13.
-- Known open: `tqrun` works on a connection's slot without marking it in use
-  (`docs/internals.md`, "Processors"). It needs a processor with no idle moment for an
-  hour and a full table.
+- On the server (2 shared vCPUs; last measured 2026-11-14) it does 7,300 to 8,800 new
+  TLS connections a second and 100,000 to 120,000 requests a second on kept
+  connections, two to three times nginx; large files at 1.2 GB/s, a quarter more than
+  nginx did. Numbers and method: `bench/README.md`.
+- Tested from outside as well (2026-11-14): Wycheproof's vectors, Valgrind with the
+  secrets undefined, tlsfuzzer, real ClientHellos damaged at random. All pass. What
+  tlsfuzzer's scripts miss in us is the shortcuts of `docs/internals.md` and nothing
+  else; each is named in `tools/tlsfuzz.sh`.
 
 ## Next
-1. Measure the 2026-11-13 changes under load on the server (`bench/files.sh`,
-   `bench/run.sh`, in turn with an image of commit 74fb37b). Needs the user's word.
-2. Evidence from outside (suggested, not decided): Wycheproof vectors against the host
-   build, tlsfuzzer against a running image, Valgrind with secrets marked undefined.
-3. The handshake further: OpenSSL's assembly does the ladder and the signature in
+1. For the user to decide: three TLS shortcuts that the tests from outside point at.
+   A ChangeCipherSpec after the ServerHello, which RFC 8446 wants sent to a client that
+   has a session id (all browsers), for middleboxes: 20 bytes or so. Refusing a client
+   whose X25519 point makes the secret all zeros (a MUST; today such a client gets a
+   key share of zeros and a handshake): 15 bytes or so. A ClientHello that comes in two
+   records.
+2. The handshake further: OpenSSL's assembly does the ladder and the signature in
    about a fifth fewer cycles.
-4. Later: IPv6, DHCP, a retransmission timer that knows the round trip, pacing, zstd,
+3. Later: IPv6, DHCP, a retransmission timer that knows the round trip, pacing, zstd,
    ChaCha20 several blocks abreast, taking out the reset knock.
 
 ## What "secure" means here
@@ -87,8 +90,11 @@ secrecy against a network attacker, and no packet makes the server leak its key:
 Tests can't share the machine: run suites one after another and nothing beside them.
 Don't change the source or a test script while a suite runs.
 - After every change: `./measure.sh` (ten seconds).
-- After touching crypto or `tools/ec.py`: `make test` (the model first, then the asm).
-- After anything else: `tools/suite.sh` (57 runs, seven minutes). Also with `SMP=1` and
+- After touching crypto or `tools/ec.py`: `make test` (the model first, then the asm),
+  `make outside` and `make ct` (`tools/outside.sh fetch` once, for what they run with).
+- After touching the handshake, records, or what a bad packet gets:
+  `unshare -Urn tools/tlsfuzz.sh` (three minutes).
+- After anything else: `tools/suite.sh` (61 runs, seven minutes). Also with `SMP=1` and
   `SMP=4` after touching what processors share or how the machine starts. On 4,
   `raw1m_20k` fails when the host is busy: run it alone before believing it.
 - After touching boot or the polling loops: `measure.sh` with `DEBUG=1`, `KNOCK=` and
@@ -99,7 +105,7 @@ Don't change the source or a test script while a suite runs.
 - After touching what lets segments go (`C_CW`, the window, what counts as lost):
   `tools/bneck.sh` over a few paths next to the last commit's image.
 - make says if a hot routine has a jump on a 32-byte boundary: then
-  `tools/jcc.py ... fit` and a new number after `HOT`.
+  `tools/jcc.py build/os.lst mask ROUTINE` and the new mask after `HOT`.
 - Then the server, for anything that could behave differently on a real machine, and
   `bench/` from a load generator for anything that could change what it does under
   load. Both need the user's word (see above).

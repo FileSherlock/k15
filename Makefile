@@ -35,12 +35,13 @@ COMPRESS ?= 1
 # WIN=n: so many segments of a response may be on their way to a client at once
 # NOTSO=1 (tests): a segment a frame, also where the card would cut frames into segments
 # BIGSH=n (tests): each processor has 2^n buffers for the frames the card cuts up (default 3)
+# RACE=n (tests): the timer stops in the middle of a connection it has in hand (tools/racetest.py)
 WIN ?=
-WINDEF := $(if $(WIN),-DWIN=$(WIN),) $(if $(WXTEST),-DWXTEST=$(WXTEST),) $(if $(ISNTOP),-DISNTOP=$(ISNTOP),) $(if $(ISNBITS),-DISNBITS=$(ISNBITS),) $(if $(KEYLIFE),-DKEYLIFE=$(KEYLIFE),) $(if $(NOTSO),-DNOTSO,) $(if $(BIGSH),-DBIGSH=$(BIGSH),)
+WINDEF := $(if $(WIN),-DWIN=$(WIN),) $(if $(WXTEST),-DWXTEST=$(WXTEST),) $(if $(ISNTOP),-DISNTOP=$(ISNTOP),) $(if $(ISNBITS),-DISNBITS=$(ISNBITS),) $(if $(KEYLIFE),-DKEYLIFE=$(KEYLIFE),) $(if $(NOTSO),-DNOTSO,) $(if $(BIGSH),-DBIGSH=$(BIGSH),) $(if $(RACE),-DRACE=$(RACE),)
 
 # the routines a handshake spends its time in: none of their jumps may lie on a 32-byte
-# boundary (tools/jcc.py; of `seal` only the loops count, which that list can't say)
-HOT := shablk xdh cswap comb select vm fas addk fmul inv chacha ks64 gh1 aeskey aes4
+# boundary (tools/jcc.py; of `xdh` and `seal` the jumps inside loops)
+HOT := shablk xdh:loops cswap comb select vm fas fmul inv chacha seal:loops ks64 gh1 aeskey aes4
 
 # (the image, its listing and the disk hold the private key: for their owner's eyes only)
 # The image: hand-written assembly (src/os.asm) -> flat binary, loaded at 1 MiB; and a
@@ -96,7 +97,7 @@ $(B)/os.bin: src/os.asm $(GEN) $(PACKED) $(B)/ip
 # asm crypto checked against pyca/cryptography on the host (the asm calls and pushes as it
 # likes: no red zone; and it wants its buffers below 4 GiB: no PIE)
 HOSTCC := gcc -no-pie -fno-pie -O1 -mno-red-zone
-$(B)/test_asm: test/test_asm.c src/os.asm $(GEN)
+$(B)/test_asm: test/test_asm.c test/asm.h src/os.asm $(GEN)
 	nasm -f elf64 -DHOST -I$(B)/ -o $(B)/os_host.o src/os.asm
 	$(HOSTCC) -o $@ test/test_asm.c $(B)/os_host.o
 
@@ -104,9 +105,24 @@ test: $(B)/test_asm
 	python3 tools/ec.py
 	CERT=$(CERT) python3 test/test_crypto.py $(B)/test_asm
 
+# The same object against what others have made (tools/outside.sh fetch gets it into ext/):
+# Wycheproof's vectors and RFC 6979's (test/outside.py), and under Valgrind with every
+# secret marked undefined, so that a jump or an address made of one is an error
+# (test/ct.c; the runs after the first are the controls: each has one, which must be found)
+EXT ?= ext
+VG := VALGRIND_LIB=$(EXT)/valgrind/usr/libexec/valgrind $(EXT)/valgrind/usr/bin/valgrind -q --error-exitcode=9
+outside: $(B)/test_asm
+	CERT=$(CERT) python3 -I test/outside.py $(B)/test_asm $(EXT)/wycheproof/testvectors_v1
+$(B)/ct: test/ct.c test/asm.h $(B)/test_asm
+	$(HOSTCC) -I$(EXT)/valgrind/usr/include -o $@ test/ct.c $(B)/os_host.o
+ct: $(B)/ct
+	$(VG) $(B)/ct
+	@for n in 1 2 3 4 5 6; do if $(VG) $(B)/ct $$n >/dev/null 2>&1; then echo "FAIL: control $$n went unnoticed"; exit 1; fi; done
+	@echo "ok   nothing jumps on or indexes with a secret (and each of six controls that does is noticed)"
+
 # what the curve and hash code cost natively (the same object the tests use, timed on this host)
 bench: $(B)/test_asm test/bench.c
 	$(HOSTCC) -o $(B)/bench_asm test/bench.c $(B)/os_host.o
 	$(B)/bench_asm
 
-.PHONY: all test bench FORCE
+.PHONY: all test outside ct bench FORCE

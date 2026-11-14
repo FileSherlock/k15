@@ -12,9 +12,10 @@ Read the part you are about to change. `tools/ec.py` has the curve code's other 
   SHA-256 constants, `ecinit` (fields, constants and tables for the curves, the programs
   unpacked), the start of the key schedule, virtio-net, the key for `prf`, the other
   processors.
-  Code is 32-bit in style where it came from k2 (`pushad` is a macro for the eight old
-  registers; r8-r15 belong to the crypto and are nobody's to keep). Addresses below 4 GiB
-  live in 32-bit registers; a connection's slot does not (`rbp`).
+  Code is 32-bit in style where it came from k2 (`pushad` is a macro for the old
+  registers, the seven that are not the stack's; r8-r15 belong to the crypto and are
+  nobody's to keep). Addresses below 4 GiB live in 32-bit registers; a connection's
+  slot does not (`rbp`).
 - `src/boot.asm`: BIOS boot sector: reads the image, however long, 64 sectors at a time
   and copies each piece to where it goes from 1 MiB up (from real mode, with segments
   that reach all of memory: set anew for every piece, the BIOS may put them back), asks
@@ -60,6 +61,12 @@ Read the part you are about to change. `tools/ec.py` has the curve code's other 
   `tools/jcc.py`, `tools/tlsprobe.sh`, `tools/k15test.sh`: the test site and its checker,
   the W^X test (and what else must be the machine's end), the jumps on boundaries, a
   scanner's questions, the tool's own test.
+  `tools/racetest.sh`, `tools/racetest.py`: a slot taken from under its connection's timer.
+- From outside (`tools/outside.sh fetch` gets them into `ext/`): `test/outside.py`
+  (Wycheproof's vectors and RFC 6979's against the host build), `test/ct.c` (the host
+  build under Valgrind, secrets marked undefined), `tools/tlsfuzz.sh` and
+  `tools/tlsfuzz.py` (tlsfuzzer against a running image). `test/asm.h`: the asm as C
+  calls it.
   `tools/bneck.sh`, `tools/bnecktest.sh`, `tools/tl.py`: a bottleneck between guest and
   client, the test that uses it, a download's timeline from a capture.
   `tools/churn.py`, `tools/flood.py`, `tools/idletest.py`: slots given back, slots not
@@ -135,17 +142,30 @@ and while it waits for the transmit lock or a free transmit buffer).
 - A slot that changes hands between processors (a connection quiet for an hour, in a
   full table) does so in one step on each side. The taker's `cmpxchg` asks for the slot's
   first eight bytes as it saw them in one look (`find.used`), C_AGE among them, and puts
-  its own there, C_AGE included (`tcp.make`). The owner, before it does anything with a
-  packet of that connection, changes C_AGE with an `xchg` and then looks whether the slot
-  still is its connection's (`tcp`, after `find`). So one of the two finds out: the taker
-  that the slot is not as it was (it gets nothing, and its packet comes again), or the
-  owner that it has no connection (its packet is as good as lost). A slot quiet for all
-  of 255 units is not taken: a packet of its own, a unit on, would leave C_AGE as it is.
-- Not closed: `tqrun` works on a slot it has looked up without saying "in use" (it can't:
-  C_AGE is when the client was last heard, which is what it goes by). For that to meet a
-  taker, a connection that waits for an ack must have been quiet for over an hour, and
-  such a one is given up after two minutes, if `tqrun` runs at all: it takes a processor
-  with no idle moment for an hour, and a full table.
+  its own there, C_AGE included (`tcp.make`). The owner, before it does anything with
+  that connection, changes C_AGE with an `xchg` and then looks, in one look at those
+  eight bytes, whether the slot still is its connection's (`hold`). So one of the two
+  finds out: the taker that the slot is not as it was (it gets nothing, and its packet
+  comes again), or the owner that it has no connection (its packet is as good as lost).
+  A slot quiet for all of 255 units is not taken: a packet of its own, a unit on, would
+  leave C_AGE as it is.
+- The owner has two ways to a slot, and both go through `hold`: a packet of the
+  connection's client (`tcp`, after `find`), and the connection's timer (`tqrun`). The
+  timer is no sign of life, and C_AGE is what it gives a client up by: so it keeps what
+  C_AGE said and puts it back when it is done, if the slot still is that connection's
+  (`own`). Until 2026-11-14 the timer worked on the slot it had looked up without any
+  of this. A taker could then get the slot while the timer was in the middle of it, and
+  the timer went on with a slot that was another connection's: in the test that holds
+  the timer still at that point (`tools/racetest.sh`), it sent ten records of the new
+  connection, sealed with the new connection's key, to the old client's address in one
+  run, and in another the new connection's client got a record it could not open and
+  gave up. With the two a few instructions further apart it could have sealed under
+  the new key with a record number made from the old connection's numbers: the same
+  key and number for two different records. What stood in the way was time alone (a
+  connection that waits for an ack is given up after two minutes of silence, a slot is
+  taken after 68; so a processor had to have had no idle moment for an hour, and then
+  the two had to meet within the microsecond, or within however long the host takes a
+  processor away for).
 
 ## How TCP works here
 No copy of what was sent, except the handshake flight: everything else is made again
@@ -420,15 +440,18 @@ model that asserts every bound.
   agree); the client's u has its top bit cleared (RFC 7748).
 - r and s go out as DER INTEGERs of whatever length they have (`derint`); nothing is
   retried.
-- `HOT n` in front of a routine puts it n bytes behind a 32-byte boundary: the routines a
-  handshake spends its time in (the hash, the ladder, the register machine, the field
-  arithmetic, the ciphers) each lie where none of their jumps crosses such a boundary
-  or ends on one. On Intel's processors from Skylake to Cascade Lake (the server's is
-  one) such a jump is decoded again every time, and all that shares its 32 bytes with
-  it. Where the jumps fall depends on every byte in front, so two builds differed by 6%
-  in handshakes a second there, and by nothing here (Zen 2). It costs 320 bytes of
-  padding. `tools/jcc.py` finds such jumps (make says so if one of these routines has
-  one) and, with `fit`, the n for a routine that has been changed.
+- `HOT mask` in front of a routine puts it where none of its jumps crosses a 32-byte
+  boundary or ends on one: the routines a handshake spends its time in (the hash, the
+  ladder, the register machine, the field arithmetic, the ciphers). On Intel's
+  processors from Skylake to Cascade Lake (the server's is one) such a jump is decoded
+  again every time, and all that shares its 32 bytes with it. Where the jumps fall
+  depends on every byte in front, so two builds differed by 6% in handshakes a second
+  there, and by nothing here (Zen 2). The mask says at which of the 32 places behind a
+  boundary the routine may begin, and it gets only the padding that takes it to the
+  next of them: 35 bytes in all (it was "the next boundary, and n bytes more": 226).
+  `tools/jcc.py` finds such jumps (make says so if one of these routines has one) and,
+  with `mask`, the mask for a routine that has been changed; of `xdh` and `seal`, which
+  are called once a handshake and once a record, the jumps inside loops count.
 
 ## Records
 `seal` makes a record for some bytes and the byte that says what they are (handshake
@@ -479,6 +502,14 @@ removing the ones about TLS.
 - A client record of more than 4 KB (a request with that many headers and cookies) ends
   the connection.
 - No check for an all-zero X25519 result (a client can only weaken its own connection).
+  Such a client's point is one of small order; the key share we send it is all zeros
+  too then (ours and the secret come out of one division, here by zero).
+- A ClientHello is one record. One that comes in two (TLS allows it; no browser does
+  it) is taken for a short one, which has no TLS 1.3 in it: "protocol version".
+- What a client says it can verify (signature_algorithms) is not looked at, nor its
+  legacy_version, nor whether its second ClientHello is its first with a key share. A
+  malformed x25519 share is no share: it is asked for one (a HelloRetryRequest), where
+  a server is to refuse.
 - After 2^32 records from the client its counter wraps to "no ClientHello yet": the
   connection is dead, the nonces never repeat.
 - HTTP: GET and HEAD, the path compared byte for byte with what pack.py made of the file

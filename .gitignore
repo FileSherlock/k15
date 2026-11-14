@@ -2,3 +2,6 @@
 build*/
 cert*/
 __pycache__/
+
+# what the tests from outside are run with (tools/outside.sh fetch)
+ext/

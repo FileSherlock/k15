@@ -162,7 +162,8 @@ an erratum; all that shares the 32 bytes with it is decoded again too). The new 
 had moved the SHA-256 round loop, the curve machine's dispatch and the field addition so
 that each had such a jump. On the development machine (Zen 2) the two images were equal.
 The routines a handshake spends its time in now each begin where none of their jumps
-lies so (`HOT` in src/os.asm, `tools/jcc.py`), at the price of 320 bytes of padding.
+lies so (`HOT` in src/os.asm, `tools/jcc.py`), at the price of 320 bytes of padding
+(35 since 2026-11-14: "Four blocks at a time", below).
 
 **Files** (the site of `tools/mksite.py`; `wrk`, 8 s a row, from the same generator;
 nginx 1.28.3 with OpenSSL 3.5.5 and `bench/nginx.conf` on the same server with the same
@@ -243,7 +244,8 @@ its frame, its acks and the hash of the tag come on top; how busy the processors
 was not measured). The next thing would be the ciphers again: AES four blocks abreast
 and GHASH four at a time; ChaCha20 two or four blocks abreast, which wants AVX2. (Done
 for AES-128-GCM on 2026-11-13, evening: a 1,418-byte record is down to 1,780 cycles on
-the development machine; not yet measured on the server.)
+the development machine, and large files went from 1.0 to 1.2 GB/s on the server: "Four
+blocks at a time", below.)
 
 The rows of `bench/run.sh`, this image and the afternoon's in turn (22:10; 10 s a row):
 
@@ -302,6 +304,54 @@ paths (`tools/bneck.sh`; an image without TSO, so that a frame is a segment):
 1.5 MiB with a connection, over a round trip of 20 ms and of 100 ms (`DELAY=n` in front
 of tap.sh): 0.37 s and 1.8 s (0.6 s and 2.9 s). The last row is what neither does well:
 a queue of ten packets and a sender that does not pace.
+
+## Four blocks at a time, and where the hot routines lie (2026-11-14, 01:10 to 01:40)
+Three images in turn on the server, each with the site of `tools/mksite.py`
+(`./k15 pack ... --plain80`), from a new load generator of the same kind: the image of
+2026-11-13, 00:27 ("Which cipher", above: 14,277 bytes of system), the one of that
+evening (AES-128-GCM four blocks abreast and GHASH four at a time, the clock, the
+fixes: 14,747), and the night's (14,364: the same code in 383 bytes less; the padding
+in front of the hot routines is 35 bytes where it was 226: see `HOT` in src/os.asm).
+
+Files (`bench/files.sh`: wrk, 64 connections that stay unless it says otherwise; two
+runs where there are two numbers):
+
+| | 2026-11-13, 00:27 | that evening's | the night's |
+|---|---|---|---|
+| 1.5 MiB, wrk as it is (it gets AES-128-GCM) | 1.02 and 0.95 GB/s | 1.22 GB/s | 1.24 and 1.19 GB/s |
+| the same asked for with AES-128-GCM alone | 0.99 and 0.99 GB/s | 1.27 GB/s | 1.16 and 1.22 GB/s |
+| the same, 8 connections | 819 and 595 MB/s | 0.97 GB/s | 0.88 and 0.92 GB/s |
+| the same, 1 connection | 121 and 95 MB/s | 136 MB/s | 129 and 122 MB/s |
+| 14,000 bytes (AES-128-GCM) | 37,626 and 36,001 a second | 34,255 | 36,254 and 36,888 |
+| the page (167 bytes), 64 and 512 connections | 100,326 and 120,117 | 81,355 and 108,319 | 97,656 and 113,813 |
+| 200 KB of text, as it is, and to who takes brotli | | | 6,099 a second (1.16 GB/s), 12,025 |
+| requests of over 2 s (wrk's "timeout"), 1.5 MiB rows | 11, 4, 9 | none | none |
+
+So sealing four blocks at a time is worth a fifth to a quarter for large files on this
+server (1.2 GB/s where it was 1.0, and where nginx with OpenSSL did 0.90 to 0.98 two
+nights before), nothing for small ones, which were never limited by it; and the
+requests that waited over 2 s in the large rows are gone since the evening's fixes.
+
+New TLS connections a second (`bench/run.sh`, 10 s a row; then the evening's image and
+the night's in turn, twice each, two runs of 12 s at 64 and at 512 in flight after each
+deploy):
+
+| | 2026-11-13, 00:27 | that evening's | the night's |
+|---|---|---|---|
+| 64 / 512 / 4,096 in flight | 7,986 / 8,531 / 8,755 | 7,326 / 8,472 / 8,398 | 7,786 / 8,444 / 8,551 |
+| two key shares, 512 | 8,467 | 8,188 | 8,100 |
+| in turn, 64 in flight (4 runs each) | | 7,265 to 7,975, mean 7,683 | 7,340 to 7,693, mean 7,504 |
+| in turn, 512 in flight (4 runs each) | | 7,180 to 8,762, mean 8,210 | 8,108 to 8,415, mean 8,292 |
+| https, connections kept, 64 / 512 | 97,692 / 120,155 | 101,060 / 117,733 | 100,844 / 114,575 |
+| http, new connections, 64 / 512 / 4,096 | 30,923 / 34,757 / 34,448 | 31,512 / 34,527 / 33,787 | 31,090 / 34,579 / 34,375 |
+| http, connections kept, 64 / 512 | 103,260 / 115,988 | 100,341 / 121,057 | 100,452 / 111,806 |
+
+No errors; of the connections over 10 s, 3, 1 and 1 in the plain row with 4,096 in
+flight, as ever. The three images make as many connections as each other, within what
+a row moves between two runs here: so the hot routines need not begin on a 32-byte
+boundary to keep their jumps off one. It is enough that each begins at one of the
+places where none of its jumps lies on a boundary (most have ten or twenty such places
+in 32), and that is what `HOT` now pads to.
 
 ## Held connections
 `tools/tapc.c` from the load generator (`bench/hold.sh`; 60,000 from one address is what

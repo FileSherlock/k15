@@ -28,7 +28,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   for its owner's eyes only (umask 077), and /boot/k15.bin on the server for root's.
 - `make` assembles `src/os.asm` into `build/os.bin` (loaded at 1 MiB) and `build/disk.img`
   (`src/boot.asm` + the image; what the tests boot), with the site of `www/` in it.
-  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 14,747,
+  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 14,491,
   about: boot, clock calibration, page tables, driver and the other processors 2,700,
   network 4,300 with the timers, requests and the forms of a file 700, TLS handshake
   and key schedule 1,600, SHA-256 450, curves 3,000 with their programs and constants,
@@ -62,7 +62,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   none (a browser may not believe it there). OUT/site.json says what each path must
   return (for the tests), OUT/page80.bin what port 80 says.
 - `tools/suite.sh [JOBS] [name...]`: everything below, a few at a time, one line each
-  (57 runs, seven minutes). `SMP=1` or `SMP=4` in front for other machines than the
+  (61 runs, seven minutes). `SMP=1` or `SMP=4` in front for other machines than the
   default of 2 processors. Its verdict is strict: one failed connection is a FAIL. Under
   a loaded host a run that overflows rings on purpose (`raw1m_20k`) can time out a few
   hundred of a million (on 4 processors it does every time the suite runs five at once):
@@ -158,8 +158,10 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   and measure.sh's check of port 80 don't know its page).
 - `python3 tools/jcc.py build/os.lst [ROUTINE...]` lists the jumps that cross or end on
   a 32-byte boundary (make runs it for the routines of `HOT` in the Makefile and says so
-  if there are any); `... fit ROUTINE` says where a routine would have to begin to have
-  none. See HOT in "How the curve code works".
+  if there are any); `... mask ROUTINE` says where a routine may begin to have none, as
+  the mask that `HOT` in the source takes (`fit`: and what would lie on a boundary at
+  each place); `ROUTINE:loops` counts only the jumps inside its loops. See HOT in "How
+  the curve code works".
 - `unshare -Urn ./tap.sh build/rawc N [W]` (`gcc -O2 -o build/rawc tools/rawc.c`): the
   scale test. N plain connections made of raw packets on the tap, from as many source
   addresses as it takes (12 bytes each in the client, no sockets): each is opened and
@@ -196,6 +198,33 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
 - `tools/load.py` (through slirp, `PORT=`): `hold N`, `burst K`, `seq N` (handshake rate),
   `ka N` (keep-alive rate). Start a VM first: `source tools/vm.sh; boot` with `B`, `PORT`
   and `IMG=$B/os.bin` set.
+- From outside, what was not written beside the code (`tools/outside.sh fetch` gets all
+  of it into `ext/`, which is not in git: Wycheproof's vectors, tlsfuzzer with
+  tlslite-ng, Ubuntu's Valgrind unpacked; no root):
+  `make outside` (a second): the host build against Project Wycheproof's vectors for
+  X25519 (all 518), ChaCha20-Poly1305 and AES-128-GCM (those with our sizes of key,
+  nonce and tag: opened, and sealed), HMAC-SHA256, against RFC 6979's two signatures
+  for P-256 with SHA-256, and against OpenSSL's point multiplication for nonces and
+  hashes on the edges (`test/outside.py`, which says what each takes for granted).
+  `make ct` (ten seconds): the host build under Valgrind's memcheck with every secret
+  marked as undefined memory: a jump decided by one, or an address made of one, is an
+  error. Six runs with such a jump or address planted must each be found
+  (`test/ct.c`).
+  `unshare -Urn tools/tlsfuzz.sh [NAME...]` (three minutes): 31 of tlsfuzzer's scripts
+  for TLS 1.3 against the image in `build/`, over tap: 1,300 conversations, most of
+  them wrong in one place. The server must still serve after each script; a
+  conversation may fail only if the script's line in `tools/tlsfuzz.sh` names it, with
+  the shortcut of ours that is the reason. `tools/tlsfuzz.py SCRIPT -h HOST -p PORT`
+  is one script by itself, and says what it does to make the scripts fit us.
+  `unshare -Urn ./tap.sh python3 tools/hellofuzz.py [N] [SEED]` (a minute; the suite's
+  `hellofuzz`): 20,000 ClientHellos as OpenSSL makes them, each with bytes changed,
+  lengths set wrong, parts cut, grown or copied about at random. The server must
+  answer or not, and go on serving: a real client is sent in after every 500.
+- `unshare -Urn tools/racetest.sh 1` (and `2`; the suite's `race1` and `race2`, three
+  minutes each): an image built `RACE=n IDLE=1 CAP=32`, in which the timer of a
+  connection that may be taken stops for up to 30 s, before it has said "in use" (1) or
+  after (2), and a new connection that finds no room. Whoever is second must get
+  nothing (`tools/racetest.py`).
 - `make test` checks the asm crypto (`src/os.asm` built with `-DHOST`, driven by
   `test/test_asm.c`) against pyca/cryptography (hashes, both ciphers, X25519 with edge
   scalars, 70 signatures) and against the model (every pair of 22 edge numbers through

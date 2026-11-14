@@ -1,47 +1,8 @@
-/* Host harness for the asm crypto (src/os.asm built with -DHOST): prints the same lines as
- * test_crypto.c so test/test_crypto.py can check them. Build: see the Makefile. */
-#include <stdio.h>
-#include <string.h>
-#include <sys/mman.h>
-
-typedef unsigned char u8;
-typedef unsigned int u32;
-
-/* The asm keeps the eight old registers (or says what it returns in them); r8-r15 and the
- * SSE registers are scratch. */
-#define SCRATCH "memory", "cc", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", \
-                "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", \
-                "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15"
-#define ASMCALL(fn, ...) __asm__ volatile("call " #fn : __VA_ARGS__ : : SCRATCH)
-
-static void sha(u8 *out, u8 *m, u32 n) { ASMCALL(sha256, "+D"(out), "+S"(m), "+c"(n)); }
-static void hm(u8 *out, const u8 *k, const u8 *m, u32 n) { ASMCALL(hmac, "+D"(out), "+b"(k), "+S"(m), "+c"(n)); }
-static void ex(u8 *out, const u8 *sec, const char *lab, const u8 *ctx) { ASMCALL(expand, "+D"(out), "+b"(sec), "+S"(lab), "+d"(ctx)); }
-/* a record for the n bytes at m, of which the last says what the others are */
-static u32 sl(u8 *o, const u8 *m, u32 n, const u8 *kiv, u32 seq)
-{
-    u8 *e = o;
-    u32 type = m[--n];
-    __asm__ volatile("clc\n\tcall seal" : "+D"(e), "+S"(m), "+c"(n), "+b"(kiv), "+d"(seq), "+a"(type) : : SCRATCH); /* CF = 0: encrypt */
-    return e - o;
-}
-/* what a record held (n bytes at c, between header and tag), decrypted, and the tag it should have had */
-static u32 op(u8 *o, const u8 *c, u32 n, const u8 *kiv, u32 seq)
-{
-    u8 *e = o;
-    __asm__ volatile("stc\n\tcall seal" : "+D"(e), "+S"(c), "+c"(n), "+b"(kiv), "+d"(seq) : : SCRATCH); /* CF = 1: decrypt */
-    return e - o;
-}
-extern u8 CIPH[];
-
-extern u8 E[], REGS[];
-enum { R_X = 3 * 32, R_Y = 4 * 32 }; /* as in tools/ec.py */
-/* our key share for the secret E to pub, the secret shared with the owner of u to shared */
-static void xdh_(u8 *pub, u8 *shared, const u8 *u)
-{
-    ASMCALL(xdh, "+D"(pub), "+S"(u));
-    memcpy(shared, REGS + R_X, 32);
-}
+/* Host harness for the asm crypto (src/os.asm built with -DHOST). Without arguments it
+ * prints the lines test/test_crypto.py checks; with one, it does what the lines on its
+ * input ask for, one answer a line (test/outside.py: Wycheproof's vectors and others from
+ * outside). Build: see the Makefile. */
+#include "asm.h"
 
 static void hex(const char *tag, const u8 *p, u32 n)
 {
@@ -50,17 +11,80 @@ static void hex(const char *tag, const u8 *p, u32 n)
     printf("\n");
 }
 
-int main(void)
+/* What the lines on the input ask for (hex throughout; "-" is no bytes):
+ *   sha M                    SHA-256 of M
+ *   hmac K M                 HMAC-SHA256 under the 32 bytes K of M (64 bytes at most)
+ *   xdh E U                  our key share for the scalar E as it is, and the secret shared with U
+ *   open C KEY IV AAD CT     C = c or g: the cipher. What CT holds under KEY (32 bytes; AES uses
+ *                            16) and the nonce IV, and the tag it should have, made over AAD
+ *                            (16 bytes at most) and CT
+ *   seal C KEY IV AAD M      the other way: the ciphertext of M (whose last byte goes in as
+ *                            the byte that says what the others are) and its tag
+ *   sign D K Z               (r, s) for the hash Z with the nonce K (little-endian) under the
+ *                            key whose d R mod n is D (little-endian; "-": the image's own) */
+static u32 unhex(u8 *o, const char *h)
+{
+    u32 n = 0;
+    if (h[0] == '-') return 0;
+    for (; h[0] && h[1]; h += 2, n++) sscanf(h, "%2hhx", o + n);
+    return n;
+}
+static void put(const u8 *p, u32 n)
+{
+    if (!n) printf("-");
+    while (n--) printf("%02x", *p++);
+    printf("\n");
+}
+static int commands(void)
+{
+    static char line[70000], w[6][20000];
+    static u8 a[5][10000], out[10100], d0[32];
+    memcpy(d0, REGS + R_D, 32);
+    while (fgets(line, sizeof line, stdin)) {
+        u32 n[5] = {0}, f = sscanf(line, "%19999s %19999s %19999s %19999s %19999s %19999s", w[0], w[1], w[2], w[3], w[4], w[5]);
+        if (f < 2) continue;
+        if (!strcmp(w[0], "sha")) {
+            n[0] = unhex(a[0], w[1]);
+            sha(out, a[0], n[0]);
+            put(out, 32);
+        } else if (!strcmp(w[0], "hmac")) {
+            unhex(a[0], w[1]), n[1] = unhex(a[1], w[2]);
+            hm(out, a[0], a[1], n[1]);
+            put(out, 32);
+        } else if (!strcmp(w[0], "xdh")) {
+            unhex(E, w[1]), unhex(a[1], w[2]);
+            xdh_(out, out + 32, a[1]);
+            put(out, 64);
+        } else if (!strcmp(w[0], "open") || !strcmp(w[0], "seal")) {
+            static u8 kiv[44];
+            u32 L;
+            memset(kiv, 0, sizeof kiv), memset(HAAD, 0, 16);
+            unhex(kiv, w[2]), unhex(kiv + 32, w[3]);
+            HAADN[0] = 1 + unhex(HAAD, w[4]);
+            n[4] = unhex(a[4], w[5]);
+            CIPH[0] = w[1][0] == 'g';
+            if (w[0][0] == 'o') L = op(out, a[4], n[4], kiv, 0), put(out, L);
+            else L = sl(out, a[4], n[4], kiv, 0), put(out + 5, L - 5);
+            HAADN[0] = 0;
+        } else if (!strcmp(w[0], "sign")) {
+            if (w[1][0] == '-') memcpy(REGS + R_D, d0, 32);
+            else unhex(REGS + R_D, w[1]);
+            unhex(HK, w[2]), unhex(a[2], w[3]);
+            HKSET[0] = 1, POOLN = 0;
+            sign_(out, a[2]);
+            put(out, 64);
+        } else printf("?\n");
+    }
+    return 0;
+}
+
+int main(int argc, char **argv)
 {
     static u8 m[2000], out[4096], tmp[2100], h[32], kiv[68];
     setbuf(stdout, NULL);
     u32 i, lens[] = {0, 3, 55, 56, 63, 64, 119, 1000, 1999};
-    if (mmap((void *)0x200000, 0x200000, PROT_READ | PROT_WRITE,
-             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0) != (void *)0x200000) {
-        perror("mmap");
-        return 1;
-    }
-    __asm__ volatile("call shaconst\n\tcall echost" ::: SCRATCH);
+    if (asm_init()) return 1;
+    if (argc > 1) return commands();
     for (i = 0; i < sizeof m; i++) m[i] = i * 7 + 3;
     for (i = 0; i < sizeof lens / sizeof *lens; i++) {
         char t[32];
@@ -108,8 +132,6 @@ int main(void)
      * these the first one used is ours: all ones, 1, and one that shares most of its
      * nibbles with what the table lookup takes off (so that many digits are 0 or 15). */
     for (i = 0; i < 70; i++) {
-        extern u8 HK[], HKSET[];
-        extern unsigned POOLN;
         u32 j;
         char t[32];
         static u8 z[32];
@@ -131,7 +153,6 @@ int main(void)
      * numbers that sit on the edges (0, the modulus and what is near it, 2^256 - 1, ...) and
      * some that don't; test_crypto.py has the model's answers (tools/ec.py). */
     {
-        extern u8 F25519[];
         typedef unsigned long long u64;
         static u64 v[24][4], r[4];
         for (int f = 0; f < 3; f++) {

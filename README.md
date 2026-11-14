@@ -25,7 +25,7 @@ For a site that is meant to stay (`--reset`: how the server gets back into its L
 
 What you get, and what you don't:
 
-- **Small.** The system is 14,747 bytes. The image is that plus your files, each stored
+- **Small.** The system is 14,491 bytes. The image is that plus your files, each stored
   as the response it is sent as (and, where that makes it shorter, once more compressed
   with gzip and with brotli, for clients that take that).
 - **Nothing to break into.** No kernel, no shell, no file system, no user accounts, no
@@ -37,7 +37,10 @@ What you get, and what you don't:
   P-256, ChaCha20-Poly1305 and
   AES-128-GCM, a fresh key and a fresh nonce for every handshake, forward secrecy for
   every connection, and curve arithmetic and ciphers that neither branch on nor index
-  with anything secret. What is random comes from the processor's generator, and each
+  with anything secret: checked, not only read, by running them under Valgrind with
+  every secret marked as undefined. The arithmetic is also asked what Project
+  Wycheproof asks every implementation, and the running image what tlsfuzzer does
+  (1,300 conversations, most of them wrong in one place). What is random comes from the processor's generator, and each
   draw is compared with the one before: a generator that repeats itself (some have)
   stops the machine before it signs anything. Port 80 only says where the site is.
 - **Cheap to hold open.** A TLS connection costs 128 bytes, however large the file it is
@@ -82,7 +85,11 @@ works, the commands, the server, and what went wrong before.
 make                 # -> build/os.bin and build/disk.img with the site of www/ (the first build makes cert/)
 ./measure.sh         # boot it in QEMU, fetch with curl (certificate verified), play the hostile client
 make test            # the crypto against pyca/cryptography and the model in tools/ec.py
-tools/suite.sh       # all 57 regression runs: loss, reordering, scale, browsers, a site of 80 files
+tools/outside.sh fetch   # what the next three need, into ext/ (Wycheproof, Valgrind, tlsfuzzer)
+make outside         # the crypto against Wycheproof's vectors and RFC 6979's
+make ct              # the crypto under Valgrind: no jump and no address is made of a secret
+unshare -Urn tools/tlsfuzz.sh   # tlsfuzzer against the image
+tools/suite.sh       # all 61 regression runs: loss, reordering, scale, browsers, a site of 80 files
 tools/sitetest.sh    # that site alone: every path, every kind of client
 unshare -Urn ./tap.sh ./taprunc.sh 2000 1024 4   # 8,000 connections from 4 source IPs
 gcc -O2 -o build/rawc tools/rawc.c
