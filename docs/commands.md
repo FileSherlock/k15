@@ -245,3 +245,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   one multiplication, and a record of a small page and of a full segment.
 - KVM is used when /dev/kvm is there; `KVM=0` emulates. `tools/vm.sh` reads `KVM` when it
   is sourced, not when `boot` runs.
+- `tools/bounty.py CERT/server.key`: the Bitcoin address whose key the certificate's
+  private key also is (a P-256 key is a valid secp256k1 key); `--wif` prints the key for
+  a wallet, `--test` checks known answers. Offline. A renewal makes a new key, so a new
+  address: what is on the old one has to be moved (its key is in `CERT/old`).
