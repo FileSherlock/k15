@@ -133,3 +133,6 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - Three bits for the client's window shift: Linux says 10. Four bits.
 - Getting past 130,000 frames a second on the server: a second generator, one
   processor, no interrupts: the same ceiling each time.
+- The bounty's page is some 30 bytes from losing its compressed forms: gzip has to bring `/`
+  into one record (1,418 bytes with its head), and a real address packs worse than the
+  placeholder's zeros. After a change to `site/index.html`, look at `site.json`'s forms.

@@ -1,6 +1,6 @@
 # k15
 
-**https://15kb.org/ is an unhackable 14 KB x86-64 HTTPS operating system — $200 Bitcoin bounty until 2027-02-12.**
+**https://15kb.org/ is served by a 14 KB x86-64 HTTPS operating system written in assembly, with a $200 Bitcoin bounty on its TLS key until 2027-02-12.**
 
 The live server's TLS certificate private key (ECDSA P-256) is the exact same 255-bit integer as the private key of Bitcoin wallet [`bc1q00000000000000000000000000000000000000`](https://mempool.space/address/bc1q00000000000000000000000000000000000000). Break into `15kb.org`, extract the key from RAM or TLS, and sweep the wallet. Moving the coins is the proof.
 

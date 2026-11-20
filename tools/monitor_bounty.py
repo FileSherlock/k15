@@ -8,6 +8,9 @@ and Bitcoin wallet spend (confirmed or unconfirmed mempool).
                                  its proof is cert-NAME/bounty.proof, and its page is site/ with
                                  the address and the certificate's last day put in
     tools/monitor_bounty.py --test
+
+The page it expects is the one in the branch `bounty` of this repository (site/ as committed
+there: what the server is packed from), whatever is checked out; `--site DIR` takes a folder.
 """
 import datetime
 import gzip
@@ -61,14 +64,27 @@ def http_get_raw(tls_or_sock, host, path, headers=()):
     return status, hmap, rest[:clen]
 
 
-def check_site_and_cert(host, sans, ip, port, http_port, site_dir, expected_q1, cafile=None, addr=None):
+def read_site(source):
+    """index.html, style.css and 404.html of a folder, or of site/ in a branch (`git show`)."""
+    files = {}
+    for name in ("index.html", "style.css", "404.html"):
+        if os.path.isdir(source):
+            files[name] = open(os.path.join(source, name), "rb").read()
+        else:
+            got = subprocess.run(["git", "-C", ROOT, "show", f"{source}:site/{name}"], capture_output=True)
+            if got.returncode:
+                sys.exit(f"monitor_bounty.py: no site/{name} in '{source}' (a branch, or --site DIR): "
+                         + got.stderr.decode().strip())
+            files[name] = got.stdout
+    return files
+
+
+def check_site_and_cert(host, sans, ip, port, http_port, site, expected_q1, cafile=None, addr=None):
     problems = []
     ctx = ssl.create_default_context(cafile=cafile)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
 
-    site_index = open(os.path.join(site_dir, "index.html"), "rb").read()
-    want_css = open(os.path.join(site_dir, "style.css"), "rb").read()
-    want_404 = open(os.path.join(site_dir, "404.html"), "rb").read()
+    site_index, want_css, want_404 = site["index.html"], site["style.css"], site["404.html"]
 
     for sni in [host] + list(sans):
         try:
@@ -212,7 +228,7 @@ def run_self_test():
                 time.sleep(0.25)
                 errs = check_site_and_cert(
                     "15kb.org", ("www.15kb.org",), "127.0.0.1", port, port + 1000,
-                    os.path.join(ROOT, "site"), q1_b, cafile=os.path.join(cert_d, "server.pem"),
+                    read_site(os.path.join(ROOT, "site")), q1_b, cafile=os.path.join(cert_d, "server.pem"),
                 )
                 if not errs:
                     break
@@ -225,7 +241,7 @@ def run_self_test():
                     f.write(open(os.path.join(ROOT, "site", fn), "rb").read() + (b"X" if fn == "index.html" else b""))
             errs2 = check_site_and_cert(
                 "15kb.org", ("www.15kb.org",), "127.0.0.1", port, port + 1000,
-                fake_site, q1_b, cafile=os.path.join(cert_d, "server.pem"),
+                read_site(fake_site), q1_b, cafile=os.path.join(cert_d, "server.pem"),
             )
             assert any("defacement" in e for e in errs2), f"failed to detect defacement: {errs2}"
         finally:
@@ -247,7 +263,7 @@ def main():
     sans = ("www.15kb.org",)
     ip = "2.28.113.14"
     proof_path = os.path.join(ROOT, "bounty.proof")
-    site_dir = os.path.join(ROOT, "site")
+    site_from = "bounty"
     rehearsal = False
 
     i = 0
@@ -259,6 +275,9 @@ def main():
             i += 2
         elif args[i] == "--ip" and i + 1 < len(args):
             ip = args[i + 1]
+            i += 2
+        elif args[i] == "--site" and i + 1 < len(args):
+            site_from = args[i + 1]
             i += 2
         elif args[i] == "--host" and i + 1 < len(args):
             host, sans, rehearsal = args[i + 1], (), True
@@ -282,7 +301,8 @@ def main():
     while True:
         problems = []
         problems += check_dns((host,) + sans, ip)
-        problems += check_site_and_cert(host, sans, ip, 443, 80, site_dir, q1_b, addr=addr if rehearsal else None)
+        problems += check_site_and_cert(host, sans, ip, 443, 80, read_site(site_from), q1_b,
+                                        addr=addr if rehearsal else None)
         problems += check_port_closed(ip, 22)
         if step % max(1, (120 // watch) if watch and watch < 120 else 1) == 0:
             btc_probs, last_bal = check_btc(addr, expect_funded=expect_funded)
