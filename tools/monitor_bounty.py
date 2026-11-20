@@ -9,8 +9,9 @@ and Bitcoin wallet spend (confirmed or unconfirmed mempool).
                                  the address and the certificate's last day put in
     tools/monitor_bounty.py --test
 
-The page it expects is the one in the branch `bounty` of this repository (site/ as committed
-there: what the server is packed from), whatever is checked out; `--site DIR` takes a folder.
+The page it expects and the proof are the ones in the branch `bounty` of this repository
+(site/ and bounty.proof as committed there), whatever is checked out; `--site DIR` and
+`--proof FILE` take others.
 """
 import datetime
 import gzip
@@ -262,7 +263,7 @@ def main():
     host = "15kb.org"
     sans = ("www.15kb.org",)
     ip = "2.28.113.14"
-    proof_path = os.path.join(ROOT, "bounty.proof")
+    proof_path = None       # (the proof in the branch `bounty`, like the page)
     site_from = "bounty"
     rehearsal = False
 
@@ -291,10 +292,17 @@ def main():
 
     if rehearsal and ip == "2.28.113.14":
         sys.exit("monitor_bounty.py: --host needs --ip too")
-    if not os.path.exists(proof_path):
+    if proof_path is None:
+        got = subprocess.run(["git", "-C", ROOT, "show", "bounty:bounty.proof"], capture_output=True)
+        if got.returncode:
+            sys.exit("monitor_bounty.py: no bounty.proof in the branch 'bounty' (tools/bounty_ceremony.sh, then its commit)")
+        proof_text = got.stdout.decode()
+    elif not os.path.exists(proof_path):
         sys.exit(f"monitor_bounty.py: {proof_path} not found (run tools/bounty_ceremony.sh first)")
+    else:
+        proof_text = open(proof_path, encoding="utf-8").read()
 
-    q1_b, _, addr = bounty.verify_xcurve(bounty.parse_proof(open(proof_path, encoding="utf-8").read()))
+    q1_b, _, addr = bounty.verify_xcurve(bounty.parse_proof(proof_text))
 
     step = 0
     last_bal = None

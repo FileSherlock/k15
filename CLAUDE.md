@@ -46,8 +46,10 @@ is history, a measurement series or a description of how a routine works. Those 
   RAM and up to 4 processors, modern virtio-net, and serves GET and HEAD by path with
   compressed forms, ETag and 304, keep-alive, and a redirect on port 80.
 - Memory per held connection: 24 bytes on port 80, 128 bytes for TLS.
-- 15kb.org runs the image in `build-15kb.org` (24,733 bytes) with a Let's Encrypt
-  certificate for 15kb.org and www.15kb.org, HSTS, `--persist`. SSL Labs: A.
+- 15kb.org runs the bounty's image since 2026-11-20: packed from the branch `bounty`,
+  alone on the server's disk (no Linux), with a Let's Encrypt certificate until
+  2027-02-18 whose key is also the key of the Bitcoin address on its page. That key is
+  not on this machine: the user has it as 24 words. SSL Labs: A.
 - On the server (2 shared vCPUs; last measured 2026-11-14) it does 7,300 to 8,800 new
   TLS connections a second and 100,000 to 120,000 requests a second on kept
   connections, two to three times nginx; large files at 1.2 GB/s, a quarter more than
@@ -115,10 +117,14 @@ Don't change the source or a test script while a suite runs.
   capture), not read from the docs. A new behaviour gets a test that fails without it.
 
 ## Before touching the live site
-- `build-15kb.org` and `cert-15kb.org` must stay in this folder: the daily renewal
-  timer (`~/.local/bin/15kb-renew`) packs from them. `15kb-renew --dry-run` says
-  whether it would run.
-- A deploy of anything else takes the site down. Put it back with
-  `./k15 deploy 2.28.113.14 build-15kb.org --persist --reset 'hcloud server reset k3'`.
+- Until 2027-02-18 nothing is deployed to 15kb.org and `k3` is not reset, put into the
+  rescue system or rebuilt: any of that needs the user's word, and the rescue system is
+  a way to the bounty's key. `./k15 deploy` and `./k15 renew` cannot reach it (no Linux).
+- The renewal timer (`15kb-renew.timer`) is disabled and stays so: it would make a new
+  key. A change before the deadline is the user's to make: `tools/bounty_ceremony.sh
+  --redeploy` from the branch `bounty`, with the 24 words.
+- `tools/monitor_bounty.py` says whether page, certificate and address are as they
+  should be.
 - Never remove `build-*` or `cert-*` folders wholesale: some hold the only copy of a
-  packed image or a key.
+  packed image or a key. `cert-15kb.org/bounty-server.pem` is what `--redeploy` and
+  `--revoke` need.
