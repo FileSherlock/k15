@@ -1,14 +1,14 @@
 # k15
 
-**https://15kb.org/ is served by a 14 KB x86-64 HTTPS operating system written in assembly, with a $200 Bitcoin bounty on its TLS key until 2027-02-12.**
+**https://15kb.org/ is served by a 14 KB x86-64 HTTPS operating system written in assembly, with a $200 Bitcoin bounty on its TLS key until 2027-02-18.**
 
-The live server's TLS certificate private key (ECDSA P-256) is the exact same 255-bit integer as the private key of Bitcoin wallet [`bc1q00000000000000000000000000000000000000`](https://mempool.space/address/bc1q00000000000000000000000000000000000000). Break into `15kb.org`, extract the key from RAM or TLS, and sweep the wallet. Moving the coins is the proof.
+The live server's TLS certificate private key (ECDSA P-256) is the exact same 255-bit integer as the private key of Bitcoin wallet [`bc1qy53kjpg50e8scustvqk25ds3gh77578a7hj0g9`](https://mempool.space/address/bc1qy53kjpg50e8scustvqk25ds3gh77578a7hj0g9). Break into `15kb.org`, extract the key from RAM or TLS, and sweep the wallet. Moving the coins is the proof.
 
 ```bash
 python3 tools/bounty.py --verify 15kb.org   # stdlib-only zero-knowledge proof against the live TLS cert
 ```
 
-**The server stays on this version.** 15kb.org runs the image packed from this branch (`bounty`) until 2027-02-12. Work goes on in [`main`](https://github.com/FileSherlock/k15/tree/main); nothing merged there, and no pull request, is deployed to the server before the deadline.
+**The server stays on this version.** 15kb.org runs the image packed from this branch (`bounty`) until 2027-02-18. Work goes on in [`main`](https://github.com/FileSherlock/k15/tree/main); nothing merged there, and no pull request, is deployed to the server before the deadline.
 
 ## What it is
 
