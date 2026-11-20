@@ -265,4 +265,6 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
 - `tools/monitor_bounty.py [--watch SECONDS] [--notify] [--expect-funded] [--test]`: checks
   DNS, TLS 1.3 leaf public key against `bounty.proof`, page/CSS/404 content (defacement),
   port 80 redirect, closed port 22, and Bitcoin balance / mempool spends. `--host NAME
-  --ip ADDRESS` watches a rehearsal instead (proof in `cert-NAME/`).
+  --ip ADDRESS` watches a rehearsal instead (proof in `cert-NAME/`). The page it expects
+  is `site/` as committed in the branch `bounty`, whatever is checked out (`--site DIR`:
+  a folder instead).

@@ -25,7 +25,7 @@ For a site that is meant to stay (`--reset`: how the server gets back into its L
 
 What you get, and what you don't:
 
-- **Small.** The system is 13,731 bytes. The image is that plus your files, each stored
+- **Small.** The system is 13,859 bytes. The image is that plus your files, each stored
   as the response it is sent as (and, where that makes it shorter, once more compressed
   with gzip and with brotli, for clients that take that).
 - **Nothing to break into.** No kernel, no shell, no file system, no user accounts, no
@@ -54,9 +54,10 @@ What you get, and what you don't:
   small pages a second on connections that stay, against nginx's 34,000; files of 14 KB
   at 30,000 to 35,000 a second, against 24,000 to 27,000. [bench/README.md](bench/README.md)
   has the comparison, how it was made, and what it does not say.
-- **Large files about as fast as nginx**: 0.92 GB/s where nginx did 0.90 to 0.98 the
-  same night, under AES-128-GCM. (It was 0.17 GB/s until the card was given 45
-  records to a frame to cut up, and sealing a record got faster.) Over a distance a
+- **Large files a quarter faster than nginx**: 1.2 GB/s where nginx did 0.90 to 0.98 two
+  nights before, under AES-128-GCM. (It was 0.17 GB/s until the card was given 45
+  records to a frame to cut up, and 1.0 until a record was sealed four blocks at a
+  time.) Over a distance a
   window may grow past 64 KB, but only slowly: without SACK, what is lost in a large
   window comes back a segment a round trip.
 - **Clunky on purpose.** Content and certificate are part of the image: a change is a new
