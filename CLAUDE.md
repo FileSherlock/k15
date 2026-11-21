@@ -51,9 +51,10 @@ when needed:
   or two lines, or fix the docs it contradicts. Delete what is no longer true.
 
 ## Where it stands
-- The system is 14,469 bytes. It asks for its address by DHCP; built with one (`IP=`,
-  `-i`) it has no DHCP client and is 13,955. With an IPv6 address as well (`IP6=`, `-6`:
-  it has to be told one) it is 752 bytes more: 15,221.
+- The system is 14,515 bytes. It asks for its address by DHCP; built with one (`IP=`,
+  `-i`) it has no DHCP client and is 14,001. With an IPv6 address as well (`IP6=`, `-6`:
+  it has to be told one) it is 15,235. (Between 33 and 64 of those bytes are padding
+  in front of the hot routines, which goes by what lies before them: `HOT`.)
 - It boots from a BIOS boot sector or GRUB, uses all the RAM and up to 4 processors,
   modern virtio-net, and serves GET and HEAD by path with compressed forms, ETag and
   304, keep-alive, and a redirect on port 80. The timer for what it sent goes by the
@@ -65,9 +66,10 @@ when needed:
   be made again from the source, that file and the certificates (`tools/repro.sh`).
   With NASM 3.01: whether another version makes the same bytes is not known.
 - **Not seen on a real machine yet**: DHCP, IPv6, the tool's raw deploy, the workflow on
-  GitHub (`docs/server.md`: what was tried where). `hcloud` has no token here: the user
-  took it away, because a rescue system is a way to the bounty's key. A trial needs a
-  token for a project that is not the bounty's, or the user to run it.
+  GitHub, and GRUB loading an image that goes a few bytes above 1 MiB, as every image
+  now does (`docs/server.md`: what was tried where). `hcloud` has no token here: the
+  user took it away, because a rescue system is a way to the bounty's key. A trial
+  needs a token for a project that is not the bounty's, or the user to run it.
 - Memory per held connection: 24 bytes on port 80, 128 bytes for TLS.
 - 15kb.org runs the bounty's image: packed from the branch `bounty`, alone on the
   server's disk (no Linux), with a Let's Encrypt certificate until 2027-02-18 whose key
@@ -91,9 +93,10 @@ For the user to decide:
 - Two TLS shortcuts of `docs/internals.md` ("Shortcuts that remain"): a ChangeCipherSpec
   after the ServerHello for a client that has a session id, and a ClientHello in two
   records.
-- What is left of the audit in github.com/FileSherlock/k15/issues/1: data is taken
-  whatever its ack says (its 2); the site's first bytes can be executed where the chain
-  is short (its 1: padding, 2.5 KB in the default image); its 4 to 7 and 11 to 13.
+- What is left of the audit in github.com/FileSherlock/k15/issues/1: its 4 to 7 and 11
+  to 13. And what the review of its 1 and 2 found beside them: a RST from a host that
+  has lost the connection is not taken while our ack is held back a byte (`F_DEFER`;
+  `docs/internals.md`, the TCP shortcuts).
 - Later: pacing, zstd, taking out the reset knock.
 
 ## What "secure" means here
@@ -109,8 +112,12 @@ secrecy against a network attacker, and no packet makes the server leak its key:
 - a machine in its rescue system is sent nothing secret until it has signed with the key
   of a certificate known to be its own (`k15`: `proves`; `--first` says there is none)
 - a client record is read only after its AEAD tag has verified, compared in constant time
-- only code is executed and it is never written; nor is the site. Everything a packet
+- only code is executed and it is never written; nor is the site. A page that can be
+  executed holds code and nothing else of the image (no constant, no key, no
+  certificate, no byte of the site), and nothing a loader left. Everything a packet
   can fill is data the processor refuses to run
+- of a segment nothing is used unless it is where its connection is (its sequence
+  number) and its ack is one the client can have sent
 - a fault is the machine's end on every processor: each has an empty interrupt table
 - a connection's key seals 2^24 records (and takes at most 2^32 - 2 from the client),
   then the connection is closed
@@ -130,6 +137,8 @@ Don't change the source or a test script while a suite runs.
   `make outside` and `make ct` (`tools/outside.sh fetch` once, for what they run with).
 - After touching the handshake, records, or what a bad packet gets:
   `unshare -Urn tools/tlsfuzz.sh` (three minutes).
+- After touching whose segment a segment is (`tcp.est`, `.odd`): `unshare -Urn ./tap.sh
+  python3 tools/acktest.py` (seconds), and the lossy and reordered runs as below.
 - After touching `dhask`, `dhsend`, `dhcp` or what `tcp` lets through to them:
   `unshare -Urn tools/dhcptest.sh` (a minute), a few times, and once with `real`.
 - After touching `tcp6`, `nd`, `prf6`, `find`, `tcp_seg` or `drain`: `B=build-site6
@@ -138,11 +147,15 @@ Don't change the source or a test script while a suite runs.
   minute: a machine that is made up; what a host does is not seen there).
 - After touching `tools/gen.py`, `tools/pack.py`, `tools/made.py` or the Makefile:
   `tools/repro.sh` (seconds).
-- After anything else: `tools/suite.sh` (84 runs, twenty minutes). Also with `SMP=1` and
+- After anything else: `tools/suite.sh` (85 runs, twenty minutes). Also with `SMP=1` and
   `SMP=4` after touching what processors share or how the machine starts. On 4,
   `raw1m_20k` fails when the host is busy: run it alone before believing it.
 - After touching boot or the polling loops: `measure.sh` with `DEBUG=1`, `KNOCK=` and
   `LIFE=` images too (`DEBUG=1` fails at port 80's page: its page is the counters).
+- After touching `start`, the page tables, `tramp`, `codend`, `src/boot.asm`,
+  `tools/mkdisk.py` or how the Makefile finds `DELTA`: `tools/wxtest.sh` (half a
+  minute: what must not run, with controls), and once through QEMU's own loader
+  (`-kernel`).
 - After touching `.resend`, `.tx`, `sendseg`, `tcp_send`, the timers, handshake buffers
   or cookie rules: the lossy runs many times over (16 runs of each kind, and the site
   test under loss a few times). What is wrong there is wrong once in thousands.

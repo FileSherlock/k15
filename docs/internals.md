@@ -17,11 +17,12 @@ Read the part you are about to change. `tools/ec.py` has the curve code's other 
   nobody's to keep). Addresses below 4 GiB live in 32-bit registers; a connection's
   slot does not (`rbp`).
 - `src/boot.asm`: BIOS boot sector: reads the image, however long, 64 sectors at a time
-  and copies each piece to where it goes from 1 MiB up (from real mode, with segments
-  that reach all of memory: set anew for every piece, the BIOS may put them back), asks
-  the BIOS for its memory map (int 15h, E820), protected mode, enters the image like a
-  multiboot loader (the map in a multiboot information structure at ebx, as GRUB passes
-  it). `tools/mkdisk.py` writes the image's length into it.
+  and copies each piece to where it goes, from where the image's header says on up
+  (from real mode, with segments that reach all of memory: set anew for every piece,
+  the BIOS may put them back), asks the BIOS for its memory map (int 15h, E820),
+  protected mode, enters the image like a multiboot loader (the map in a multiboot
+  information structure at ebx, as GRUB passes it). `tools/mkdisk.py` writes into it
+  what the image's header says (where it goes, where it is entered) and its length.
 - virtio-net: `pcird` reads PCI configuration; the driver finds 1af4:1041 or :1000 on any
   bus, walks its capabilities for the common, notify and device structures (a BAR may be
   64-bit and anywhere: each structure is mapped at a place of ours), negotiates
@@ -91,7 +92,8 @@ Read the part you are about to change. `tools/ec.py` has the curve code's other 
 What the page tables say (`start`):
 - The first 18 MiB as they are: the frame being handled at address 0 (`FR`: it stays as
   it came, so its fields are the packet's variables, `P_SEQ` and so on, a byte away from
-  ebx = 0); the image at 1 MiB, up to 1 MiB of it; buffers and variables from 2 MiB
+  ebx = 0); the image at 1 MiB and a few bytes (`DELTA`, below), up to 1 MiB of it;
+  buffers and variables from 2 MiB
   (`BSS`; `OB` is our answer to one packet; the stack comes down from 4 MiB); virtio
   rings at 4 MiB (`VQ`) and behind them the page tables; receive and transmit buffers at
   5 and 7 MiB (`RXB`, `TXB`: 2 KiB each, descriptor i is buffer i, a 12-byte virtio header
@@ -108,6 +110,27 @@ What the page tables say (`start`):
   the pages with code are executed and not written, the rest only read. Everything from
   BSS up, in pages of 2 MiB, is data. `CR0.WP` is set once start-up has made its last
   write to a page that is not to be written (the copy of `tramp`).
+- **Where the code ends, a page ends** (`DELTA`, `codend`). The image is code, then
+  what is only read (constants, the key, the certificates, the site), with nothing in
+  between, and memory is barred from execution a page at a time. So the image is not
+  loaded at 1 MiB but `DELTA` bytes above it (its header says where; `org`), `DELTA`
+  being what puts a page boundary at the code's end: no byte of padding in the image,
+  and no constant, no key, no certificate and no byte of the site in a page that can
+  be executed. The build finds the number: it assembles once to see where the code
+  ends, then for good (the Makefile; `OUT/delta`). It is a multiple of 64, so that
+  what is aligned in the image is aligned in memory (`HOT`); the up to 63 bytes that
+  leaves are taken up by `tramp`, the other processors' first code, which is the last
+  of the code and is run only where it is copied to: the boundary falls into its
+  instructions (before `xend`), and `codend` refuses to assemble with any other
+  number.
+- **What a page that can be executed holds**, then. Those of the image: its code, the
+  loader's header in front of it (32 bytes), and in front of that the `DELTA` bytes
+  from 1 MiB on, which `start` zeroes (they are whatever the loader left). And the
+  page the other processors start in (0x8000): the copy of `tramp`, with the ten bytes
+  it counts in and finds its segments by, and behind it zeros: the boot sector reads
+  the image through that page, a piece at a time, so what it left there was the last
+  piece of the image, site and all, until `start` zeroed it. `tools/wxtest.sh` runs
+  what must not run and looks at what must be gone, with controls.
 - Behind that, from 18 MiB up, **the table space**: every 2 MiB of RAM that the loader's
   memory map calls available, one after the other, wherever it is. On the server that is
   the rest of the 2 GiB below 4 GiB and then what is above. Boot divides it: n handshake
@@ -382,6 +405,21 @@ records from the client (`STLIFE` in tests), or once our key has sealed 2^24 (`K
 the connection is closed so neither counter wraps.
 
 The old way, and what both share:
+- **Whose segment it is** (`tcp.est`, `.odd`), before anything of it is used. The
+  client's begins within 64 KB (what we take at once) of what we expect next, either
+  way: early, late, or sent again. And its ack is for something we sent that it has
+  not acknowledged yet (`C_ACK` to `C_SND`); or from before `C_ACK`, by less than 2^19
+  bytes (more than can be on its way at once: 255 segments): a packet that others
+  overtook, whose ack says nothing and whose data counts. Any other segment is not
+  the client's: nothing of it is taken (not its ack, its data, its FIN or its
+  window), and it gets a bare ack; unless a SYN has come for the connection and this
+  is the cookie of that SYN's answer: then it is a new connection in the old one's
+  place ("The connection tables"). So whoever sends in a client's name without seeing
+  what we send has two numbers to guess for anything to come of it, where the
+  client's are and where ours are (RFC 9293, 3.10.7.4; RFC 5961, 5.2): one try in
+  2^15 for the first, one in 2^12 or 2^13 for the second. An ack alone used to do:
+  with a response on its way, one made-up ack in ten thousand moved `C_ACK` past what
+  the client had, and the response never ended. `tools/acktest.py`.
 - In-order data is taken (a segment that overlaps what we have is trimmed), data from
   further on is kept (see below) and gets an ack of what we expect, a keep-alive probe
   gets an ack.
@@ -650,9 +688,23 @@ removing the ones about TLS.
   the client then acknowledges twice, which looks like a loss to our flight, and that
   goes twice as well), and the old way (`tcp_send`) for the flight
   and port 80 (capped at 4 KiB unacknowledged on port 80). Our own window is 64 KB,
-  unscaled. A segment's data is taken by its sequence number whatever its ack says (RFC
-  5961, 5.2 wants the ack inside what we sent as well: a blind sender has less to guess). The IP header's checksum is not looked at: what we use of that header is
-  fixed or goes into TCP's checksum, which is.
+  unscaled. Of whose segment it is: one from up to 64 KB before what we expect still
+  has its ack looked at (RFC 9293 drops what is wholly old; a client that sends old
+  data again is how we learn that our answer was lost); an old ack is taken with its
+  data if it is less than 2^19 bytes old, whatever window the client has offered (RFC
+  5961, 5.2 says: no older than the largest window it ever offered, which we don't
+  keep); the acks we send for segments we refuse are not counted or held back (its
+  section 7 wants a limit: a count is something an outsider can read, and we answer
+  one for one); a RST counts only at exactly the next number we expect, and one that
+  is merely near gets no ack (its section 3). That is not the number a host answers
+  with that has lost the connection while a request's last byte is not acknowledged
+  yet (`F_DEFER`: our ack is one behind, and so is its RST): its RSTs free nothing,
+  and the timer sends to it every 16 s for as long as it answers (not fixed: read,
+  not seen on a machine). A packet that others overtook has its window taken as if it
+  were the client's latest. And a segment we refuse still says that the address is
+  alive (`C_AGE`: one a minute keeps a slot from being given up). The
+  IP header's checksum is not looked at: what we use of that header is fixed or goes
+  into TCP's checksum, which is.
 - Port 80: one response, whatever is asked; a request body is not understood.
 - IPv6: one address, which the image is built with; nothing behind the header but TCP
   (no other headers, no fragments); nobody is told that an address is taken (a
@@ -676,6 +728,6 @@ removing the ones about TLS.
 - Secrets are not wiped after use: the last handshake's are overwritten by the next, and
   unused nonces wait in the stock. (The private key is in the same memory, which is
   data: read, written, never executed.)
-- The first page with data behind the code can be executed (code and what follows share
-  it: 4 KiB at most, of constants, among them the key; and where the chain is short, as
-  the tests' is, the site's first bytes too. A chain of four certificates fills the page).
+- In a page that can be executed there is, besides code that runs there: the loader's
+  header (32 bytes), zeros, the first part of `tramp`, which is run only in its copy,
+  and in that copy's page ten bytes of its own data ("Memory").

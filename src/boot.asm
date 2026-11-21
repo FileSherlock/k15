@@ -1,8 +1,9 @@
 ; boot.asm - boot sector: what a BIOS needs to start os.bin from a disk (a cloud server's, or
 ; `qemu -drive`). The disk image is this sector followed by os.bin (tools/mkdisk.py).
 ;
-; Loads the image to 1 MiB, however long it is (it ends with the site it serves), a piece
-; of 32 KiB at a time: the BIOS reads a piece into low memory, and we copy it up from real
+; Loads the image to where its multiboot header says (1 MiB and a few bytes: tools/mkdisk.py
+; reads that header and tells us), however long it is (it ends with the site it serves), a
+; piece of 32 KiB at a time: the BIOS reads a piece into low memory, and we copy it up from real
 ; mode with segments that reach all of memory (set in a moment of protected mode before
 ; each copy: the BIOS may have set them back). Then it asks the BIOS for its memory map,
 ; enters 32-bit protected mode with flat segments, and enters the image where its
@@ -47,8 +48,7 @@ BITS 16
         dec ax
         mov cr0, eax
         mov esi, LOAD
-        mov edi, 0x100000
-dest    equ $ - 4               ; (where the next piece goes)
+        mov edi, [dest]         ; (where the next piece goes)
         mov ecx, CHUNK * 512 / 4
         a32 rep movsd
         xor ax, ax
@@ -91,7 +91,7 @@ pm:     mov ax, 16
         mov esp, 0x7C00
         mov eax, 0x2BADB002     ; enter it the way a multiboot loader does
         mov ebx, mbi
-        jmp [0x10001C]          ; the multiboot header's entry address
+        jmp [entry]             ; the multiboot header's entry address
 
 drive:  db 0
 dap:    db 16, 0                ; disk address packet: a piece to 0000:8000, from LBA 1 on
@@ -106,6 +106,8 @@ gdt:    dq 0
         dq 0x00CF92000000FFFF   ; 16: data, 4 GiB
 gdtr:   dw 23
         dd gdt
-        times 506 - ($ - $$) db 0
-left:   dd 0                    ; the image's length in sectors (tools/mkdisk.py fills it in)
+        times 498 - ($ - $$) db 0
+dest:   dd 0                    ; What tools/mkdisk.py fills in: where the image goes (its
+entry:  dd 0                    ; header's load address), where it is entered, and its
+left:   dd 0                    ; length in sectors
         dw 0xAA55

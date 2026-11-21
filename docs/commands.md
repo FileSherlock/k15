@@ -45,8 +45,13 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   The key is never on a server but inside the image, and in the last 64 KiB of the disk
   of a machine that is k15's alone. Everything `./k15` makes is for its owner's eyes
   only (umask 077), and /boot/k15.bin on a server with Linux for root's.
-- `make` assembles `src/os.asm` into `build/os.bin` (loaded at 1 MiB) and `build/disk.img`
-  (`src/boot.asm` + the image; what the tests boot), with the site of `www/` in it.
+- `make` assembles `src/os.asm` into `build/os.bin` and `build/disk.img` (`src/boot.asm`
+  + the image; what the tests boot), with the site of `www/` in it. It assembles twice:
+  once to see where the code ends (`build/os.sizing`, which is emptied again: it is an
+  image), and then for an image that is loaded so many bytes above 1 MiB
+  (`build/delta`, a `-DDELTA=n`) that its code ends where a page does
+  (docs/internals.md, "Memory"). By hand, `nasm` wants that define, and refuses any
+  other number.
   `make B=dir CERT=dir NAME=n IP=a.b.c.d IP6=addr SITE=folder P80=redirect HSTS=seconds
   CACHE=seconds HEADERS='Name: value' COMPRESS=0 KNOCK=a,b` builds another image: its
   identity, the name in a generated certificate (`SAN='a b'`: its further names), the
@@ -56,17 +61,21 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   that reset it. The scripts take `B` from the environment. Only
   the address, the names, the site and its settings are tracked: after changing
   another setting, `make -B`.
-- `python3 tools/sizes.py build/os.lst` = bytes per routine. Of the system's 13,955
+- `python3 tools/sizes.py build/os.lst` = bytes per routine. Of the system's 14,001
   with an address of its own, about: boot, clock calibration, page tables, driver and
-  the other processors 2,700; network 4,360 with the timers; requests and the forms of
+  the other processors 2,710; network 4,390 with the timers; requests and the forms of
   a file 700; TLS handshake and key schedule 1,600; SHA-256 450; curves 3,000 with
-  their programs and constants; the cipher 1,000; certificate 230; among them 49 of
+  their programs and constants; the cipher 1,000; certificate 230; among them 59 of
   padding in front of the routines a handshake spends its time in (HOT in "How the
-  curve code works"). The DHCP client is 514 more (14,469, the default), IPv6 752 more
-  than that (15,221).
+  curve code works"). With the DHCP client (the default) it is 14,515, and with IPv6
+  as well 15,235: 520 and 731 bytes of code more, and 53 and 42 of that padding,
+  which goes by what happens to lie in front of those routines (between 33 and 64
+  bytes). Whose segment it is costs 26 bytes, and zeroing what loaders left where
+  code can run 7; that nothing but code can be executed costs no padding.
 - **Is an image what this source makes?** Every build writes `OUT/made`: the commit, the
-  assembler, what the assembler was told (the defines, the nine numbers of site.inc,
-  the certificate chain's hash), how the site was packed and with what, and three
+  assembler, what the assembler was told (the defines, `DELTA` among them; the nine
+  numbers of site.inc; the certificate chain's hash), how the site was packed and with
+  what, and three
   hashes of the image **without its key**: of the system, of the site, of both. No
   secret is in it; `./k15 pack` prints the hashes. `make KEYLESS=1` (or `KEYLESS=1
   ./k15 pack ... -c DIR`, DIR holding server.pem alone) makes that image from the
@@ -99,7 +108,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   none (a browser may not believe it there). OUT/site.json says what each path must
   return (for the tests), OUT/page80.bin what port 80 says.
 - `tools/suite.sh [JOBS] [name...]`: everything below, a few at a time, one line each
-  (84 runs, twenty minutes; the logs in `$LOGS`, which its last line names). `SMP=1` or
+  (85 runs, twenty minutes; the logs in `$LOGS`, which its last line names). `SMP=1` or
   `SMP=4` in front for other machines than the default of 2 processors. Its verdict is strict: one failed connection is a FAIL. Under
   a loaded host a run that overflows rings on purpose (`raw1m_20k`) can time out a few
   hundred of a million (on 4 processors it does every time the suite runs five at once):
@@ -131,10 +140,18 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
 - Test images (make variables, each for its test): `ISNTOP=n ISNBITS=b` forces the top b
   bits (12) of every initial sequence number, so that what we send crosses 2^31 or 2^32
   (the suite's `*isn*` and `site_wrap*` runs); `KEYLIFE=n` and `STLIFE=n`: a connection's
-  key seals 2^n records and a client sends 2^n records (`site_keylife`); `WXTEST=n`: do one thing that must be the machine's end
-  (`tools/wxtest.sh`: 1 to 5 what the page tables forbid; 6 and 7 a fault while the
-  frame in hand reads as an interrupt gate to our own code, on the first processor and
-  on another; 8 a random number generator that says the same twice); `WIN=n`: so many segments may
+  key seals 2^n records and a client sends 2^n records (`site_keylife`); `WXTEST=n`: do
+  one thing that must be the machine's end (`tools/wxtest.sh`, the suite's `wx`: 1 to 5
+  and 9 to 11 what the page tables forbid: writing to the code or the site, running the
+  stack, the site's first and last byte that says "return", a packet buffer, what lies
+  right behind the code, and what a loader left in front of it; 12: nothing is left of
+  what the boot sector read through the page the other processors start in; 6 and 7 a
+  fault while the frame in hand reads as an interrupt gate to our own code, on the
+  first processor and on another; 8 a random number generator that says the same
+  twice), and with it `WXOPEN=1`, that test's control: the first page behind the code
+  can be executed and what loaders left is left, so that what is run there comes back
+  (`WXPAD=1`: 64 bytes more of code, for a test image that would lie at 1 MiB exactly);
+  `WIN=n`: so many segments may
   be on their way to begin with (10); `NOTSO=1`: a segment a frame, whatever the card
   offers; `BIGSH=n`: 2^n buffers a processor for the frames the card cuts (3; with 0 or
   1 a frame waits for the device to have sent the one before: the way to test that);
@@ -270,6 +287,19 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   link can make them: IP total lengths of less than the headers, frames that end in
   their headers, headers of other lengths than they say. The machine must still be
   there.
+  `unshare -Urn ./tap.sh python3 tools/acktest.py` (seconds; the suite's `ack`):
+  segments in a client's name that are not the client's. Frame by frame on ports 80
+  and 443: a request, a FIN or bytes whose ack is for what we never sent, or older
+  than anything can be, get a bare ack and nothing of them is taken, also after a SYN
+  has come again for the connection; one whose ack is merely old is answered; a
+  client that comes again from the same port, with sequence numbers far from its old
+  ones or among them, is a new connection in the old one's place; an ack for all we
+  sent, with a sequence number a megabyte from the client's, lets nothing go of what
+  waits for it, and the client's does. And a real client's connection, into which 21
+  such segments are sent, fetches the page again. (Against the image before these
+  rules 13 of its 25 checks fail; without the sequence number's check 3, without the
+  ack's 10; and each of the two clients that come again gets nowhere if its way to a
+  new connection is cut.)
 - `unshare -Urn tools/dhcptest.sh` (a minute; the suite's `dhcp`, and `dhcp_smp4`): the
   image's DHCP client against a server that does what the test wants
   (`tools/dhcptest.py`, made of `tools/dhcpd.py`). It must ask again when nobody

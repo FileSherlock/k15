@@ -30,7 +30,11 @@ address built in, started by GRUB beside a Linux (`--grub`) and from the raw dis
 (`tools/bounty_ceremony.sh`, which runs `blkdiscard`, `dd`, `reboot` and certbot with a
 request in the rescue system: the commands `./k15` runs there). Not yet, anywhere: an
 image that asks for its address (what a host's DHCP says to it, how long its leases
-are), IPv6, `./k15 publish|deploy|renew` with `--rescue`, the workflow on GitHub.
+are), IPv6, `./k15 publish|deploy|renew` with `--rescue`, the workflow on GitHub. Nor
+an image that goes a few bytes above 1 MiB, as every image now does (docs/internals.md,
+"Memory"): here the boot sector puts it there under SeaBIOS, QEMU's multiboot loader
+does, and GRUB's does too (its EFI build, read in memory; the image does not run
+under UEFI); GRUB on a BIOS machine, the `--grub` way, is still to be seen.
 
 ## Onto a machine that is k15's alone
 The image needs nothing on a machine's disk but itself: `disk.img`, written over the

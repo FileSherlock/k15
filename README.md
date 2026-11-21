@@ -31,15 +31,17 @@ day. [docs/server.md](docs/server.md) has the hosts, and what was tried where.
 
 What you get, and what you don't:
 
-- **Small.** The system is 14,469 bytes (13,955 if it is given its address instead of
-  asking for it; 752 more with IPv6). The image is that plus your files, each stored
+- **Small.** The system is 14,515 bytes (14,001 if it is given its address instead of
+  asking for it; 15,235 with IPv6). The image is that plus your files, each stored
   as the response it is sent as (and, where that makes it shorter, once more compressed
   with gzip and with brotli, for clients that take that).
 - **Nothing to break into.** No kernel, no shell, no file system, no user accounts, no
   way to log in, no outgoing connections, no parser but the ones for a TLS record and a
-  request line. Only the code is executed, and nothing that is written (not a packet,
-  not the stack) can be: the page tables say so, and a test makes sure. There are no
-  fault handlers, and every processor is told so: a fault resets the machine.
+  request line. Only the code is executed: no page that can be run holds a constant,
+  the key, a certificate or a byte of your files, and nothing that is written (not a
+  packet, not the stack) can be run. The page tables say so, and a test makes sure.
+  There are no fault handlers, and every processor is told so: a fault resets the
+  machine.
 - **Secure where it counts.** TLS 1.3 only (older clients are told so), X25519, ECDSA
   P-256, AES-128-GCM (the one cipher every TLS 1.3 client has), a fresh key and a
   fresh nonce for every handshake, forward secrecy for every connection, and curve

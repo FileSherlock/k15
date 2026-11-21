@@ -1,4 +1,5 @@
-; os.asm - bare-metal HTTPS server, flat image loaded at 1 MiB (nasm -f bin)
+; os.asm - bare-metal HTTPS server, flat image loaded at 1 MiB and a few bytes (DELTA,
+;       below: so many that its code ends where a page does; nasm -f bin)
 ;
 ; Boot: by src/boot.asm from a disk, or as a multiboot v1 "a.out kludge" kernel (GRUB,
 ;       `qemu -kernel`). Sets up long mode, its own segments, stack and zeroed memory, and
@@ -41,10 +42,24 @@ default abs
 BSS     equ 0x200000
 %else
 default rel
+; DELTA: the image is loaded so many bytes above 1 MiB, and its header says so to whoever
+; loads it. Memory is barred from execution a page (4 KiB) at a time, and the image is
+; code, then what is only read (constants, the key, the certificates, the site), with
+; nothing in between: so the code has to end where a page ends, and it is the image's
+; place in memory that sees to that, not bytes of padding in the image. The build finds
+; the number (a multiple of 64, so that what is aligned in here is aligned in memory):
+; it assembles once to see where the code ends (SIZING: the last four bytes of that
+; output say), and then for good. See `codend`, which refuses any other number.
+%ifndef DELTA
+%ifndef SIZING
+%error "DELTA is not set: the Makefile finds it (or: -DSIZING, to see where the code ends)"
+%endif
+%define DELTA 0
+%endif
 %include "site.inc"         ; SITE_LEN, and where things are in the site
 %assign LOW ((0x110000 + SITE_LEN + 0x1FFFFF) >> 21 << 21) - 0x200000 ; (the code ends below 1 MiB + 64 KiB)
 BSSN    equ 0x200000 + LOW  ; (BSS as a number)
-BSS     equ mb + 0x100000 + LOW ; 2 MiB (said relative to the image, so that the assembler reaches
+BSS     equ mb - DELTA + 0x100000 + LOW ; 2 MiB (said relative to the image, so that the assembler reaches
 %endif                      ; what is there relative to the instruction pointer: a byte less)
 FR      equ 0               ; the Ethernet frame being handled. At address 0 (old real-mode
                             ; IVT, unused), so `xor reg, reg` loads it and its fields are a
@@ -390,8 +405,8 @@ DBG     equ BSS + 0x0F500
 ; `label`, which is in our code. Then such an instruction. A processor that has no such
 ; table can't go on from there: the machine's end. (See `GDT`.)
 %macro WXGATE 1
-        mov dword [abs 6*16], ((0x100000 + (%1 - mb)) & 0xFFFF) | 8 << 16
-        mov dword [abs 6*16+4], 0x8E00 | ((0x100000 + (%1 - mb)) >> 16 << 16)
+        mov dword [abs 6*16], ((0x100000 + DELTA + (%1 - mb)) & 0xFFFF) | 8 << 16
+        mov dword [abs 6*16+4], 0x8E00 | ((0x100000 + DELTA + (%1 - mb)) >> 16 << 16)
         and qword [abs 6*16+8], 0
         ud2
 %endmacro
@@ -431,22 +446,26 @@ BITS 64
         global sha256, hmac, expand, seal, shaconst, echost, xdh, sign
         global E, REGS
 %else
-        org 0x100000
+        org 0x100000 + DELTA
 BITS 32
 mb:     dd 0x1BADB002, 0x00010002, -(0x1BADB002 + 0x00010002)
-        dd mb, mb, 0, 0, start
+        dd mb, mb, 0, 0, start  ; (where this header is, where the image goes: there; all of it; where it is entered)
 
 ; ----------------------------------------------------------------------------
-start:                          ; Entered in 32-bit protected mode by whoever loaded us at 1 MiB
-        cli                     ; (boot.asm, GRUB's or QEMU's multiboot), with ebx = what a
-        cld                     ; multiboot loader tells its kernel: the memory map is what we
-        lidt [GDT]              ; need of it. Nothing else is assumed: no interrupt handlers
-        mov edi, BSSN           ; (a table of them of length nothing: see `GDT`), our own page
-        mov ecx, (TABV - BSSN) / 4 ; tables, segments and stack, and memory we zero ourselves:
-        xor eax, eax            ; first all that is ours below the table space. The top table
-        rep stosd               ; and the next one have one entry each for now (the rest is
-        mov dword [PML4], PDPT0 + 3 ; filled in from long mode), and the first page directory
-                                ; maps the first 16 MiB as they are
+start:                          ; Entered in 32-bit protected mode by whoever loaded us where
+        cli                     ; our header says (boot.asm, GRUB's or QEMU's multiboot), with
+        cld                     ; ebx = what a multiboot loader tells its kernel: the memory
+        lidt [GDT]              ; map is what we need of it. Nothing else is assumed: no
+        mov edi, BSSN           ; interrupt handlers (a table of them of length nothing: see
+        mov ecx, (TABV - BSSN) / 4 ; `GDT`), our own page tables, segments and stack, and
+        xor eax, eax            ; memory we zero ourselves: first all that is ours below the
+        rep stosd               ; table space, and the DELTA bytes between 1 MiB and the
+%ifndef WXOPEN                  ; image, which share a page with its first code and are
+        mov edi, 0x100000       ; whatever the loader left there. The top table and the
+        mov cx, DELTA           ; next one have one entry each for now (the rest is filled
+        rep stosb               ; in from long mode), and the first page directory maps
+%endif                          ; the first 16 MiB as they are
+        mov dword [PML4], PDPT0 + 3
         mov dword [PDPT0], PDT + 3
         mov dword [PDPT0+DEVG*8], PDDEV + 3
         mov byte [PDPT0+DEVG*8+7], 0x80 ; (the card's registers: not to be executed)
@@ -455,7 +474,9 @@ start:                          ; Entered in 32-bit protected mode by whoever lo
         ; executed. So nothing a packet can put into memory can be run, and nothing that
         ; runs can be changed. The first 2 MiB are in pages of 4 KiB for that: low memory
         ; (data, but for the page where the other processors start), then the image: the
-        ; pages with code, and behind them what is only read.
+        ; pages with code, and behind them what is only read, which begins with a page
+        ; (`codend`): no constant, no key, no certificate and no byte of the site lies in
+        ; a page that can be executed.
         mov dword [PDT], PT0 + 3
         mov edi, PT0
         xor ecx, ecx
@@ -913,13 +934,22 @@ shaconst:
         push TRAMPLEN
         pop rcx
         rep movsb
+%ifndef WXOPEN
+        xor eax, eax            ; Behind it, zero: the rest of that page, which can be
+        mov cx, TXLOCK + 48 - TRAMP - TRAMPLEN ; executed and is whatever the loader left
+        rep stosb               ; there (boot.asm reads the image through it: its last
+                                ; piece, site and all), and on to what is shared down
+                                ; there, which starts as zero
+%endif
         mov rax, cr0            ; From here on, what the page tables say is not written is
-        bts eax, 16             ; not written by us either (that copy was the last such
-        mov cr0, rax            ; write)
-        mov edi, TXLOCK         ; (what is shared down there starts as zero: that memory
-        xor eax, eax            ; is whatever the loader left in it)
+        bts eax, 16             ; not written by us either (those were the last such
+        mov cr0, rax            ; writes)
+%ifdef WXOPEN                   ; (tools/wxtest.sh's control: what the loader left stays)
+        mov edi, TXLOCK
+        xor eax, eax
         mov cl, 6
         rep stosq
+%endif
 %ifndef OURIP
         call clock              ; (no address yet: it is time to ask for one, `dhask`)
         mov [rdi+DHT-TXLOCK-48], eax
@@ -991,11 +1021,37 @@ shaconst:
         call rax
 %elif WXTEST = 3
         mov byte [SITE + SITE_LEN - 1], 0 ; the site written
-%elif WXTEST = 4
-        mov eax, SITE + SITE_LEN - 1 ; the site executed
-        mov ecx, RXB
-        mov byte [rcx], 0xC3    ; (and a packet buffer)
-        call rax
+%elif WXTEST = 4                ; the site executed: the first byte of it that says "return"
+        mov edi, SITE           ; (tools/wxtest.sh sees to it that there is one). A site
+        mov ecx, SITE_LEN       ; that could be run would come back from there, and the
+        mov al, 0xC3            ; machine would go on.
+        repne scasb
+        jne poll
+        dec edi
+        call rdi
+%elif WXTEST = 9                ; the same for the last such byte: of a long site, which lies
+        mov edi, SITE + SITE_LEN - 1 ; in large pages there
+        mov ecx, SITE_LEN
+        mov al, 0xC3
+        std
+        repne scasb
+        cld
+        jne poll
+        inc edi
+        call rdi
+%elif WXTEST = 10               ; what lies right behind the code executed (`codend`: in these
+        call WXRET              ; builds a "return")
+%elif WXTEST = 11               ; and what lies in front of it: the byte at 1 MiB, where
+        mov eax, 0x100000       ; tools/wxtest.sh has put a "return" before we were loaded.
+        call rax                ; (Zeroed, as `start` leaves it, it is "add [rax], al": a
+                                ; write to that very page.)
+%elif WXTEST = 12               ; what the loader left in the page the other processors
+        mov edi, TRAMP + TRAMPLEN ; start in, behind their code: if anything, the machine
+        mov ecx, 4096 - TRAMPLEN ; goes on
+        xor eax, eax
+        repe scasb
+        jne poll
+        ud2
 %elif WXTEST = 5
         mov eax, RXB            ; a packet buffer executed
         mov byte [rax], 0xC3
@@ -1003,6 +1059,9 @@ shaconst:
 %elif WXTEST = 6                ; a fault, with a handler for it named where the frame in hand
         WXGATE poll             ; lies (as a client's packet could name one)
 %endif
+%ifdef WXPAD                    ; (make WXPAD=1: 64 bytes more of code, for an image of
+        times 64 nop            ; tools/wxtest.sh that would otherwise lie at 1 MiB exactly,
+%endif                          ; with nothing in front of it to look at)
 %endif
         jmp poll
 .wait:  mov [rsi], ebx
@@ -1146,42 +1205,8 @@ bdrain: cmp dword [CPUN], 0
         popad
 .no:    ret
 
-; Another processor starts here, in real mode (at TRAMP, where this was copied): it takes
-; a number, and with it the page tables made for it, goes straight to long mode, and
-; then lives off the frames the first processor puts in its ring.
-BITS 16
-tramp:  cli
-        xor ax, ax
-        mov ds, ax
-        mov eax, 1
-        lock xadd [TRAMP+apcount-tramp], eax
-        inc eax
-        cmp eax, MAXCPU
-        jae .no
-        shl eax, 15
-        add eax, APMEM - 0x8000
-        mov cr3, eax
-        mov eax, cr4
-        or eax, 0x220
-        mov cr4, eax
-        mov ecx, 0xC0000080
-        rdmsr
-        or ah, 9
-        wrmsr
-        mov eax, cr0
-        and eax, 0x9FFFFFFF     ; (caches on: a processor starts with them off)
-        or eax, 0x80010001
-        mov cr0, eax
-        o32 lgdt [TRAMP+apgdt-tramp]
-        jmp dword 8:apstart
-.no:    hlt
-        jmp .no
-        times (tramp - $) & 3 db 0 ; (what `lock xadd` counts in lies on a multiple of 4 from
-apcount: dd 0                   ; TRAMP, a page's start: never across two cache lines)
-apgdt:  dw 23
-        dd GDT
-TRAMPLEN equ $ - tramp
-BITS 64
+; apstart: where another processor goes on, in long mode, from where it started (`tramp`,
+; at the end of the code): it lives off the frames the first processor puts in its ring.
 apstart: mov esp, STACK
         push 16
         pop rax
@@ -1667,16 +1692,24 @@ tcp:
         mov [rbp+C_SND], eax
         mov [rbp+C_ACK], eax
 
-        ; The client's ack counts if it is in [C_ACK, C_SND]. edx = 1: it lacks something we
-        ; sent, 2: and says so with the same ack as before, 0: neither
+        ; Whose segment it is. The client's begins within what we take at once (64 KB)
+        ; of what we expect next, before it or behind: early, late, or sent again. And
+        ; its ack counts if it is in [C_ACK, C_SND]. (What else there can be, and what
+        ; becomes of it: `.odd`.) edx = 1: it lacks something we sent, 2: and says so
+        ; with the same ack as before, 0: neither
 .est:   xor edx, edx
         mov [rbx+P_ADV], edx
+        mov eax, [rbx+P_SEQ]
+        sub eax, [rbp+C_NXT]
+        add eax, 0x10000
+        shr eax, 17
+        jnz .oseq
         mov eax, [rbx+P_ACK]
         sub eax, [rbp+C_ACK]    ; how much further than before
         mov edi, [rbp+C_SND]
         sub edi, [rbp+C_ACK]    ; how much there is to acknowledge
         cmp eax, edi
-        ja .odd
+        ja .oack
         jb .ak0
         test byte [rbp+C_FLG], F_CLOSED ; It has all we sent. If that includes our FIN, that
         jz .nfin                ; was the connection
@@ -1711,13 +1744,42 @@ tcp:
         jnc .ak1                ; data is acknowledged only now
         inc byte [rbx+P_MORE]
         jmp .ak1
-.odd:   test byte [rbp+C_FLG], F_SYN ; Not an ack for this connection: for a new one from
-        jz .ak                  ; the same address and port, whose predecessor we never saw
-        call ckx                ; end? Only if a SYN has come: a late copy of this
-        jnz .ak                 ; connection's own first ack is a valid cookie too, and
-        mov rax, [rbp]          ; must not start it over.
+        ; Not this connection's segment as it stands: its sequence number is not where
+        ; the client's are (`.oseq`), or its ack is not for something we sent that is
+        ; still to be acknowledged (`.oack`). Three things it can be:
+        ;   - The first packet of a new connection from the same address and port, whose
+        ;     predecessor we never saw end: if it is the cookie of a SYN-ACK of ours.
+        ;     Only if a SYN has come: a late copy of this connection's own first ack is
+        ;     a valid cookie too, and must not start it over.
+        ;   - A packet of the client's that others overtook: where its sequence numbers
+        ;     are, with an ack from before its last one, by less than can have been on
+        ;     its way at once (255 segments, C_CW's most: under 2^19 bytes). Its ack
+        ;     says nothing; what it carries counts.
+        ;   - Not the client's. Nothing of it is taken: not its ack, not its data, not
+        ;     its FIN, not what it says the client takes. So whoever sends in a client's
+        ;     name without seeing what we send it has two numbers to guess, where the
+        ;     client's are and where ours are, for anything at all to come of it (RFC
+        ;     9293, 3.10.7.4: the sequence number first; RFC 5961, 5.2: and the ack).
+        ;     It gets an ack, which says where we are, as RFC 9293 has it for every
+        ;     segment that is not what is expected (one for one, with no count kept of
+        ;     them: a count is something an outsider can read).
+.oack:  neg eax                 ; (how far behind the client's last ack)
+        shr eax, 19
+.oseq:  xchg eax, edi           ; edi = 0: only its ack is old
+.odd:   test byte [rbp+C_FLG], F_SYN
+        jz .stale
+        call ckx
+        jnz .stale
+        mov rax, [rbp]
         mov [CLAIMQ], rax
         jmp .make
+.stale: test edi, edi
+        jz .ak
+.bare:  xor ecx, ecx            ; (an ack and nothing else, from where we are)
+        mov al, 0x10
+        mov edx, [rbp+C_SND]
+        call ackno
+        jmp tcp_seg
 .ak0:   inc edx
         test eax, eax
         jnz .ak1
@@ -1750,10 +1812,10 @@ tcp:
 .trim:  add esi, eax            ; drop what we have, the rest is new
         sub ecx, eax
         jmp .new
-.early: count 3                 ; From further on: what comes before it is late (neighbours do
-        neg eax                 ; get swapped on the way) or lost. Keep it for when that
-        cmp eax, 0xFFFF         ; arrives, if it is inside our window and not empty, and say
-        ja .ack                 ; what we expect.
+.early: count 3                 ; From further on (inside our window: `.est`): what comes
+                                ; before it is late (neighbours do get swapped on the way)
+                                ; or lost. Keep it for when that arrives, if it is not
+                                ; empty, and say what we expect.
         mov al, [rbx+P_FL]
         and eax, 1
         or eax, ecx
@@ -2163,11 +2225,7 @@ tcp:
         jnz .owed
         test byte [rbx+P_EV], E_ACK
         jz .owed
-        xor ecx, ecx            ; nothing went that carries our ack: a bare one
-        mov al, 0x10
-        mov edx, [rbp+C_SND]
-        call ackno
-        call tcp_seg
+        call .bare              ; nothing went that carries our ack: a bare one
 .owed:  mov eax, [TXEND]        ; Is the client owed anything now?
         test byte [rbp+C_FL2], F_FIN
         jz .nf
@@ -5617,12 +5675,75 @@ aes4:   mov eax, RK
         aesenclast xmm3, xmm5
         ret
 
+%ifndef HOST
+; Another processor starts here, in real mode (at TRAMP, where this is copied to: here it
+; is never run): it takes a number, and with it the page tables made for it, and goes
+; straight to long mode (`apstart`).
+; It is the last of the code, and the one piece of it that need not be executable where
+; it lies: so it is what the end of the last page with code falls into (the image is
+; loaded where that comes true: DELTA), and everything behind its instructions, which
+; is only read (the first of it: the few bytes this very code counts in and finds its
+; segments by), begins in a page that cannot be executed.
+BITS 16
+tramp:  cli
+        xor ax, ax
+        mov ds, ax
+        mov eax, 1
+        lock xadd [TRAMP+apcount-tramp], eax
+        inc eax
+        cmp eax, MAXCPU
+        jae .no
+        shl eax, 15
+        add eax, APMEM - 0x8000
+        mov cr3, eax
+        mov eax, cr4
+        or eax, 0x220
+        mov cr4, eax
+        mov ecx, 0xC0000080
+        rdmsr
+        or ah, 9
+        wrmsr
+        mov eax, cr0
+        and eax, 0x9FFFFFFF     ; (caches on: a processor starts with them off)
+        or eax, 0x80010001
+        mov cr0, eax
+        o32 lgdt [TRAMP+apgdt-tramp]
+        jmp dword 8:apstart
+.no:    hlt
+        jmp .no
+xend:                           ; (the end of all instructions: see `codend`)
+        times (tramp - $) & 3 db 0 ; (what `lock xadd` counts in lies on a multiple of 4 from
+apcount: dd 0                   ; TRAMP, a page's start: never across two cache lines)
+apgdt:  dw 23
+        dd GDT
+TRAMPLEN equ $ - tramp
+BITS 64
+%endif
 
 ; ----------------------------------------------------------------------------
 
 codend:                          ; (what follows is only read: see the page tables in `start`)
 %ifndef HOST
-CODEPG    equ 0x100 + ((codend - mb + 0xFFF) >> 12) ; the page behind the last one with code
+; CODEPG: the first page that has no code to be run: the one `xend` is in, the end of
+; `tramp`'s instructions, which begins inside them: at most 63 bytes before `xend`, with
+; the one DELTA that is a multiple of 64 below 4096. (If one of these lines fails, DELTA
+; is not what the build would have found for this code.)
+%ifndef SIZING
+        times -(((DELTA + (xend - mb)) & 0xFFF) > 63) db 0
+%endif
+        times -((DELTA & 63) != 0 || DELTA >= 4096) db 0
+        times -(xend - tramp < 63) db 0
+%ifdef WXOPEN                   ; (make WXTEST=n WXOPEN=1, the control of tools/wxtest.sh: one
+%ifndef WXTEST                  ; page more can be executed, the first of what is only read,
+%error "WXOPEN is for tools/wxtest.sh (with WXTEST): it makes an image that is open" ; and
+%endif                          ; what loaders left is left; what the test runs then runs)
+CODEPG  equ ((0x100000 + DELTA + (xend - mb)) >> 12) + 1
+%else
+CODEPG  equ (0x100000 + DELTA + (xend - mb)) >> 12
+%endif
+%ifdef WXTEST
+WXRET:  ret                     ; (make WXTEST=10)
+%endif
 %endif
 TWO32:  dd 0x4F800000            ; 2^32 as a float
 
@@ -5676,8 +5797,11 @@ SHTAIL: db 0x13, 0x01, 0x00, 0x00, 0x2e, 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04
 %endif
 %include "ec.inc"         ; curve programs
 %ifndef HOST
-        times -(($ - mb) > 0x10000) db 0 ; (the code must end below 1 MiB + 64 KiB: see LOW)
+        times -(DELTA + ($ - mb) > 0x10000) db 0 ; (the code must end below 1 MiB + 64 KiB: see LOW)
 ; The site: what tools/pack.py made of the folder that is served. A table of the paths,
 ; a table of the responses, and the responses themselves, as they are sent.
 SITE:   incbin "site.bin"
+%ifdef SIZING                   ; (the build's first look: so far from its start the image's
+        dd xend - mb            ; instructions end, with `tramp`'s: see DELTA)
+%endif
 %endif

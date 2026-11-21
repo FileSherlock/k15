@@ -42,15 +42,16 @@ COMPRESS ?= 1
 # BIGSH=n (tests): each processor has 2^n buffers for the frames the card cuts up (default 3)
 # RACE=n (tests): the timer stops in the middle of a connection it has in hand (tools/racetest.py)
 WIN ?=
-WINDEF := $(if $(WIN),-DWIN=$(WIN),) $(if $(WXTEST),-DWXTEST=$(WXTEST),) $(if $(ISNTOP),-DISNTOP=$(ISNTOP),) $(if $(ISNBITS),-DISNBITS=$(ISNBITS),) $(if $(KEYLIFE),-DKEYLIFE=$(KEYLIFE),) $(if $(STLIFE),-DSTLIFE=$(STLIFE),) $(if $(NOTSO),-DNOTSO,) $(if $(BIGSH),-DBIGSH=$(BIGSH),) $(if $(RACE),-DRACE=$(RACE),)
+WINDEF := $(if $(WIN),-DWIN=$(WIN),) $(if $(WXTEST),-DWXTEST=$(WXTEST),) $(if $(WXOPEN),-DWXOPEN,) $(if $(WXPAD),-DWXPAD,) $(if $(ISNTOP),-DISNTOP=$(ISNTOP),) $(if $(ISNBITS),-DISNBITS=$(ISNBITS),) $(if $(KEYLIFE),-DKEYLIFE=$(KEYLIFE),) $(if $(STLIFE),-DSTLIFE=$(STLIFE),) $(if $(NOTSO),-DNOTSO,) $(if $(BIGSH),-DBIGSH=$(BIGSH),) $(if $(RACE),-DRACE=$(RACE),)
 
 # the routines a handshake spends its time in: none of their jumps may lie on a 32-byte
 # boundary (tools/jcc.py; of `xdh` and `seal` the jumps inside loops)
 HOT := shablk xdh:loops cswap comb select vm fas fmul inv seal:loops ks64 gh1 aeskey aes4
 
 # (the image, its listing and the disk hold the private key: for their owner's eyes only)
-# The image: hand-written assembly (src/os.asm) -> flat binary, loaded at 1 MiB; and a
-# disk image that boots it: the boot sector (src/boot.asm), then the image, padded
+# The image: hand-written assembly (src/os.asm) -> flat binary, loaded at 1 MiB and a few
+# bytes (DELTA, below); and a disk image that boots it: the boot sector (src/boot.asm),
+# then the image, padded
 all: $(B)/disk.img
 
 $(B)/ip: FORCE
@@ -107,10 +108,19 @@ $(B)/site.conf: FORCE
 $(PACKED) &: tools/pack.py $(B)/site.conf $(GEN)
 	P80=$(P80) HSTS=$(HSTS) CACHE=$(CACHE) HEADERS='$(HEADERS)' COMPRESS=$(COMPRESS) python3 tools/pack.py $(SITE) $(B)
 
+# It is assembled twice. Memory is barred from execution a page at a time, so the image's
+# code has to end where a page ends, and nothing is padded for that: the image is loaded
+# DELTA bytes above 1 MiB instead (its header says where). The first time says where the
+# code ends (-DSIZING: the last four bytes of $(B)/os.sizing, which is then emptied: it
+# is an image, key and all), DELTA is what puts a page boundary there, a multiple of
+# 64, and the second time is the image. (src/os.asm, `codend`, refuses any other DELTA.)
+ASDEF := $(OURIP) $(OURIP6) $(KNOCKDEF) $(TABLEDEF) $(DEBUGDEF) $(WINDEF)
 $(B)/os.bin: src/os.asm $(GEN) $(PACKED) $(B)/ip $(B)/ip6
-	nasm -f bin $(OURIP) $(OURIP6) $(KNOCKDEF) $(TABLEDEF) $(DEBUGDEF) $(WINDEF) -I$(B)/ -o $@ -l $(B)/os.lst src/os.asm
+	@umask 077; nasm -f bin $(ASDEF) -DSIZING -I$(B)/ -o $(B)/os.sizing src/os.asm
+	@echo "-DDELTA=$$(( (4096 - $$(tail -c 4 $(B)/os.sizing | od -An -tu4) / 64 * 64 % 4096) % 4096 ))" > $(B)/delta; : > $(B)/os.sizing
+	nasm -f bin $(ASDEF) $$(cat $(B)/delta) -I$(B)/ -o $@ -l $(B)/os.lst src/os.asm
 	@chmod go= $@ $(B)/os.lst
-	@P80=$(P80) HSTS=$(HSTS) CACHE=$(CACHE) HEADERS='$(HEADERS)' COMPRESS=$(COMPRESS) python3 tools/made.py $(B) $(OURIP) $(OURIP6) $(KNOCKDEF) $(TABLEDEF) $(DEBUGDEF) $(WINDEF)
+	@P80=$(P80) HSTS=$(HSTS) CACHE=$(CACHE) HEADERS='$(HEADERS)' COMPRESS=$(COMPRESS) python3 tools/made.py $(B) $(ASDEF) $$(cat $(B)/delta)
 	@echo "image: $$(stat -c %s $@) bytes, of which the site: $$(stat -c %s $(B)/site.bin)"
 	@python3 tools/jcc.py $(B)/os.lst $(HOT) || echo "(these jumps lie on 32-byte boundaries: see HOT in src/os.asm)"
 

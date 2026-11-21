@@ -48,6 +48,18 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - A test's client is a TCP with rules of its own: Linux takes a reset only at exactly
   the next number it expects, and a connection that was only ever sent a SYN-ACK is
   made again by its next packet. Watch the wire, not the sockets.
+- A test that runs a byte to show that it can't be run has to run a "return": anything
+  else faults either way. `tools/wxtest.sh` ran the site's last byte, whatever that
+  was, and could not have failed; nor did it have a site that began where the code ends.
+- `-device loader,addr=A,data=D,data-len=N` puts bytes into a guest's memory before
+  its BIOS runs (what a loader may have left); `-action shutdown=pause` stops a
+  machine where it would start over, with its memory still to be read.
+- A test's ports are the suite's: two tests at once on one port, and the QEMU that
+  could not start looked like a machine that had ended, which is what that test
+  waits for. "It ended" has to mean: by itself, without a word, with status 0.
+- "Its answer is near the new connection's first number" does not say that there is a
+  new connection: one client's cookies lie multiples of 2^14 apart, and the old
+  connection answering looked the same. The answer begins at exactly that number + 1.
 
 ## Code
 - Sequence numbers are compared by the sign of their difference (`js`/`jns` after
@@ -66,6 +78,19 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - What is in BSS is per processor, whether one thinks of it or not. Shared state goes
   in low memory.
 - Where a jump lies can cost 6% on Skylake and nothing on Zen 2: see `HOT`.
+- Aligning is not padding: where an image is loaded is a number too (`DELTA`). nasm's
+  `org` wants that number on its first pass, so what depends on where the code ends
+  takes an assembly of its own to find.
+- nasm removes its output when it fails: with `-o /dev/stdout`, as root, that is the
+  device, and the next build writes the image, key and all, into a file of that name.
+  Assemble into a file.
+- A page a loader read through is not empty. The boot sector reads the image in pieces
+  at 0x8000, the page the other processors start in, which can be executed: it held
+  the image's last piece, site and all. What is made executable is zeroed first.
+- The sequence number is looked at before the ack, or the ack alone will do: with any
+  sequence number at all, a made-up ack moved `C_ACK`, and one in ten thousand ended
+  a response. The first rule about acks (data and FIN only) left that open; the
+  reader who had not written it saw it.
 - The key share is found by walking the ClientHello. Searching for its first four
   bytes failed once in two million handshakes. Extensions come in any order.
 - Clients send a ChangeCipherSpec record before their second ClientHello.

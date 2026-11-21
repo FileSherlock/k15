@@ -94,6 +94,8 @@ T[tlsfuzz]='IFTHERE=1 unshare -Urn tools/tlsfuzz.sh'
 T[hellofuzz]='unshare -Urn ./tap.sh python3 tools/hellofuzz.py'
 # frames that no router would pass on: lengths that say less than there must be, and the like
 T[rawframes]='unshare -Urn ./tap.sh python3 tools/rawtest.py'
+# segments in a client's name whose ack is not the client's: nothing of them is taken (tools/acktest.py)
+T[ack]='unshare -Urn ./tap.sh python3 tools/acktest.py'
 # An image's address: the default image has none and asks for one (DHCP). Over tap that is
 # tools/dhcpd.py's to give, through QEMU's own network QEMU's; here against a server that
 # answers right and wrong as the test wants (tools/dhcptest.py), the same on four
@@ -154,7 +156,7 @@ ORDER="measure measure_tcg browsers tls tls_loss3 tls_mtu300_loss3 tls_reorder t
   real_mtu300_loss3 real_reorder hrr hrr_loss3 hrr_mtu300_loss3
   hrr_reorder real_hrr_loss3 redirect raw_redirect tls_isn31 tls_isn32 tls_isn31_loss3
   plain_isn32_loss3 real_isn31_loss3 real_isn32_reorder site_wrap31 site_wrap32 site_wrap31_loss3
-  site_wrap32_loss3 site_keylife site_gone race1 race2 race3 cpus3 tlsfuzz hellofuzz rawframes dhcp dhcp_smp4 dhcp_dnsmasq
+  site_wrap32_loss3 site_keylife site_gone race1 race2 race3 cpus3 tlsfuzz hellofuzz rawframes ack dhcp dhcp_smp4 dhcp_dnsmasq
   static_measure static_tls_loss3 static_plain v6 tls6 tls6_loss3 tls6_mtu1280_loss3 tls6_reorder plain6 plain6_loss3
   real6_loss3 real6_reorder hrr6_loss3 small6 site6 site6_reorder v6_tls4_loss3 k15 host wx site site_tap site_loss3 site_mtu600_loss3
   site_reorder
@@ -194,8 +196,8 @@ verdict() {  # name, exit code -> one line
     raw*|twice*) [[ $rc == 0 ]] && ! grep -q -E ' [1-9][0-9]* (reset|timed out)' "$f" && v=ok
        note=$(grep '^RAW total' "$f" | tail -1 | cut -c1-80)
        note="$note; $(grep -o '[0-9]* reset, [0-9]* timed out' "$f" | tr '\n' ';')";;
-    churn*|idle|race*|cpus3|tlsfuzz|hellofuzz|rawframes|dhcp*|v6) [[ $rc == 0 ]] && v=ok; note=$(tail -1 "$f" | cut -c1-110);;
-    wx) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 9 ok; $(grep -m1 '^FAIL' "$f")";;
+    churn*|idle|race*|cpus3|tlsfuzz|hellofuzz|rawframes|ack|dhcp*|v6) [[ $rc == 0 ]] && v=ok; note=$(tail -1 "$f" | cut -c1-110);;
+    wx) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 18 ok; $(grep -m1 '^FAIL' "$f")";;
     bneck) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 4 ok; $(grep -m1 '^FAIL' "$f" | cut -c1-80)";;
     rtt) [[ $rc == 0 ]] && v=ok; note=$(tr '\n' ';' <"$f" | cut -c1-150);;
     repro) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 6 ok; $(grep -m1 '^FAIL' "$f" | cut -c1-90)";;
