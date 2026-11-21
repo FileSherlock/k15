@@ -13,31 +13,47 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   name it is asked for, so every name that points at it and is in its certificate gets
   the site; pack says which of the names the certificate in CERTDIR is not for, and
   renew asks for all of them); `./k15 run [OUT]` boots it in QEMU
-  (https://127.0.0.1:8443/, http://127.0.0.1:9443/); `./k15 deploy HOST [OUT] [--persist]
-  [--reset 'COMMAND']` puts it on a server that runs Linux with GRUB and starts it (see
-  "Running it on the server"); `./k15 renew HOST [OUT] --reset 'COMMAND' [--days N]
-  [--force] [--dry-run]` gets a new certificate from Let's Encrypt when the one OUT was
-  packed with ends within N days (30), and does nothing at all before that, so cron may
-  run it daily. When it is time: a new key and a request (CSR) are made here, the server
-  is reset into Linux, certbot answers the challenge on port 80 there for that request,
+  (https://127.0.0.1:8443/, http://127.0.0.1:9443/); `./k15 deploy HOST [OUT] [--rescue
+  'COMMAND'] [--boot 'COMMAND'] [--disk DEVICE] [--first]` writes OUT/disk.img over the
+  disk of a machine that is in its rescue system, and starts it from that (docs/server.md,
+  "Onto a machine that is k15's alone": what the three commands are, and why the machine
+  has to show the key of the certificate it was serving before anything is sent to it);
+  (`deploy` holds the machine to the key that goes with OUT, `publish` to the one of the
+  certificate the site shows);
+  `./k15 deploy HOST [OUT] --grub [--persist] [--reset 'COMMAND']` puts OUT/os.bin on a
+  server that runs Linux with GRUB and starts it (the way before 2026-11-21; "Running it
+  beside a Linux"); `./k15 publish SITE HOST -n NAME [pack's options] [--rescue 'COMMAND']
+  [--boot 'COMMAND'] [--disk DEVICE] [--first] [--if-due] [--days N] [--email ADDRESS]
+  [--staging]` is all of it in one step with nothing kept here: the machine into its
+  rescue system, its key and certificate from the end of its own disk (a new pair from
+  Let's Encrypt if there is none, or it ends within N days, or lacks a name), SITE
+  packed, written, started; with `--if-due` nothing at all while the site is up with a
+  certificate that is good for more than N days, so a workflow may run it daily
+  (`ci/publish.yml`); `./k15 renew HOST [OUT] [--rescue 'COMMAND' ... | --grub --reset
+  'COMMAND'] [--days N] [--force] [--dry-run]` gets a new certificate from Let's Encrypt
+  when the one OUT was packed with ends within N days (30), and does nothing at all
+  before that, so cron may run it daily. When it is time: a new key and a request (CSR)
+  are made here, the machine goes into its rescue system (or, with `--grub`, is reset
+  into its Linux), certbot answers the challenge on port 80 there for that request,
   the certificate comes back, OUT is packed again as it was packed (OUT/pack.conf: the
   folder, name, address, certificate folder, headers, what port 80 does) and started. If
   no certificate comes, the image as it was is started again. The key is never on the
-  server but inside the image. `--force` for the first one (the private CA's lasts until
+  server but inside the image (and, on a machine that is k15's alone, in the last 64 KiB
+  of its disk). `--force` for the first one (the private CA's lasts until
   2049), `--staging` for Let's Encrypt's test server (its certificate is trusted by
   nobody, so the fetch at the end fails: "did not answer" is then the expected last
   line). Everything `./k15` makes is
   for its owner's eyes only (umask 077), and /boot/k15.bin on the server for root's.
 - `make` assembles `src/os.asm` into `build/os.bin` (loaded at 1 MiB) and `build/disk.img`
   (`src/boot.asm` + the image; what the tests boot), with the site of `www/` in it.
-  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 13,891,
+  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 13,955,
   about: boot, clock calibration, page tables, driver and the other processors 2,700,
-  network 4,300 with the timers, requests and the forms of a file 700, TLS handshake
+  network 4,360 with the timers, requests and the forms of a file 700, TLS handshake
   and key schedule 1,600, SHA-256 450, curves 3,000 with their programs and constants,
   the cipher 1,000, certificate 230; among them 49 of padding in front of the
   routines a handshake spends its time in: see HOT in "How the curve code works". That
   is an image with an address of its own; one without, the default, has 450 bytes
-  more, the DHCP client: 14,341. Of the
+  more, the DHCP client: 14,405. Of the
   874 that the night of 2026-11-12 added: frames for the card to cut 450, window scaling
   and what goes with it 130, the forms of a file 290; `seal` got faster in the same
   bytes.) `make B=dir CERT=dir NAME=n IP=a.b.c.d SITE=folder P80=redirect HSTS=seconds
@@ -67,7 +83,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   none (a browser may not believe it there). OUT/site.json says what each path must
   return (for the tests), OUT/page80.bin what port 80 says.
 - `tools/suite.sh [JOBS] [name...]`: everything below, a few at a time, one line each
-  (65 runs, a quarter of an hour). `SMP=1` or `SMP=4` in front for other machines than the
+  (67 runs, a quarter of an hour). `SMP=1` or `SMP=4` in front for other machines than the
   default of 2 processors. Its verdict is strict: one failed connection is a FAIL. Under
   a loaded host a run that overflows rings on purpose (`raw1m_20k`) can time out a few
   hundred of a million (on 4 processors it does every time the suite runs five at once):
@@ -254,6 +270,18 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   built `RACE=3 CAP=16`, in which the one free slot of a bucket is somebody else's
   between being counted and being taken; the connection must then not be made anywhere
   else.
+- `B=build-site DELAY=300 unshare -Urn ./tap.sh python3 tools/rtttest.py` (a quarter of
+  a minute; the suite's `rtt`): over a round trip of 300 ms, with nothing lost, no
+  segment of a response may go twice (a page of one segment on a connection that
+  stays, a file of 200 KB). The timer as it was before 2026-11-21 sent 26 twice.
+- `unshare -Urn tools/hosttest.sh` (a minute; the suite's `host`): `./k15 publish`,
+  `deploy` and `renew` against a machine that is made up: its disk a file, its rescue
+  system this shell with `lsblk`, `blockdev`, `blkdiscard`, `reboot`, `apt-get` and
+  `certbot` replaced (the last by a certificate authority of the test's own), ssh a
+  script (`K15_SSH`), and "start from the disk" a QEMU on that file whose ports are
+  127.0.0.1's in an otherwise empty network. 24 checks, from "a machine with a Linux
+  on its disk is not written to" to "a machine whose key file has the site's public
+  half and another secret is sent nothing"; `V=1` in front shows what the tool says.
 - `SMP=3 MON=/tmp/k15mon unshare -Urn ./tap.sh python3 tools/cputest.py` (the suite's
   `cpus3`): asks QEMU's monitor which processors are halted. Those that take no frames
   must be (the third of three; the fifth and on), and no other.
@@ -270,18 +298,6 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   (`--prove`, `--verify HOST`) proving the live TLS certificate and the Bitcoin wallet share
   the same scalar without revealing it. `--gen CERT [-n NAME] [--san NAME]...` makes a
   24-word BIP-39 wallet (`m/84'/0'/0'/0/0`), `server.key`, `csr.pem` and `bounty.proof`;
-- `B=build-site DELAY=300 unshare -Urn ./tap.sh python3 tools/rtttest.py` (a quarter of
-  a minute; the suite's `rtt`): over a round trip of 300 ms, with nothing lost, no
-  segment of a response may go twice (a page of one segment on a connection that
-  stays, a file of 200 KB). The timer as it was before 2026-11-21 sent 26 twice.
-- `unshare -Urn tools/hosttest.sh` (a minute; the suite's `host`): `./k15 publish`,
-  `deploy` and `renew` against a machine that is made up: its disk a file, its rescue
-  system this shell with `lsblk`, `blockdev`, `blkdiscard`, `reboot`, `apt-get` and
-  `certbot` replaced (the last by a certificate authority of the test's own), ssh a
-  script (`K15_SSH`), and "start from the disk" a QEMU on that file whose ports are
-  127.0.0.1's in an otherwise empty network. 24 checks, from "a machine with a Linux
-  on its disk is not written to" to "a machine whose key file has the site's public
-  half and another secret is sent nothing"; `V=1` in front shows what the tool says.
   `--restore` checks or restores from the 24 words; `--wif` prints WIF; `--test` checks
   BIP-173, BIP-84 and proof soundness.
 - `tools/bounty_ceremony.sh [--dry-run | --staging | --redeploy | --revoke]`: RAM-only (`/dev/shm`)

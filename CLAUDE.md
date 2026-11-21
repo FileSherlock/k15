@@ -2,7 +2,8 @@
 
 One assembly file (`src/os.asm`) that boots an x86-64 cloud server and serves a static
 site over TLS 1.3, with the site packed behind it in the same image. `./k15 pack FOLDER`
-makes the image, `./k15 run` boots it in QEMU, `./k15 deploy HOST` puts it on a server.
+makes the image, `./k15 run` boots it in QEMU, `./k15 publish FOLDER HOST` puts a site
+on a machine in one step (`./k15 deploy HOST`: an image packed here).
 Public at https://github.com/FileSherlock/k15. https://15kb.org/ is deployed from here.
 
 This file is rules and the present state. It is kept short: nothing goes in here that
@@ -50,8 +51,9 @@ is history, a measurement series or a description of how a routine works. Those 
   or two lines, or fix the docs it contradicts. Delete what is no longer true.
 
 ## Where it stands
-- The system is 13,891 bytes with an address of its own (`IP=`, `-i`), and 14,341
-  without, which is the default since 2026-11-21: it asks for its address by DHCP. It
+- The system is 13,955 bytes with an address of its own (`IP=`, `-i`), and 14,405
+  without, which is the default since 2026-11-21: it asks for its address by DHCP
+  (450 bytes; the timer that goes by the round trip is 64 in both). It
   boots from GRUB or a BIOS boot sector, uses all the
   RAM and up to 4 processors, modern virtio-net, and serves GET and HEAD by path with
   compressed forms, ETag and 304, keep-alive, and a redirect on port 80.
@@ -73,11 +75,12 @@ is history, a measurement series or a description of how a routine works. Those 
   else; each is named in `tools/tlsfuzz.sh`.
 
 ## Next
-The user's list for this branch (2026-11-21), in this order (its first, DHCP, is done):
-2. One-step publishing: a push to a repository packs and deploys (CI), and renewal that
-   does not depend on a cron job on the user's machine.
-3. Provider-neutral deploy: the raw disk written from a rescue system (as
-   `tools/bounty_ceremony.sh` does) as the main path, with two or three hosts documented.
+The user's list for this branch (2026-11-21), in this order. Done, as far as it goes
+without a real machine: DHCP; one-step publishing (`./k15 publish`, `ci/publish.yml`);
+the raw disk from a rescue system as the main way onto a machine, with what three
+hosts' documentation says. Still to be seen on a host: all three (the user has to give
+a token for a project that is not the bounty's, or run them: docs/server.md says what
+was tried where). To do:
 4. IPv6, and a retransmission timer that knows the round trip.
 5. Reproducible builds: the system part rebuilt byte for byte from source by anyone.
 6. Handshake speed, last: OpenSSL's assembly does the ladder and the signature in about
@@ -124,7 +127,9 @@ Don't change the source or a test script while a suite runs.
   `unshare -Urn tools/tlsfuzz.sh` (three minutes).
 - After touching `dhask`, `dhsend`, `dhcp` or what `tcp` lets through to them:
   `unshare -Urn tools/dhcptest.sh` (a minute), a few times, and once with `real`.
-- After anything else: `tools/suite.sh` (65 runs, a quarter of an hour). Also with `SMP=1` and
+- After touching `k15`: `tools/k15test.sh` and `unshare -Urn tools/hosttest.sh` (a
+  minute: a machine that is made up; what a host does is not seen there).
+- After anything else: `tools/suite.sh` (67 runs, a quarter of an hour). Also with `SMP=1` and
   `SMP=4` after touching what processors share or how the machine starts. On 4,
   `raw1m_20k` fails when the host is busy: run it alone before believing it.
 - After touching boot or the polling loops: `measure.sh` with `DEBUG=1`, `KNOCK=` and
@@ -145,7 +150,8 @@ Don't change the source or a test script while a suite runs.
 ## Before touching the live site
 - Until 2027-02-18 nothing is deployed to 15kb.org and `k3` is not reset, put into the
   rescue system or rebuilt: any of that needs the user's word, and the rescue system is
-  a way to the bounty's key. `./k15 deploy` and `./k15 renew` cannot reach it (no Linux).
+  a way to the bounty's key. `./k15 publish`, `deploy` and `renew` never go near it
+  (2.28.113.14, `k3`): with `--rescue` they would wipe it.
 - The renewal timer (`15kb-renew.timer`) is disabled and stays so: it would make a new
   key. A change before the deadline is the user's to make: `tools/bounty_ceremony.sh
   --redeploy` from the branch `bounty`, with the 24 words.

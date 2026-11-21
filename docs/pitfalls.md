@@ -122,6 +122,20 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - Look at the headers of every kind of answer after a deploy (200, 404, 301, 405).
 - Which certificates a chain can do without is a question about other people's trust
   stores, not this machine's.
+- A rescue system has host keys nobody has seen: ssh there proves nothing. What does:
+  the machine's disk has the key of the certificate the site just showed (`k15`:
+  `itself`). Before that, nothing secret goes to it.
+- Which key a file is about is not who has the key: `openssl pkey -pubout` says what a
+  key file says of itself (its public half is written in it, and nobody checks it
+  against the secret one), and a certificate says the same. Ask for a signature
+  (`proves`). The review that had not heard why the check was right found this in
+  half an hour; the test beside the code had 21 checks and not this one.
+- What takes a machine down must be the last thing that can still be refused: whatever
+  can be known before (does the site show a certificate? can the request be made?) is
+  asked before, and what can only be known after starts the machine again when the
+  answer is no.
+- `dd of=FILE` cuts a file to what it writes, and leaves a disk as long as it is: say
+  `conv=notrunc`, so that a test with a file for a disk sees what a disk would.
 
 ## Tried and rejected
 - Compressed EC point in the leaf (Firefox refuses); subjectAltName not critical with

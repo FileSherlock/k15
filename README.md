@@ -10,22 +10,29 @@ it is one: its own boot sector, long mode, a virtio-net driver, ARP, TCP, TLS 1.
 much of HTTP as a static site needs, in one assembly file.
 
 ```bash
-./k15 pack site/ -n example.org -i 203.0.113.7    # -> build-example.org/os.bin and disk.img
+./k15 pack site/ -n example.org                   # -> build-example.org/os.bin and disk.img
 ./k15 run build-example.org                       # try it in QEMU: https://127.0.0.1:8443/
-./k15 deploy 203.0.113.7 build-example.org        # onto a server that runs Linux with GRUB
 ```
 
-For a site that is meant to stay (`--reset`: how the server gets back into its Linux):
+Onto a machine, which is then k15's alone, in one step (`--rescue`: how your host puts
+it into its rescue system; here Hetzner's way. The first time add `--first`):
 
 ```bash
-./k15 pack site/ -n example.org --san www.example.org --hsts 31536000 -i 203.0.113.7
-./k15 renew 203.0.113.7 build-example.org --force --reset 'hcloud server reset NAME'   # Let's Encrypt
-./k15 deploy 203.0.113.7 build-example.org --persist --reset 'hcloud server reset NAME'
+./k15 publish site/ 203.0.113.7 -n example.org --san www.example.org --hsts 31536000 \
+  --rescue 'hcloud server enable-rescue --ssh-key KEY NAME && hcloud server reset NAME'
 ```
+
+That gets a certificate from Let's Encrypt when the machine has none or its own is
+about to end, packs the site, writes the image over the machine's disk and starts it.
+The image is not tied to the machine (it asks for its address, by DHCP), and nothing is
+kept on yours: the key is made here and lives on the machine's disk. `ci/publish.yml`
+is a GitHub workflow that does this on every push and looks at the certificate once a
+day. [docs/server.md](docs/server.md) has the hosts, and what was tried where.
 
 What you get, and what you don't:
 
-- **Small.** The system is 13,891 bytes. The image is that plus your files, each stored
+- **Small.** The system is 14,405 bytes (13,955 if it is given its address instead of
+  asking for it). The image is that plus your files, each stored
   as the response it is sent as (and, where that makes it shorter, once more compressed
   with gzip and with brotli, for clients that take that).
 - **Nothing to break into.** No kernel, no shell, no file system, no user accounts, no
@@ -61,11 +68,12 @@ What you get, and what you don't:
   window may grow past 64 KB, but only slowly: without SACK, what is lost in a large
   window comes back a segment a round trip.
 - **Clunky on purpose.** Content and certificate are part of the image: a change is a new
-  image and a reboot of a few seconds. Nothing renews by itself: `./k15 renew` is there to
-  be run from cron, does nothing until the certificate has a month left, and then makes
-  the new key on your machine: only a request for a certificate travels to the server.
-  One site per server, one address
-  baked in (IPv4: there is no IPv6), GET and HEAD and nothing else, requests of up to
+  image, written from the host's rescue system: a minute or two without a server.
+  Nothing renews by itself: `./k15 publish --if-due` is there to be run daily, does
+  nothing until the certificate has a month left, and then makes the new key where it
+  runs: only a request for a certificate travels to the server.
+  One site per server, one address (IPv4, from DHCP: there is no IPv6), GET and HEAD
+  and nothing else, requests of up to
   4 KB, nothing compressed
   that was not packed that way, no ranges, TLS 1.3 clients only. Of a request's
   headers two are read: Accept-Encoding and If-None-Match (a client that has a file is
@@ -88,7 +96,7 @@ tools/outside.sh fetch   # what the next three need, into ext/ (Wycheproof, Valg
 make outside         # the crypto against Wycheproof's vectors and RFC 6979's
 make ct              # the crypto under Valgrind: no jump and no address is made of a secret
 unshare -Urn tools/tlsfuzz.sh   # tlsfuzzer against the image
-tools/suite.sh       # all 65 regression runs: loss, reordering, scale, browsers, a site of 80 files
+tools/suite.sh       # all 67 regression runs: loss, reordering, scale, browsers, a site of 80 files
 tools/sitetest.sh    # that site alone: every path, every kind of client
 unshare -Urn ./tap.sh ./taprunc.sh 2000 1024 4   # 8,000 connections from 4 source IPs
 gcc -O2 -o build/rawc tools/rawc.c

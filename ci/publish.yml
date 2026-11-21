@@ -1,0 +1,85 @@
+# A push publishes the site, and once a day the certificate is looked at: this is
+# .github/workflows/publish.yml of the repository that holds the site (copy it there).
+# It runs `k15 publish` (k15's README says what that does): the machine, which is k15's
+# alone, goes into its rescue system, says who it is from its own disk, gets the site
+# packed with its key and certificate (a new pair from Let's Encrypt when the old one
+# has 45 days left), and is started from that. Nothing is kept here, and the site's key
+# is never in this repository or its secrets: it is made on the runner and lives on the
+# machine's disk.
+#
+# What this needs to be told (Settings > Secrets and variables > Actions), for a machine
+# at Hetzner (for another host: its tool in "what it takes", its way in --rescue, and
+# docs/server.md of k15 for what is known of it):
+#   variables  NAME          the site's name: example.org
+#              SANS          its other names, with blanks between them (www.example.org), or none
+#              HOST          the machine's address
+#              SERVER        what the host calls the machine
+#              SSH_KEY_NAME  what the host calls the ssh key below
+#              SITE          the folder with the site (default: site)
+#   secrets    HCLOUD_TOKEN  the host's token for the project the machine is in (read and
+#                            write: it can do there whatever you can, so give the machine
+#                            a project of its own)
+#              SSH_KEY       a private ssh key made for this, whose public half the host
+#                            has (ssh-keygen -t ed25519 -N '' -f key; hcloud ssh-key create
+#                            --name NAME --public-key-from-file key.pub)
+# The first time, the machine has nothing that says it is yours: run the workflow by hand
+# (Actions > publish > Run workflow) with "first" ticked. Whoever can push to the branch,
+# and whoever has the two secrets, can publish: nobody else.
+name: publish
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '41 4 * * *'
+  workflow_dispatch:
+    inputs:
+      first:
+        description: the machine's first image (nothing vouches for it yet)
+        type: boolean
+concurrency: publish
+permissions:
+  contents: read
+  actions: write
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: FileSherlock/k15
+          ref: dev                  # (or the commit you have read)
+          path: .k15
+      - name: What it takes
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nasm python3-cryptography brotli hcloud-cli
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" | install -m 600 /dev/stdin ~/.ssh/id_ed25519
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+      - name: Publish
+        run: |
+          sans=()
+          for n in $SANS; do sans+=(--san "$n"); done
+          .k15/k15 publish "${SITE:-site}" "$HOST" -n "$NAME" "${sans[@]}" --hsts 31536000 --days 45 $IF_DUE $FIRST \
+            --rescue "hcloud server enable-rescue --ssh-key '$SSH_KEY_NAME' '$SERVER' && hcloud server reset '$SERVER'"
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          NAME: ${{ vars.NAME }}
+          SANS: ${{ vars.SANS }}
+          HOST: ${{ vars.HOST }}
+          SERVER: ${{ vars.SERVER }}
+          SSH_KEY_NAME: ${{ vars.SSH_KEY_NAME }}
+          SITE: ${{ vars.SITE }}
+          IF_DUE: ${{ github.event_name == 'schedule' && '--if-due' || '' }}
+          FIRST: ${{ inputs.first && '--first' || '' }}
+      # GitHub switches a scheduled workflow off when nothing has happened in a public
+      # repository for 60 days (it writes to you first): a site that does not change
+      # would lose its renewal. This asks for the workflow to stay on.
+      - name: Stay on
+        if: github.event_name == 'schedule'
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/publish.yml/enable"
+        env:
+          GH_TOKEN: ${{ github.token }}

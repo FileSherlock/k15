@@ -28,11 +28,117 @@ SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse. A cx23 boot
 written over the whole of /dev/sda from the rescue system, and again after a reset
 (2026-11-14, on a second server; that is how `tools/bounty_ceremony.sh` deploys).
 
-## Running it on the server
+## Onto a machine that is k15's alone
+The image needs nothing on a machine's disk but itself: `disk.img`, written over the
+whole disk. What writes it is the host's rescue system: a Linux that the host starts
+from memory and that ssh reaches. Every host has one, or something that does for one;
+how it is started and how it is left is all that differs between them, and is what
+`./k15 publish`, `./k15 deploy` and `./k15 renew` are told:
+- `--rescue 'COMMAND'`: what puts the machine into its rescue system with a key of
+  yours in it. It is run only if the machine is not there already: where it takes a
+  console to get there, get it there by hand and leave `--rescue` out.
+- `--boot 'COMMAND'`: what starts the machine from its disk again, where saying
+  `reboot` in the rescue system does not (a host on which a machine stays in its rescue
+  system until told otherwise).
+- `--disk DEVICE`: the machine's disk, where the rescue system sees more than one (its
+  own, say).
+What happens, in this order (`k15`: `live`, `rescue`, `itself`, `write`, `up`):
+1. `publish`: before the machine leaves, the certificate the site shows is fetched and
+   checked as a browser would check it (but for its dates). If it shows none (three
+   tries), the machine is not touched: nothing would vouch for it afterwards.
+2. The machine goes into its rescue system. What answers ssh there has host keys
+   nobody has seen before (a rescue system makes new ones every time), so it has to say
+   that it is the machine another way: **the last 64 KiB of its disk hold its key and
+   certificate** (where the deploy before this one put them: `idput`), and with that
+   key it must be able to sign for a certificate we know to be the machine's: the one
+   from step 1 (`publish`), or the one in the folder the image was packed from
+   (`deploy`, `renew`: the machine is then sent nothing it has not got). It is a
+   signature that is asked for (`proves`), not which key the file says it is about: a
+   certificate where the key should be, or a key file with the site's public half
+   pasted in, say the right thing to that question, and the first version of this took
+   them (found by the review of 2026-11-21; `tools/hosttest.sh` has both). A machine
+   that cannot show it is sent nothing and started as it was. `--first` is for one that
+   has nothing to show yet (its first image; an image from before this; a site that is
+   down; a machine already in its rescue system when `publish` begins): then the route
+   to it is all that vouches for it, as it is for any first ssh to a new server.
+3. `publish` takes key and certificate from there (it keeps nothing here), and gets a
+   new pair if the certificate ends within `--days` (30) or lacks a name: a new key
+   made here, and certbot on the rescue system answering Let's Encrypt on port 80 for
+   the request (installed there with apt if it is not there). What comes back has to
+   be a certificate for that key that this machine believes, or it is as if none had
+   come. `deploy` and `renew` have theirs in the folders `k15 pack` made.
+4. The disk is discarded (or its first 128 MiB zeroed), the image written, what the
+   machine is put at its end, the image read back and compared; then the machine is
+   started from the disk, and the command waits for a verified fetch.
+If no certificate comes, or the site cannot be packed, nothing has been written, and
+the machine is started as it was (`renew` then also puts the old key and certificate
+back in their folder). If writing fails half way, the machine stays in its rescue
+system and the command says so: its disk no longer says who it is, and the next try
+needs `--first`. A minute or two without a server each time: what the rescue system
+takes to come up, mostly.
+
+`tools/hosttest.sh` runs all of that against a machine that is made up (its disk a
+file, its rescue system a shell with six commands replaced, "start from the disk" a
+QEMU). **On a real host `k15 publish` has not run yet** (2026-11-21: no token for one
+here). The same commands on the far side (`blkdiscard`, `dd`, `reboot`, certbot with a
+request) are what `tools/bounty_ceremony.sh` ran in Hetzner's rescue system on
+2026-11-14 and 20.
+
+### Hosts
+What the image needs of one: a BIOS that starts the first sector of the disk (not
+UEFI alone), a virtio network card, an IPv4 address by DHCP (or `-i`), and a processor
+as the README says.
+- **Hetzner Cloud** (tried with an image that had its address; the bounty runs so):
+  `--rescue 'hcloud server enable-rescue --ssh-key KEY NAME && hcloud server reset
+  NAME'`. The rescue system is for one start: `reboot` in it starts the disk, so no
+  `--boot`. One disk, /dev/sda. Their documentation: "By default, cloud servers obtain
+  their Primary IPv4 address via DHCP"; IPv6 is "statically configured", gateway
+  fe80::1.
+- **Linode (Akamai)**, from their documentation, not tried: `linode-cli linodes rescue
+  ID --devices.sda.disk_id DISK` starts the rescue system (Finnix), but "you need to use
+  Lish at least once in order to start SSH": by hand, then without `--rescue`, and with
+  `--boot 'linode-cli linodes reboot ID'`. The machine's configuration has to start the
+  disk's first sector (kernel "Direct Disk"). VirtIO net; DHCP gives one IPv4 address;
+  IPv6 by SLAAC.
+- **OVHcloud Public Cloud**, from their documentation, not tried: `--rescue 'ovhcloud
+  cloud instance reboot-rescue ID --wait'` (or `nova rescue ID`); one logs in with a
+  password (shown in the console, or returned by the API), so a key has to be put there
+  by hand first; `--disk /dev/sdb` ("sda is the rescue mode disk"); `--boot 'nova
+  unrescue ID'`. Whether it starts a BIOS boot sector, and gives the address by DHCP,
+  their documentation does not say.
+- Not this way: Scaleway ("Legacy BIOS is not compatible with Scaleway Instances");
+  Vultr and DigitalOcean (their rescue is an ISO and a console in the browser; both take
+  an image by URL instead: `vultr-cli snapshot create-url`, `doctl compute image
+  create`, the latter only with a partition table and cloud-init in it); UpCloud (no
+  rescue system: a second server writes the disk).
+
+### A push publishes
+`ci/publish.yml` is a GitHub workflow for the repository that holds a site (its head
+says what to tell it: five variables, two secrets). A push to `main` runs `./k15
+publish`; once a day it runs with `--if-due --days 45`, which looks at the certificate
+the site shows and does nothing else until that has 45 days left; by hand it can be
+run with "first" for a machine's first image. So renewal needs no machine of the
+user's, and the site's key is in no repository and no secret: it is made on the
+runner, lives on the machine's disk, and is fetched from there by the next run.
+- Who can publish: whoever can push to that branch, and whoever has the two secrets
+  (the host's token and the ssh key for its rescue system). The token can do whatever
+  its owner can in its project: a project for that machine alone.
+- GitHub switches a scheduled workflow off in a public repository after 60 days in
+  which nothing happened there (and writes to its owner first). The workflow's last
+  step asks for it to stay on, the way others' tools for this do (enabling the
+  workflow through the API); that this resets those 60 days is what they say, not
+  something tried here. 45 days, not 30, so that a run that did something comes
+  before the 60 are over.
+- Not run on GitHub yet: what it does is `k15 publish`, which `tools/hosttest.sh`
+  runs; the file itself has only been read by a YAML parser.
+
+## Running it beside a Linux (`--grub`)
+The way before 2026-11-21, still there for a server that keeps its Linux (for
+measuring: a reset brings Linux back in 25 s, and ssh with it).
 `ssh root@2.28.113.14` works from the user's machine while the server runs Linux.
 - `./k15 pack FOLDER -n 2.28.113.14 -i 2.28.113.14 -c cert-hz -o build-hz` (for the
   comparison's page: `./k15 pack www ... -o build-hzb --plain80`), then
-  `./k15 deploy 2.28.113.14 build-hz --reset 'hcloud server reset k3'`: if Linux does not
+  `./k15 deploy 2.28.113.14 build-hz --grub --reset 'hcloud server reset k3'`: if Linux does not
   answer ssh (k15 is running), the server is reset; then the image is copied to
   /boot/k15.bin and the server reboots into it ONCE through a GRUB entry ("k15" in
   /etc/grub.d/40_custom, loaded with `multiboot`), and the command waits for a verified
@@ -47,6 +153,8 @@ written over the whole of /dev/sda from the rescue system, and again after a res
   cert-15kb.org -o build-15kb.org --hsts 31536000`, which is what its pack.conf says):
   a deploy of anything else takes the site down, so put it back afterwards (`./k15
   deploy 2.28.113.14 build-15kb.org --persist --reset 'hcloud server reset k3'`).
+  (That was until 2026-11-20: since then its disk holds the bounty's image and no
+  Linux, see CLAUDE.md.)
   `build-15kb.org` must stay where it is: the renewal timer packs from its pack.conf,
   and fails without it (`~/.local/bin/15kb-renew --dry-run` says whether it would run).
   On its Linux: /boot/k15.bin, the GRUB entry, the unit, certbot and its account
@@ -119,7 +227,7 @@ written over the whole of /dev/sda from the rescue system, and again after a res
 - `cert/server.key` (ECDSA P-256) and `cert/server.pem` (leaf, then intermediates) are the
   identity that gets baked in. Nothing renews by itself: `./k15 renew` is the command to
   run from cron (Commands; a minute or two without a server when it is time, nothing
-  before). To use a certificate from elsewhere, put those two files there (and no
+  before), and `./k15 publish --if-due` the one for a workflow ("A push publishes"). To use a certificate from elsewhere, put those two files there (and no
   `ca.pem`); `tools/mkchain.py DIR` makes a realistic test chain.
 - If they are missing, gen.py makes a 210-byte leaf for `NAME` (default 127.0.0.1; an IP
   address or a DNS name; and for the names of `SAN`, 2 bytes and its length each) and
