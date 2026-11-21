@@ -19,6 +19,8 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - `crontab` can't be written from Claude's shell. Use a systemd user timer.
 - Hetzner's web console garbles `|` and `[`: use ssh. A recycled cloud address has an
   old host key: give ssh its own known-hosts file for a load generator.
+- WSL exports the machine's name as NAME to every shell: make does not take a NAME from
+  the environment that is the host's name (not tried on WSL).
 
 ## nasm
 - A non-local label ends the scope of `.local` labels. Read the first error.
@@ -81,7 +83,7 @@ One or two lines each. Add to it when something costs an hour; delete what stops
   device's 256.
 - A length is compared before anything is taken off it: `sub ecx, 20` / `cmp ecx, 20`
   let an IP total length of less than 20 pass for 4 GiB, and the next write was the
-  machine's end. One frame, from the first image to 2026-11-14 (`tools/rawtest.py`).
+  machine's end. One frame (`tools/rawtest.py`).
 - What a router would have dropped is still a frame to whoever is on the same link.
 - What was counted is no bound for a walk that comes after, once another processor can
   change it in between (`find`: the free slots of a bucket). Every walk has its own end.
@@ -100,6 +102,12 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - A door that is "open for milliseconds a day" is open for as long as nobody shuts
   it: asking for a renewal that no server answers went on for ever, with one number.
   What is random in a question is made anew for every question.
+- A mask after `HOT` can be stale without the build saying so, as long as the routine
+  happens to sit well: `xdh`'s was, until 20 bytes of code in front of it moved it.
+- A length that is echoed is bounded where it is read: a session id of more than 32
+  bytes went back with lengths that wrapped at 256. And a frame shorter than what is
+  read of it leaves the frame before it to be read: a short ARP request was answered
+  from that.
 - "It takes an hour and a nanosecond" is no reason to leave a race: a host takes a
   processor away for milliseconds, in the middle of anything. Close it, and make the
   test hold one side still (`RACE=n`, `tools/racetest.py`).
@@ -149,6 +157,9 @@ One or two lines each. Add to it when something costs an hour; delete what stops
   can be known before (does the site show a certificate? can the request be made?) is
   asked before, and what can only be known after starts the machine again when the
   answer is no.
+- The bounty's page is 19 bytes from losing its compressed forms: gzip has to bring `/`
+  into one record (1,418 bytes with its head), and a real address packs worse than the
+  placeholder's zeros. After a change to `site/index.html`, look at `site.json`'s forms.
 - `dd of=FILE` cuts a file to what it writes, and leaves a disk as long as it is: say
   `conv=notrunc`, so that a test with a file for a disk sees what a disk would.
 
@@ -176,13 +187,3 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - Three bits for the client's window shift: Linux says 10. Four bits.
 - Getting past 130,000 frames a second on the server: a second generator, one
   processor, no interrupts: the same ceiling each time.
-- The bounty's page is 19 bytes from losing its compressed forms: gzip has to bring `/`
-  into one record (1,418 bytes with its head), and a real address packs worse than the
-  placeholder's zeros. After a change to `site/index.html`, look at `site.json`'s forms.
-- A mask after `HOT` can be stale without the build saying so, as long as the routine
-  happens to sit well: `xdh`'s was, until 20 bytes of code in front of it moved it.
-- A session id of more than 32 bytes was echoed with lengths that wrapped at 256 (only
-  that client's ServerHello was wrong); a short ARP frame was answered from what the
-  frame before it left in `FR`. Both found by the audit in issue 1 (2026-11-21).
-- WSL exports the machine's name as NAME to every shell: make does not take a NAME from
-  the environment that is the host's name (not tried on WSL).

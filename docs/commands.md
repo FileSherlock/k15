@@ -2,71 +2,68 @@
 
 Every command, script and make variable. Rules for when to run which: CLAUDE.md, "Workflow".
 
-- `./k15` is the tool for somebody who has a site and a server:
-  `./k15 pack FOLDER [-n NAME] [--san NAME]... [-i IP] [-c CERTDIR] [-o OUT] [--plain80]
-  [--hsts SECONDS] [--cache SECONDS] [--header 'Name: value'] [--no-compress]` makes
-  OUT/os.bin and OUT/disk.img (the image asks for its address where it boots, by DHCP,
-  so it is not tied to a machine; with `-i IP` it has that address, asks nobody, and is
-  514 bytes smaller; with `-6 IP6` it has that IPv6 address as well, which is 752
-  bytes; port 80 redirects to https://NAME/ unless `--plain80`;
-  `--no-compress`: no file is packed a second and third time, compressed; `--san` is a
-  further name for the certificate, `www.NAME` say: the server does not look at the
-  name it is asked for, so every name that points at it and is in its certificate gets
-  the site; pack says which of the names the certificate in CERTDIR is not for, and
-  renew asks for all of them); `./k15 run [OUT]` boots it in QEMU
-  (https://127.0.0.1:8443/, http://127.0.0.1:9443/); `./k15 deploy HOST [OUT] [--rescue
-  'COMMAND'] [--boot 'COMMAND'] [--disk DEVICE] [--first]` writes OUT/disk.img over the
-  disk of a machine that is in its rescue system, and starts it from that (docs/server.md,
-  "Onto a machine that is k15's alone": what the three commands are, and why the machine
-  has to show the key of the certificate it was serving before anything is sent to it);
-  (`deploy` holds the machine to the key that goes with OUT, `publish` to the one of the
-  certificate the site shows);
-  `./k15 deploy HOST [OUT] --grub [--persist] [--reset 'COMMAND']` puts OUT/os.bin on a
-  server that runs Linux with GRUB and starts it (the way before 2026-11-21; "Running it
-  beside a Linux"); `./k15 publish SITE HOST -n NAME [pack's options] [--rescue 'COMMAND']
-  [--boot 'COMMAND'] [--disk DEVICE] [--first] [--if-due] [--days N] [--email ADDRESS]
-  [--staging]` is all of it in one step with nothing kept here: the machine into its
-  rescue system, its key and certificate from the end of its own disk (a new pair from
-  Let's Encrypt if there is none, or it ends within N days, or lacks a name), SITE
-  packed, written, started; with `--if-due` nothing at all while the site is up with a
-  certificate that is good for more than N days, so a workflow may run it daily
-  (`ci/publish.yml`); `./k15 renew HOST [OUT] [--rescue 'COMMAND' ... | --grub --reset
-  'COMMAND'] [--days N] [--force] [--dry-run]` gets a new certificate from Let's Encrypt
-  when the one OUT was packed with ends within N days (30), and does nothing at all
-  before that, so cron may run it daily. When it is time: a new key and a request (CSR)
-  are made here, the machine goes into its rescue system (or, with `--grub`, is reset
-  into its Linux), certbot answers the challenge on port 80 there for that request,
-  the certificate comes back, OUT is packed again as it was packed (OUT/pack.conf: the
-  folder, name, address, certificate folder, headers, what port 80 does) and started. If
-  no certificate comes, the image as it was is started again. The key is never on the
-  server but inside the image (and, on a machine that is k15's alone, in the last 64 KiB
-  of its disk). `--force` for the first one (the private CA's lasts until
-  2049), `--staging` for Let's Encrypt's test server (its certificate is trusted by
-  nobody, so the fetch at the end fails: "did not answer" is then the expected last
-  line). Everything `./k15` makes is
-  for its owner's eyes only (umask 077), and /boot/k15.bin on the server for root's.
+- `./k15` is the tool for somebody who has a site and a server (its head says all of
+  this at more length; what happens on the machine: docs/server.md):
+  - `./k15 pack FOLDER [-n NAME] [--san NAME]... [-i IP] [-6 IP6] [-c CERTDIR] [-o OUT]
+    [--plain80] [--hsts SECONDS] [--cache SECONDS] [--header 'Name: value']
+    [--no-compress]` makes OUT/os.bin and OUT/disk.img. The image asks for its address
+    where it boots (DHCP), so it is not tied to a machine; with `-i IP` it has that
+    address, asks nobody, and is 514 bytes smaller; with `-6 IP6` it has that IPv6
+    address as well (752 bytes). Port 80 redirects to https://NAME/ unless `--plain80`.
+    `--san` is a further name for the certificate: the server does not look at the name
+    it is asked for, so every name that points at it and is in its certificate gets the
+    site (pack says which names the certificate in CERTDIR is not for). `--no-compress`:
+    no file is packed a second and third time, compressed. How it was packed is kept in
+    OUT/pack.conf.
+  - `./k15 run [OUT] [-p PORT]` boots it in QEMU (https://127.0.0.1:8443/,
+    http://127.0.0.1:9443/).
+  - `./k15 publish SITE HOST -n NAME [pack's options] [--rescue 'COMMAND'] [--boot
+    'COMMAND'] [--disk DEVICE] [--first] [--if-due] [--days N] [--email ADDRESS]
+    [--staging]`: all of it in one step, with nothing kept here. The machine goes into
+    its rescue system, shows the key of the certificate the site was serving, hands
+    over key and certificate from the end of its disk (a new pair from Let's Encrypt if
+    there is none, or it ends within N days (30), or lacks a name), SITE is packed,
+    written over the disk and started. `--if-due`: nothing at all while the site is up
+    with a certificate good for more than N days, so a workflow may run it daily
+    (`ci/publish.yml`). `--first`: a machine that has nothing to show yet.
+  - `./k15 deploy HOST [OUT] [--rescue 'COMMAND'] [--boot 'COMMAND'] [--disk DEVICE]
+    [--first]`: the same last steps for an image packed here. The machine is held to
+    the key that goes with OUT.
+  - `./k15 deploy HOST [OUT] --grub [--persist] [--reset 'COMMAND']`: OUT/os.bin beside
+    the Linux of a server that keeps one, started by GRUB (docs/server.md, "Beside a
+    Linux").
+  - `./k15 renew HOST [OUT] [--rescue 'COMMAND' ... | --grub --reset 'COMMAND'] [--days
+    N] [--force] [--dry-run] [--email ADDRESS] [--staging]`: a new certificate from
+    Let's Encrypt when the one OUT was packed with ends within N days (30), and nothing
+    at all before that, so cron may run it daily. When it is time: a new key and a
+    request are made here, certbot answers the challenge on port 80 of the rescue
+    system (or of the server's Linux), OUT is packed again as OUT/pack.conf says, and
+    started. If no certificate comes, the image as it was is started again. `--force`
+    for the first one (the private CA's lasts until 2049); `--staging` for Let's
+    Encrypt's test server (nobody trusts its certificate, so "did not answer" is then
+    the expected last line).
+  The key is never on a server but inside the image, and in the last 64 KiB of the disk
+  of a machine that is k15's alone. Everything `./k15` makes is for its owner's eyes
+  only (umask 077), and /boot/k15.bin on a server with Linux for root's.
 - `make` assembles `src/os.asm` into `build/os.bin` (loaded at 1 MiB) and `build/disk.img`
   (`src/boot.asm` + the image; what the tests boot), with the site of `www/` in it.
-  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 13,955,
-  about: boot, clock calibration, page tables, driver and the other processors 2,700,
-  network 4,360 with the timers, requests and the forms of a file 700, TLS handshake
-  and key schedule 1,600, SHA-256 450, curves 3,000 with their programs and constants,
-  the cipher 1,000, certificate 230; among them 49 of padding in front of the
-  routines a handshake spends its time in: see HOT in "How the curve code works". That
-  is an image with an address of its own; one without, the default, has 514 bytes
-  more, the DHCP client: 14,469; and one with an IPv6 address 752 more than that:
-  15,221. Of the
-  874 that the night of 2026-11-12 added: frames for the card to cut 450, window scaling
-  and what goes with it 130, the forms of a file 290; `seal` got faster in the same
-  bytes.) `make B=dir CERT=dir NAME=n IP=a.b.c.d SITE=folder P80=redirect HSTS=seconds
-  COMPRESS=0 KNOCK=a,b` builds another image: its identity, the name in a generated
-  certificate (`SAN='a b'`: its further names), the address it answers on (without
-  `IP`: the one it is given where it boots; `IP6=`: an IPv6 address beside it), what it
-  serves, what port 80 does, whether files are packed compressed too, and
-  (development only) the two ports that reset it. The scripts take `B` from the
-  environment. Only the address,
-  the names, the site and its settings are tracked: after changing another setting,
-  `make -B`.
+  `make B=dir CERT=dir NAME=n IP=a.b.c.d IP6=addr SITE=folder P80=redirect HSTS=seconds
+  CACHE=seconds HEADERS='Name: value' COMPRESS=0 KNOCK=a,b` builds another image: its
+  identity, the name in a generated certificate (`SAN='a b'`: its further names), the
+  address it answers on (without `IP`: the one it is given where it boots; `IP6`: an
+  IPv6 address beside it), what it serves, what port 80 does, the headers every file
+  gets, whether files are packed compressed too, and (development only) the two ports
+  that reset it. The scripts take `B` from the environment. Only
+  the address, the names, the site and its settings are tracked: after changing
+  another setting, `make -B`.
+- `python3 tools/sizes.py build/os.lst` = bytes per routine. Of the system's 13,955
+  with an address of its own, about: boot, clock calibration, page tables, driver and
+  the other processors 2,700; network 4,360 with the timers; requests and the forms of
+  a file 700; TLS handshake and key schedule 1,600; SHA-256 450; curves 3,000 with
+  their programs and constants; the cipher 1,000; certificate 230; among them 49 of
+  padding in front of the routines a handshake spends its time in (HOT in "How the
+  curve code works"). The DHCP client is 514 more (14,469, the default), IPv6 752 more
+  than that (15,221).
 - **Is an image what this source makes?** Every build writes `OUT/made`: the commit, the
   assembler, what the assembler was told (the defines, the nine numbers of site.inc,
   the certificate chain's hash), how the site was packed and with what, and three
@@ -77,13 +74,13 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   cannot sign. `tools/repro.sh system MADE CHAIN.pem` makes the system part of
   somebody else's image again from this checkout, their `made` and the certificates
   their server shows (`openssl s_client -showcerts`), and says whether it is the same
-  bytes: the site is not needed for that (of the site the system knows nine numbers),
-  nor what compressed it; the assembler has to be the one `made` names (NASM 3.01
-  here: whether another version makes the same bytes has not been tried).
-  `tools/repro.sh` alone (seconds; the suite's `repro`) is the check that this holds:
-  an image made twice (another folder, umask, time zone, language, order of files) is
-  the same bytes; made without the key it differs in those 32 bytes and nowhere else;
-  and its system part made from `made` and the certificate alone is the same again.
+  bytes: the site is not needed for that, nor what compressed it; the assembler has to
+  be the one `made` names (NASM 3.01 here: whether another version makes the same
+  bytes has not been tried). `tools/repro.sh` alone (seconds; the suite's `repro`)
+  checks that this holds: an image made twice (another folder, umask, time zone,
+  language, order of files) is the same bytes; made without the key it differs in
+  those 32 bytes and nowhere else; and its system part made from `made` and the
+  certificate alone is the same again.
 - `tools/pack.py FOLDER OUT` (what `make` runs): every file becomes its response (status
   line, headers, body), found through a hash table of paths. A folder's `index.html` is
   served at the folder's name with a slash, the name without it redirects there,
@@ -102,8 +99,8 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   none (a browser may not believe it there). OUT/site.json says what each path must
   return (for the tests), OUT/page80.bin what port 80 says.
 - `tools/suite.sh [JOBS] [name...]`: everything below, a few at a time, one line each
-  (84 runs, twenty minutes). `SMP=1` or `SMP=4` in front for other machines than the
-  default of 2 processors. Its verdict is strict: one failed connection is a FAIL. Under
+  (84 runs, twenty minutes; the logs in `$LOGS`, which its last line names). `SMP=1` or
+  `SMP=4` in front for other machines than the default of 2 processors. Its verdict is strict: one failed connection is a FAIL. Under
   a loaded host a run that overflows rings on purpose (`raw1m_20k`) can time out a few
   hundred of a million (on 4 processors it does every time the suite runs five at once):
   run it alone before believing it. Don't edit a script the suite is running (`docs/pitfalls.md`).
@@ -123,7 +120,8 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   `NOTSO=1` in front builds an image that never asks it to (the suite's
   `site_notso_loss3`). `SUITES=...` in front makes the checker's clients offer those
   suites alone (by themselves they offer OpenSSL's three, and get AES-128-GCM).
-  `ONLY=text` runs the checks with that in their name. `HOST=a.b.c.d PORT=443
+  `ONLY=text` runs the checks with that in their name; `BIG=n`: the large file has n
+  MiB; `NOBUILD=1`: the image is there already. `HOST=a.b.c.d PORT=443
   B=build-hz python3 tools/sitecheck.py quick` is the same against the server.
   `GONE=1` in front (over tap; the suite's `site_gone`, three minutes) adds a client that
   vanishes in the middle of a file: what it sends is dropped on its way out (`ip rule
@@ -179,12 +177,15 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   clients offer a key share we don't take (a HelloRetryRequest each). The guest is
   10.0.2.15: by its image, or because `tools/dhcpd.py`, which tap.sh starts, gives it
   that (`DHCPD='COMMAND'`: another DHCP server; `DHCPD=none`: none, and COMMAND is not
-  kept waiting for the guest). W can be up to 32
+  kept waiting for the guest, unless `STATIC=1` says the image has its address). W can
+  be up to 32
   (10.0.2.32-63: the second 16 share their low nibble with the first).
 - Also in front of tap.sh: `DELAY=20` (what goes to the guest takes 20 ms: a round trip
   of that length; `curl -w %{time_total}` then shows what the window does) and
   `MON=path` (QEMU's monitor on a unix socket, with a short path: `info registers` and
   `xp /16xw ADDRESS` say where a guest that hangs is and what its memory holds).
+  `tools/pcap.py FILE CLIENT_IP [PORT]`: one connection out of a capture, a line a
+  packet.
 - `REORDER=25` in front of tap.sh lets a quarter of the packets to the guest overtake the
   rest (held 5 ms). Timing single fetches with curl under it shows whether early segments
   are used: 9 of 60 stalled before `oohold`, none after.
@@ -272,17 +273,17 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
 - `unshare -Urn tools/dhcptest.sh` (a minute; the suite's `dhcp`, and `dhcp_smp4`): the
   image's DHCP client against a server that does what the test wants
   (`tools/dhcptest.py`, made of `tools/dhcpd.py`). It must ask again when nobody
-  answers; take no notice of what is not a server's answer to it (another number, a
-  number, its own question's before this one, a wrong checksum, other ports, a message
-  cut short, options longer than the message) nor of an answer it did not ask for; ask
-  each time with a new number; ask the server that offered for the address offered,
+  answers, each time with a new number; take no notice of what is not a server's
+  answer to the question it is asking (another number, an earlier question's, a wrong
+  checksum, other ports, a message cut short, options longer than the message, an
+  answer when it asks nothing); ask the server that offered for the address offered,
   and no second server; take a yes only to that address, and serve on it and on no
   other; ask to keep it at half its time; take an answer without a UDP checksum; give
   the address up when told no, ask anew and serve on the new one; and be there after
-  13,000 answers damaged at random. `... dhcptest.sh
-  real` (80 s; `dhcp_dnsmasq`) is the same image against dnsmasq: an address, and a
-  minute later the renewal. The suite's `static_*` runs are an image built with
-  `IP=10.0.2.15`, over tap without any DHCP server.
+  13,000 answers damaged at random. `... dhcptest.sh real` (80 s; `dhcp_dnsmasq`) is
+  the same image against dnsmasq: an address, and a minute later the renewal. The
+  suite's `static_*` runs are an image built with `IP=10.0.2.15`, over tap without any
+  DHCP server.
 - `unshare -Urn tools/racetest.sh 1` (and `2`; the suite's `race1` and `race2`, three
   minutes each): an image built `RACE=n IDLE=1 CAP=32`, in which the timer of a
   connection that may be taken stops for up to 30 s, before it has said "in use" (1) or
@@ -299,12 +300,12 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   lengths. The tap has fd00:15::2 and ::32 to ::63 when the image has such an address,
   and `V6=1` in front of `taprunc.sh` and `tools/sitetest.sh tap` makes their clients
   come that way (the suite's `tls6*`, `plain6*`, `real6*`, `hrr6*`, `site6*`; `small6`:
-  four addresses with the same ports into 1,024 slots; `v6_*4*`: the same image over
-  IPv4).
+  four addresses with the same ports into 1,024 slots, which shows whether clients are
+  told apart; `v6_tls4_loss3`, `site4_v6_loss3`: the same images over IPv4).
 - `B=build-site DELAY=300 unshare -Urn ./tap.sh python3 tools/rtttest.py` (a quarter of
   a minute; the suite's `rtt`): over a round trip of 300 ms, with nothing lost, no
   segment of a response may go twice (a page of one segment on a connection that
-  stays, a file of 200 KB). The timer as it was before 2026-11-21 sent 26 twice.
+  stays, a file of 200 KB). A timer of a quarter second for everybody sends 26 twice.
 - `unshare -Urn tools/hosttest.sh` (a minute; the suite's `host`): `./k15 publish`,
   `deploy` and `renew` against a machine that is made up: its disk a file, its rescue
   system this shell with `lsblk`, `blockdev`, `blkdiscard`, `reboot`, `apt-get` and
@@ -317,7 +318,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   `cpus3`): asks QEMU's monitor which processors are halted. Those that take no frames
   must be (the third of three; the fifth and on), and no other.
 - `make test` checks the asm crypto (`src/os.asm` built with `-DHOST`, driven by
-  `test/test_asm.c`) against pyca/cryptography (hashes, AES-128-GCM, X25519 with edge
+  `test/test_asm.c` and `test/test_crypto.py`) against pyca/cryptography (hashes, AES-128-GCM, X25519 with edge
   scalars, 70 signatures) and against the model (every pair of 22 edge numbers through
   add, subtract and multiply in each of the three fields), and runs `tools/ec.py`, the
   Python model of the curve code. `make bench` times the same object natively, down to

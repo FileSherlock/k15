@@ -140,20 +140,16 @@ the image. Without, it is a variable, and a DHCP client is assembled in (514 byt
   least there may be. Again after 2 s, 4 s, ... 128 s and then every 128 s, until an
   answer comes. And what may be an answer (UDP over IPv4, whatever address it is sent
   to) is given to the first processor and to no other (`drain`), so what is known of
-  the asking has one reader and one writer; the others read the outcome, `MYIP`. (At
-  first an answer went to whichever processor its addresses hashed to, and that one
-  wrote `MYIP`, `DHT` and `DHB` while the first might be in the middle of asking: an
-  answer and a repeat within a few instructions of each other, or a yes and a no from
-  two servers on two processors, could leave no address and nothing being asked, for
-  days. The review of 2026-11-21.)
+  the asking has one reader and one writer; the others read the outcome, `MYIP`
+  (written by whichever processor got the answer, an answer and a repeat a few
+  instructions apart could leave no address and nothing being asked).
 - An answer counts if its UDP checksum is right or left out (0: OVN's DHCP does that),
   if it is from port 67 to port 68, **has the number of the question being asked**
   (`DHX`: 32 bits from `rand`, new for every question), **and we are asking** (`DHB`).
   So once we have our address nobody can tell us another until we ask again; and
   while we ask, also for days if no server answers a renewal, whoever has seen a
   question's number on the link, or tries all of them from afar (1.2 TB), has until
-  the next question, 128 s at most. (With one number for as long as we were up, as it
-  was at first, an unanswered renewal left that door open for good.) Its options are
+  the next question, 128 s at most. Its options are
   walked as far as the message goes, and the first four bytes of three are kept: the
   time (51), the kind (53), the server's name for itself (54).
 - An OFFER, while we have no address and have asked for none (`DHA`), gets a REQUEST
@@ -192,12 +188,9 @@ router advertisements), and all of them can say which one it is.
   same port does. The hash is of the address, and through the cipher a second time of
   the ports (`prf6`), so that what one address and port is told (the cookie) is of no
   use from another address. `drain` makes the same hash of the frame as it came, so
-  the processor and the places that go with it are the same as `find`'s. (The first
-  version stored those 32 bits through a register the hash had just changed: every
-  client was 255.255.255.255 with its port, and the hash's last word was not the one
-  `drain` had. 1 connection in 5,000 hung under `REORDER=25`: two processors had one
-  place for early segments. The suite's `small6` is four addresses with the same
-  ports into a table of 1,024 slots, which that version fails outright.)
+  the processor and the places that go with it are the same as `find`'s. (The suite's
+  `small6`, four addresses with the same ports into a table of 1,024 slots, is what
+  shows whether clients are told apart: in a large table they never meet.)
 - **Its checksum** (TCP's, and ICMPv6's) covers the addresses, the length, what
   follows the header, and the segment: that is everything from the length on, in
   another order, once the two bytes behind the length say 0 and what follows. So it is
@@ -251,9 +244,8 @@ and while it waits for the transmit lock or a free transmit buffer).
   uncontended lock. One that gets no frames (the third of three; one that took its
   number after the count was read) waits for the count and then halts (`apstart`;
   `tools/cputest.py` asks QEMU; if the first processor counted nobody, it waits for
-  good). Until 2026-11-14 it went round the polling loop like the others, and its turn
-  at the SYNs of late (`tidle`) was at the first processor's places: it answered that
-  one's SYNs again, on that one's connections.
+  good). Going round the polling loop instead, its turn at the SYNs of late (`tidle`)
+  would be at the first processor's places.
 - A slot that changes hands between processors (a connection quiet for an hour, in a
   full table) does so in one step on each side. The taker's `cmpxchg` asks for the slot's
   first eight bytes as it saw them in one look (`find.used`), C_AGE among them, and puts
@@ -268,19 +260,11 @@ and while it waits for the transmit lock or a free transmit buffer).
   connection's client (`tcp`, after `find`), and the connection's timer (`tqrun`). The
   timer is no sign of life, and C_AGE is what it gives a client up by: so it keeps what
   C_AGE said and puts it back when it is done, if the slot still is that connection's
-  (`own`). Until 2026-11-14 the timer worked on the slot it had looked up without any
-  of this. A taker could then get the slot while the timer was in the middle of it, and
-  the timer went on with a slot that was another connection's: in the test that holds
-  the timer still at that point (`tools/racetest.sh`), it sent ten records of the new
-  connection, sealed with the new connection's key, to the old client's address in one
-  run, and in another the new connection's client got a record it could not open and
-  gave up. With the two a few instructions further apart it could have sealed under
-  the new key with a record number made from the old connection's numbers: the same
-  key and number for two different records. What stood in the way was time alone (a
-  connection that waits for an ack is given up after two minutes of silence, a slot is
-  taken after 68; so a processor had to have had no idle moment for an hour, and then
-  the two had to meet within the microsecond, or within however long the host takes a
-  processor away for).
+  (`own`). A timer that works on the slot it looked up without this goes on with a
+  slot that has become another connection's: it sends that one's records to the old
+  client, or seals under the new key with a record number made of the old numbers,
+  the same key and number for two records. `tools/racetest.sh` holds the timer still
+  at that point.
 
 ## How TCP works here
 No copy of what was sent, except the handshake flight: everything else is made again
@@ -353,22 +337,19 @@ bytes.
   minute or two) has gone: it is sent a reset, and its slot is free. One that takes no
   more for now but answers when it is sent to stays, as in TCP. (The reset has the number we got to, `C_SND`: a client that lacks some of what
   we sent does not take it, RFC 5961. For one that has gone that is all the same.)
-- **How long the timer waits** is the connection's own (`C_RTO`, since 2026-11-21): its
-  round trip R is measured once, from our flight going out to the client having it (a
-  client answers a flight at once: it has its Finished to send, so no ack is held
+- **How long the timer waits** is the connection's own (`C_RTO`, in 1/64 s): its round
+  trip R is measured once, from our flight going out (`C_T0`) to the client having it
+  (a client answers a flight at once: it has its Finished to send, so no ack is held
   back in between; `tcp.est`), and the timer then waits 3 R (TCP's own rule after one
   measurement), a quarter of a second at least and a second at most. For a client up
-  to 93 ms away that is the quarter second it always was, to the tick. For one 300 ms
-  away it was a segment sent twice whenever an answer took a round trip to be
-  acknowledged, which is always, and half the window gone for good each time: 200 KB
-  took 12 s over 300 ms and takes 2.4 (`tools/rtttest.py`, the suite's `rtt`), and 6 MiB
-  through 20 Mbit/s did not arrive in two minutes and takes 31 s. A second at most
-  because the measurement is from the flight's first sending: if that was lost, it
-  holds the client's own timeout, and what is lost at the end of a response should not
-  lie for seconds on a path that loses things. A round trip of over a second therefore
-  still gets segments twice. Beside the last commit's image (`tools/bneck.sh`, the
-  paths of bench/README.md): the same on all with a round trip of 100 ms or less (the
-  path that loses 1% took 14 to 25 s with either, nine fetches each).
+  to 93 ms away that is a quarter second, as for everybody before there was a
+  measurement; one 300 ms away then got a segment twice whenever an answer took a
+  round trip to be acknowledged, which is always, and lost half its window each time:
+  200 KB took 12 s over 300 ms and takes 2.4 (`tools/rtttest.py`, the suite's `rtt`).
+  A second at most because the measurement is from the flight's first sending: if
+  that was lost, it holds the client's own timeout, and what is lost at the end of a
+  response should not lie for seconds on a path that loses things. A round trip of
+  over a second therefore still gets segments twice.
 - A request for the next response is taken only when the client has acknowledged all of
   this one. One that comes earlier (two requests at once) is as good as not arrived, and
   what follows it in its segment too: the client sends it again (`.busy`).
@@ -448,9 +429,9 @@ The old way, and what both share:
   x25519 share after being asked, and "illegal parameter" if its x25519 share makes the
   shared secret all zeros (a point of small order). The alert is its connection's flight
   (kept, sent again if lost), and the connection is closed from our side (`handshake` sets
-  F_CLOSED, `tcp.fin` sends the FIN). Before 2026-11-12 such a client got a ServerHello
-  with a suite it had not offered, or with its own random as a key share: scanners call
-  that intolerance, and it cost a handshake's work for every piece of junk.
+  F_CLOSED, `tcp.fin` sends the FIN): a ServerHello with a suite the client had not
+  offered is what scanners call intolerance, and costs a handshake's work for every
+  piece of junk.
   `tools/tlsprobe.sh HOST[:PORT] [CA]` asks what a scanner asks, one thing at a time.
 - A segment from further on than we expect is kept (`oohold`) and used as soon as what
   comes before it has arrived (`.reply`). There are n places of 2 KiB for such segments; a
@@ -492,10 +473,8 @@ The old way, and what both share:
 - A connection is in one of two buckets of 16 slots, picked by two words of `prf(addresses,
   ports)`; a new one goes into the bucket with more free slots (`find`), into the first
   of them: a walk that ends with the bucket. (The free slots are counted first; if
-  another processor has taken the last one by then, `find` looks again. Until
-  2026-11-14 the walk had no end: it went on into the next bucket, where `find` never
-  looks for that connection again, or out of the table: from the one for TLS into the
-  one for port 80, a slot of 128 bytes laid over five or six of port 80's.
+  another processor has taken the last one by then, `find` looks again: a walk without
+  an end of its own would go on into the next bucket, or out of the table.
   `tools/racetest.sh 3`.) A slot is free when its address is 0. With two buckets to
   choose from the table fills to 85% before anyone finds both full, and at 92% one in a
   thousand does; one run of 16 slots from one hash, as it was, lost 0.8% of the held
@@ -612,15 +591,14 @@ there is; the key block of a direction is 32 bytes for the key's 16 and 12 of iv
   slot), four counter blocks interleaved across the ten AES rounds (`aes4`, by way of
   `ks64`, 64 bytes of key stream), and GHASH four blocks at a time with one reduction
   (`HTAB` holds H^1..H^4 times x; `gh1` handles single blocks and the powers).
-- ChaCha20-Poly1305 was there too until 2026-11-14, for clients that named it first (whose
-  processors have no AES): 665 bytes, and every client that has TLS 1.3 has AES-128-GCM
-  (RFC 8446 9.1: a MUST; ChaCha20 is a SHOULD).
+- No ChaCha20-Poly1305 (for clients whose processors have no AES): it cost 665 bytes,
+  and every client that has TLS 1.3 has AES-128-GCM (RFC 8446 9.1: a MUST; ChaCha20 is
+  a SHOULD).
 - Full 64-byte blocks are xored directly in xmm0-xmm3 without bouncing through memory,
   with a 16-byte/byte tail for what remains (a byte at a time, with source and
   destination the same, cost 6,500 cycles of a record of 1,418 bytes).
 - What a record costs (`make bench`, Ryzen 7 3800X): 1,418 bytes of a file 1,780 cycles,
-  180 bytes 660 (3,900 and 940 before four-block AES and GHASH; 11,600 before
-  2026-11-12, night).
+  180 bytes 660 (3,900 and 940 with one block at a time).
 
 ## Shortcuts that remain
 From k2, where they saved bytes, and from the first version that served files. Ask before
@@ -688,9 +666,9 @@ removing the ones about TLS.
   address is no server; we go on asking every 128 s); nobody is asked whether the
   address offered is in use (no ARP probe, no DECLINE), and it is not given back (no
   RELEASE: we don't shut down); T1 is half the lease whatever options 58 and 59 say;
-  the number in our messages is one for as long as we are up; the first server to
-  offer is taken. While we have no address, ours is 0.0.0.0: a neighbour who asks for
-  that gets an answer.
+  the first server to offer is taken; nothing but the address is asked for or looked
+  at (no mask, router or name server: "Our address"). An image built with an address
+  (`IP=`) has none of this.
 - `keys` writes 20 junk bytes after an IV: the handshake makes both key blocks in `KA` and
   copies them into the slot.
 - The handshake's scratch (transcript, key schedule, curve registers) is one per

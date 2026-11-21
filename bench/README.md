@@ -418,7 +418,9 @@ slots, 10.8 KiB); nginx + BoringSSL about 20; nginx + OpenSSL about 5.
    `ca.pem` and `name` (from `build-hz/`); `gcc -O2 -o build/bench tools/bench.c -lssl
    -lcrypto` (tapc the same).
 2. k15: build without `KNOCK`, `tools/deploy.sh`, then on the generator `./run.sh IP`.
-   `hcloud server reset k3` brings Linux back.
+   `hcloud server reset NAME` brings Linux back. (A server that keeps its Linux:
+   docs/server.md, "Beside a Linux". The server these numbers are from is the bounty's
+   now, has no Linux, and is not to be reset.)
 3. nginx: copy `bench/nginx.conf`, `www/index.html` and `cert-hz/server.pem` and
    `server.key` to `/root/k15bench/` on the server, `ssh root@server 'bash -s' <
    bench/setup-nginx.sh`, then `./run.sh IP`. With BoringSSL: `bench/build-nginx-boring.sh`
@@ -433,9 +435,8 @@ slots, 10.8 KiB); nginx + BoringSSL about 20; nginx + OpenSSL about 5.
    (remove both, and the packages), and the generator costs by the hour (`hcloud server
    delete`). On 2026-11-12 the server was left as it was found: Ubuntu, nothing of this
    on it but `/boot/k15.bin` and its GRUB entry.
-7. Two images of k15 in turn: `./k15 deploy IP DIR --reset 'hcloud server reset k3'` for
+7. Two images of k15 in turn: `./k15 deploy IP DIR --grub --reset 'hcloud server reset NAME'` for
    each, and the rows that matter between (the afternoon used the first two of run.sh,
    twice, 12 s each). Files: `./files.sh IP [all]` on the generator (`apt-get install
    wrk`; `bench/files.sh` beside run.sh); for nginx the site's folder goes to
-   `/var/www/k15bench`. While 15kb.org lives on the server, every such deploy takes it
-   down: `./k15 deploy IP build-15kb.org --persist --reset ...` puts it back.
+   `/var/www/k15bench`.
