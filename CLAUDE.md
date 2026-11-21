@@ -18,10 +18,14 @@ is history, a measurement series or a description of how a routine works. Those 
 - `tools/ec.py` (its docstring): the curve code's other half
 
 ## Decided with the user
+- This is the branch `dev`, in /home/jaguarm/code/k15: the project is developed further
+  here and byte size is ignored for now (2026-11-21). `main` stays the small system; the
+  bounty's keys, certificates and images are only in ~/Desktop/k15, not in this checkout.
 - **Security can never be lowered, only raised.** Everything behind TLS is in scope:
   anything a packet can make it do. Port 80 says one public thing to everyone.
-- The measure is connections per byte of image: a feature has to pay for its bytes.
-  Don't golf it, don't bloat it.
+- The measure was connections per byte of image (a feature has to pay for its bytes),
+  and is again when this branch goes back to `main`. Until then: say what a feature
+  costs, don't let that stop it.
 - Scope: the best product in its niche, "a clunky, limited but fast and secure OS".
   A new image for every change of content or certificate is the point, not a defect.
 - TLS 1.3 only, one cipher: AES-128-GCM, which every TLS 1.3 client has (no
@@ -31,7 +35,8 @@ is history, a measurement series or a description of how a routine works. Those 
 - The certificate chain stays at four certificates until the user says otherwise.
 - Ask before removing any of the TLS shortcuts listed in `docs/internals.md`.
 - Commit and push: the user said "you can always commit and push" (2026-11-13). What
-  has passed the tests below for its kind of change goes onto `main` and is pushed.
+  has passed the tests below for its kind of change goes onto `dev` and is pushed. Nothing
+  goes from here to `main` or `bounty` without the user's word.
 - `hcloud` may be used to create, reset and delete servers (a load generator costs by
   the hour: delete it, then `hcloud server list`).
 - Taking 15kb.org down for tests needs the user's word each time.
@@ -60,17 +65,27 @@ is history, a measurement series or a description of how a routine works. Those 
   else; each is named in `tools/tlsfuzz.sh`.
 
 ## Next
-1. For the user to decide, each described in `docs/internals.md` ("Shortcuts that
-   remain"): two TLS shortcuts that the tests from outside point at: a ChangeCipherSpec
-   after the ServerHello, which RFC 8446 wants sent to a client that has a session id
-   (30 bytes or so); and a ClientHello in two records. And from the audit of 2026-11-21
-   (github.com/FileSherlock/k15/issues/1), whose small findings are fixed: data is taken
-   whatever its ack says (its 2); the site's first bytes can be executed where the chain
-   is short (its 1: padding, 2.5 KB in the default image); its 4 to 7 and 11 to 13.
-2. The handshake further: OpenSSL's assembly does the ladder and the signature in
-   about a fifth fewer cycles.
-3. Later: IPv6, DHCP, a retransmission timer that knows the round trip, pacing, zstd,
-   taking out the reset knock.
+The user's list for this branch (2026-11-21), in this order:
+1. DHCP: an image that is not tied to one address boots on any provider and moves
+   without being packed again.
+2. One-step publishing: a push to a repository packs and deploys (CI), and renewal that
+   does not depend on a cron job on the user's machine.
+3. Provider-neutral deploy: the raw disk written from a rescue system (as
+   `tools/bounty_ceremony.sh` does) as the main path, with two or three hosts documented.
+4. IPv6, and a retransmission timer that knows the round trip.
+5. Reproducible builds: the system part rebuilt byte for byte from source by anyone.
+6. Handshake speed, last: OpenSSL's assembly does the ladder and the signature in about
+   a fifth fewer cycles; it is the riskiest code to touch.
+
+Open beside that, for the user to decide:
+- Two TLS shortcuts of `docs/internals.md` ("Shortcuts that remain"): a ChangeCipherSpec
+  after the ServerHello for a client that has a session id, and a ClientHello in two
+  records.
+- From the audit of 2026-11-21 (github.com/FileSherlock/k15/issues/1), whose small
+  findings are fixed: data is taken whatever its ack says (its 2); the site's first
+  bytes can be executed where the chain is short (its 1: padding, 2.5 KB in the default
+  image); its 4 to 7 and 11 to 13.
+- Later: pacing, zstd, taking out the reset knock.
 
 ## What "secure" means here
 A validating client gets server authentication, confidentiality, integrity and forward
