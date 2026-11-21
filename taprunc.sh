@@ -3,7 +3,8 @@
 # verifying the certificate, all held open and all fetched over at the end.
 # Usage: sudo ./tap.sh ./taprunc.sh [PER] [BASE_PORT] [W]   (default: 64512 connections, the
 # ports from 1024 up). W > 1 uses W source IPs, which only works with an image that keeps a
-# slot table per client IP: this one has one slot per client port.
+# slot table per client IP: this one has one slot per client port. V6=1 in front: over
+# IPv6 (an image built with IP6=fd00:15::15), from fd00:15::32 and on.
 cd "$(dirname "$0")"
 PER=${1:-64512} BASE=${2:-1024} W=${3:-1}
 export B=${B:-build}
@@ -17,8 +18,10 @@ mem() { awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo; }
   done ) &
 MON=$!
 PIDS=()
+NET=10.0.2.
+[[ -n ${V6:-} ]] && NET=fd00:15::
 for ((w=0; w<W; w++)); do
-  "$B/tapc" "10.0.2.$((32+w))" "$BASE" "$PER" www/index.html "$D" "$w" "$W" > >(tee -a "$D/out") &
+  "$B/tapc" "$NET$((32+w))" "$BASE" "$PER" www/index.html "$D" "$w" "$W" > >(tee -a "$D/out") &
   PIDS+=($!)
 done
 wait "${PIDS[@]}"

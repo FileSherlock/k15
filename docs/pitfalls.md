@@ -53,7 +53,12 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - `mulx` leaves 64 bits in rcx: `mov cl, n` after it is not a count. `and` between an
   `add` and its `adc` takes the carry away.
 - A helper called from a waiting loop must not touch the loop's registers.
-- A register that "is still zero" isn't after a call that returns something in it.
+- A register that "is still zero" isn't after a call that returns something in it, or
+  that only says "clobbers esi" in its comment (`find` wrote an IPv6 client's identity
+  through esi after the hash had moved it: into the hash). Nothing failed but 1
+  connection in 5,000 under reordering.
+- Whether two clients are told apart shows in a small table: with millions of slots
+  two clients never met, and "everybody is the same client" passed 30,000 connections.
 - A check in front of a loop's label is skipped by every jump to the label.
 - Memory we did not zero is not zero (the transmit lock in low memory).
 - What is in BSS is per processor, whether one thinks of it or not. Shared state goes
@@ -88,6 +93,13 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - A test's server must not be able to say "yes, for a year" by accident: the random
   DHCP answers silenced the client they were meant to exercise, and the test passed
   with 150 of 13,000 read.
+- What several processors know and one of them changes in more than one step is
+  changed by one processor only, or in one step. The DHCP client's three words were
+  written by whoever got the answer: "what is in low memory is everybody's" was the
+  design, and the fault. Give the frames that change it to one processor (`drain`).
+- A door that is "open for milliseconds a day" is open for as long as nobody shuts
+  it: asking for a renewal that no server answers went on for ever, with one number.
+  What is random in a question is made anew for every question.
 - "It takes an hour and a nanosecond" is no reason to leave a race: a host takes a
   processor away for milliseconds, in the middle of anything. Close it, and make the
   test hold one side still (`RACE=n`, `tools/racetest.py`).

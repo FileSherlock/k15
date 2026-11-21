@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # k15: a folder of static files becomes a bootable HTTPS server, and gets onto a machine.
 #
-#   k15 pack SITE [-n NAME] [--san NAME]... [-i IP] [-c CERTDIR] [-o OUT] [--plain80]
+#   k15 pack SITE [-n NAME] [--san NAME]... [-i IP] [-6 IP6] [-c CERTDIR] [-o OUT] [--plain80]
 #                [--hsts SECONDS] [--cache SECONDS] [--header 'Name: value'] [--no-compress]
 #       OUT/os.bin (the image: what a multiboot loader such as GRUB starts) and OUT/disk.img
 #       (the same behind a boot sector: what a BIOS starts from a disk). NAME is what the
 #       certificate is for and what port 80 redirects to (a DNS name or an IP address;
 #       default 127.0.0.1). The image asks for its address where it boots (DHCP), so it
 #       runs on any machine whose network gives it one; with -i IP it has that address
-#       and asks nobody.
+#       and asks nobody. -6 IP6: the IPv6 address the machine has, if the site is to be
+#       reached that way too (that one the image has to be told: a host says which it is).
 #       --san: a further name the certificate is to be good for (www.NAME, say). The server
 #       does not look at the name it is asked for: every name that points at it and is in
 #       its certificate gets the same site.
@@ -118,17 +119,17 @@ proves() {
 # certificate in CHAIN (by way of the others in it)
 trusted() { openssl verify -untrusted "$1" "$1" >/dev/null 2>&1; }
 
-# build SITE NAME IP CERT OUT P80 HSTS CACHE HEADERS SANS COMPRESS: make the image, and note how
+# build SITE NAME IP CERT OUT P80 HSTS CACHE HEADERS SANS COMPRESS IP6: make the image, and note how
 build() {
-  make -s B="$5" SITE="$1" CERT="$4" NAME="$2" SAN="${10}" IP="$3" P80="$6" HSTS="$7" CACHE="$8" HEADERS="$9" COMPRESS="${11:-1}" >/dev/null || return 1
-  printf 'site=%q\nname=%q\nip=%q\ncert=%q\np80=%q\nhsts=%q\ncache=%q\nheaders=%q\nsans=%q\ncompress=%q\n' \
-    "$1" "$2" "$3" "$4" "$6" "$7" "$8" "$9" "${10}" "${11:-1}" > "$5/pack.conf"
+  make -s B="$5" SITE="$1" CERT="$4" NAME="$2" SAN="${10}" IP="$3" IP6="${12:-}" P80="$6" HSTS="$7" CACHE="$8" HEADERS="$9" COMPRESS="${11:-1}" >/dev/null || return 1
+  printf 'site=%q\nname=%q\nip=%q\ncert=%q\np80=%q\nhsts=%q\ncache=%q\nheaders=%q\nsans=%q\ncompress=%q\nip6=%q\n' \
+    "$1" "$2" "$3" "$4" "$6" "$7" "$8" "$9" "${10}" "${11:-1}" "${12:-}" > "$5/pack.conf"
   chmod -R go= "$5" "$4"
   local total site_bytes name
   total=$(stat -c %s "$5/os.bin")
   site_bytes=$(stat -c %s "$5/site.bin")
   name=$(cat "$5/name")
-  echo "$5/os.bin: $total bytes ($((total - site_bytes)) of system, $site_bytes of site), for https://$name/ on ${3:-the address it is given where it boots (DHCP)}"
+  echo "$5/os.bin: $total bytes ($((total - site_bytes)) of system, $site_bytes of site), for https://$name/ on ${3:-the address it is given where it boots (DHCP)}${12:+ and ${12}}"
   if [[ -s $5/ca.pem ]]; then
     echo "its certificate is under a private CA: clients need $5/ca.pem (curl --cacert $5/ca.pem)"
   fi
@@ -148,7 +149,7 @@ build() {
 # What pack and publish are told about the image: the options, into these (the caller's)
 packopt() {
   case $1 in
-    -n) name=$2; return 2;; -i) ip=$2; return 2;; --plain80) p80=page; return 1;;
+    -n) name=$2; return 2;; -i) ip=$2; return 2;; -6) ip6=$2; return 2;; --plain80) p80=page; return 1;;
     --hsts) hsts=$2; return 2;; --cache) cache=$2; return 2;;
     --header) headers+="$2;;"; return 2;; --no-compress) compress=0; return 1;;
     --san) [[ $2 == *[[:space:],]* || -z $2 ]] && die "--san takes one name"; sans+="${sans:+ }$2"; return 2;;
@@ -157,7 +158,7 @@ packopt() {
 }
 
 pack() {
-  local site=${1:-} name=127.0.0.1 ip= cert= out= p80=redirect hsts= cache=600 headers= sans= compress=1 n
+  local site=${1:-} name=127.0.0.1 ip= ip6= cert= out= p80=redirect hsts= cache=600 headers= sans= compress=1 n
   [[ -n $site ]] || die "pack: which folder?"
   site=$(abs "$site")
   [[ -d $site ]] || die "pack: no such folder: '$site'"
@@ -172,7 +173,7 @@ pack() {
   done
   out=$(abs "${out:-build-$name}")
   cert=$(abs "${cert:-cert-$name}")
-  build "$site" "$name" "$ip" "$cert" "$out" "$p80" "$hsts" "$cache" "$headers" "$sans" "$compress"
+  build "$site" "$name" "$ip" "$cert" "$out" "$p80" "$hsts" "$cache" "$headers" "$sans" "$compress" "$ip6"
 }
 
 run() {
@@ -395,7 +396,7 @@ keynew() {
 came() { proves "$1" "$2" && { [[ -n $3 ]] || trusted "$2"; }; }
 
 publish() {
-  local site=${1:-} host=${2:-} name= ip= p80=redirect hsts= cache=600 headers= sans= compress=1 n
+  local site=${1:-} host=${2:-} name= ip= ip6= p80=redirect hsts= cache=600 headers= sans= compress=1 n
   local rescuecmd= bootcmd= disk= first= ifdue= days=30 email= staging=
   [[ -n $site && $site != -* ]] || die "publish: which folder?"
   [[ -n $host && $host != -* ]] || die "publish: which host?"
@@ -457,7 +458,7 @@ publish() {
     mv "$WORK/new/server.key" "$WORK/new/server.pem" "$cert/"
     echo "a new certificate, good until $(openssl x509 -enddate -noout -in "$cert/server.pem" | cut -d= -f2)"
   fi
-  if ! build "$site" "$name" "$ip" "$cert" "$out" "$p80" "$hsts" "$cache" "$headers" "$sans" "$compress"; then
+  if ! build "$site" "$name" "$ip" "$cert" "$out" "$p80" "$hsts" "$cache" "$headers" "$sans" "$compress" "$ip6"; then
     echo "k15: the site could not be packed: starting the machine as it was" >&2
     boot
     exit 1
@@ -598,7 +599,7 @@ renew() {
   out=$(abs "${out:-build}")
   [[ -f $out/pack.conf ]] || die "renew: $out/pack.conf is not there (k15 pack makes it: how the image is to be packed again)"
   [[ -z $grub || -z $rescuecmd$bootcmd$disk$first ]] || die "renew: --grub (and --reset) is one way, --rescue (and --boot, --disk, --first) the other"
-  local site name ip cert p80 hsts cache headers sans= compress=1
+  local site name ip cert p80 hsts cache headers sans= compress=1 ip6=
   # shellcheck disable=SC1091
   source "$out/pack.conf"
   # Is it time? If not, this was all: nothing is reset, nobody is asked for anything.
@@ -645,7 +646,7 @@ renew() {
   [[ ! -f $cert/ca.pem ]] || mv "$cert/ca.pem" "$cert/old/"   # (a public chain: nothing for clients to add)
   mv "$new/server.key" "$cert/server.key"
   mv "$new/server.pem" "$cert/server.pem"
-  if ! build "$site" "$name" "$ip" "$cert" "$out" "$p80" "$hsts" "$cache" "$headers" "$sans" "$compress"; then
+  if ! build "$site" "$name" "$ip" "$cert" "$out" "$p80" "$hsts" "$cache" "$headers" "$sans" "$compress" "$ip6"; then
     echo "k15: the image could not be packed again: the key and certificate as they were are back in $cert, and the image as it was is started" >&2
     mkdir -p "$cert/failed"
     mv "$cert/server.key" "$cert/server.pem" "$cert/failed/"

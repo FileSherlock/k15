@@ -105,6 +105,29 @@ T[dhcp_dnsmasq]='IFTHERE=1 unshare -Urn tools/dhcptest.sh real'
 T[static_measure]='B=build-static IP=10.0.2.15 PORT=8493 ./measure.sh'
 T[static_tls_loss3]="B=build-static LOSS=3 DHCPD=none STATIC=1 $TLS"
 T[static_plain]='B=build-static DHCPD=none STATIC=1 PLAIN=1 INFLIGHT=64 unshare -Urn ./tap.sh ./taprunc.sh 4000 1024 4'
+# IPv6: an image built with an IPv6 address (IP6=fd00:15::15; the tap then has fd00:15::2
+# and ::32 to ::63). Frame by frame (tools/v6test.py: what a neighbour's question gets,
+# what gets nothing, 3,000 frames with wrong lengths); the clients of the runs above over
+# IPv6 (V6=1), with loss, reordering, the least a link of IPv6 may carry, a flight of two
+# segments, a second ClientHello; four addresses with the same ports into a table of
+# 1,024 slots (what stands for an address in a slot must tell them apart); the site of
+# many files; and the same image over IPv4.
+T[v6]='B=build-site6 unshare -Urn ./tap.sh python3 tools/v6test.py'
+T[tls6]="B=build-v6 V6=1 $TLS"
+T[tls6_loss3]="B=build-v6 V6=1 LOSS=3 $TLS"
+T[tls6_mtu1280_loss3]="B=build-v6 V6=1 MTU=1280 LOSS=3 $TLS"
+T[tls6_reorder]="B=build-v6 V6=1 REORDER=25 $TLS"
+T[plain6]='B=build-v6 V6=1 PLAIN=1 INFLIGHT=64 unshare -Urn ./tap.sh ./taprunc.sh 4000 1024 4'
+T[plain6_loss3]='B=build-v6 V6=1 PLAIN=1 INFLIGHT=64 LOSS=3 unshare -Urn ./tap.sh ./taprunc.sh 4000 1024 4'
+T[real6_loss3]="B=build-real6 V6=1 LOSS=3 $TLS"
+T[real6_reorder]="B=build-real6 V6=1 REORDER=25 $TLS"
+T[hrr6_loss3]="KEX=P-256:X25519 B=build-v6 V6=1 LOSS=3 $TLS"
+T[small6]='B=build-small6 V6=1 unshare -Urn ./tap.sh ./taprunc.sh 150 1024 4'
+T[site6]="V6=1 B=build-site6 $SITE"
+T[site6_loss3]="V6=1 LOSS=3 B=build-site6 $SITE"
+T[site6_reorder]="V6=1 REORDER=25 B=build-site6 $SITE"
+T[v6_tls4_loss3]="B=build-v6 LOSS=3 $TLS"
+T[site4_v6_loss3]="LOSS=3 B=build-site6 $SITE quick"
 # the tool: ./k15 pack and ./k15 run; and its way onto a machine that is k15's alone (./k15
 # publish, deploy, renew), with a machine that is made up (tools/hosttest.sh)
 T[k15]='PORT=8513 tools/k15test.sh'
@@ -130,9 +153,10 @@ ORDER="measure measure_tcg browsers tls tls_loss3 tls_mtu300_loss3 tls_reorder t
   hrr_reorder real_hrr_loss3 redirect raw_redirect tls_isn31 tls_isn32 tls_isn31_loss3
   plain_isn32_loss3 real_isn31_loss3 real_isn32_reorder site_wrap31 site_wrap32 site_wrap31_loss3
   site_wrap32_loss3 site_keylife site_gone race1 race2 race3 cpus3 tlsfuzz hellofuzz rawframes dhcp dhcp_smp4 dhcp_dnsmasq
-  static_measure static_tls_loss3 static_plain k15 host wx site site_tap site_loss3 site_mtu600_loss3
+  static_measure static_tls_loss3 static_plain v6 tls6 tls6_loss3 tls6_mtu1280_loss3 tls6_reorder plain6 plain6_loss3
+  real6_loss3 real6_reorder hrr6_loss3 small6 site6 site6_reorder v6_tls4_loss3 k15 host wx site site_tap site_loss3 site_mtu600_loss3
   site_reorder
-  site_notso_loss3 bneck rtt"
+  site_notso_loss3 site6_loss3 site4_v6_loss3 bneck rtt"
 
 # the images and clients first (not in parallel)
 [[ -f cert-real/server.pem ]] || python3 tools/mkchain.py cert-real >/dev/null || exit 1
@@ -142,6 +166,8 @@ make -s B=build-small-idle CAP=1024 IDLE=0 >/dev/null || { echo "BUILD FAILED (s
 make -s B=build-small-idle1 CAP=1024 IDLE=1 >/dev/null || { echo "BUILD FAILED (small-idle1)"; exit 1; }
 make -s B=build-real CERT=cert-real >/dev/null || { echo "BUILD FAILED (real)"; exit 1; }
 make -s B=build-static IP=10.0.2.15 >/dev/null || { echo "BUILD FAILED (static)"; exit 1; }
+make -s B=build-v6 IP6=fd00:15::15 >/dev/null && make -s B=build-real6 CERT=cert-real IP6=fd00:15::15 >/dev/null &&
+  make -s B=build-small6 CAP=1024 IP6=fd00:15::15 >/dev/null || { echo "BUILD FAILED (IPv6)"; exit 1; }
 env $REDIR make -s >/dev/null || { echo "BUILD FAILED (redirect)"; exit 1; }
 make -s B=build-isn31 ISNTOP=0x7FF00000 >/dev/null && make -s B=build-isn32 ISNTOP=0xFFF00000 >/dev/null || { echo "BUILD FAILED (isn)"; exit 1; }
 make -s B=build-real-isn31 CERT=cert-real ISNTOP=0x7FF00000 >/dev/null && make -s B=build-real-isn32 CERT=cert-real ISNTOP=0xFFF00000 >/dev/null || { echo "BUILD FAILED (real isn)"; exit 1; }
@@ -151,9 +177,10 @@ for w in "wrap31 0x7FFF8000 17" "wrap32 0xFFFF8000 17" "wrapl31 0x7FF00000 12" "
 done
 mkdir -p build-keylife && python3 tools/mksite.py build-keylife/www >/dev/null && make -s B=build-keylife SITE=build-keylife/www KEYLIFE=10 STLIFE=6 >/dev/null || { echo "BUILD FAILED (keylife)"; exit 1; }
 mkdir -p build-site && python3 tools/mksite.py build-site/www >/dev/null && make -s B=build-site SITE=build-site/www >/dev/null || { echo "BUILD FAILED (site)"; exit 1; }
+mkdir -p build-site6 && python3 tools/mksite.py build-site6/www >/dev/null && make -s B=build-site6 SITE=build-site6/www IP6=fd00:15::15 >/dev/null || { echo "BUILD FAILED (site, IPv6)"; exit 1; }
 mkdir -p build-site-notso && python3 tools/mksite.py build-site-notso/www >/dev/null && make -s B=build-site-notso SITE=build-site/www NOTSO=1 >/dev/null || { echo "BUILD FAILED (site, no TSO)"; exit 1; }
 [[ -x build/rawc && build/rawc -nt tools/rawc.c ]] || gcc -O2 -o build/rawc tools/rawc.c || exit 1
-for b in build build-real build-static build-small build-small-idle build-isn31 build-isn32 build-real-isn31 build-real-isn32; do
+for b in build build-real build-static build-v6 build-real6 build-small6 build-small build-small-idle build-isn31 build-isn32 build-real-isn31 build-real-isn32; do
   [[ -x $b/tapc && $b/tapc -nt tools/tapc.c ]] || gcc -O2 -o $b/tapc tools/tapc.c -lssl -lcrypto || exit 1
 done
 
@@ -165,7 +192,7 @@ verdict() {  # name, exit code -> one line
     raw*|twice*) [[ $rc == 0 ]] && ! grep -q -E ' [1-9][0-9]* (reset|timed out)' "$f" && v=ok
        note=$(grep '^RAW total' "$f" | tail -1 | cut -c1-80)
        note="$note; $(grep -o '[0-9]* reset, [0-9]* timed out' "$f" | tr '\n' ';')";;
-    churn*|idle|race*|cpus3|tlsfuzz|hellofuzz|rawframes|dhcp*) [[ $rc == 0 ]] && v=ok; note=$(tail -1 "$f" | cut -c1-110);;
+    churn*|idle|race*|cpus3|tlsfuzz|hellofuzz|rawframes|dhcp*|v6) [[ $rc == 0 ]] && v=ok; note=$(tail -1 "$f" | cut -c1-110);;
     wx) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 9 ok; $(grep -m1 '^FAIL' "$f")";;
     bneck) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 4 ok; $(grep -m1 '^FAIL' "$f" | cut -c1-80)";;
     rtt) [[ $rc == 0 ]] && v=ok; note=$(tr '\n' ';' <"$f" | cut -c1-150);;

@@ -87,7 +87,9 @@ request) are what `tools/bounty_ceremony.sh` ran in Hetzner's rescue system on
 ### Hosts
 What the image needs of one: a BIOS that starts the first sector of the disk (not
 UEFI alone), a virtio network card, an IPv4 address by DHCP (or `-i`), and a processor
-as the README says.
+as the README says. For IPv6 it has to be told the machine's address (`-6`): the one
+the host shows for it (at Hetzner the first of the machine's /64, `...::1`, is the
+custom; where addresses are made from the card's, the one made so).
 - **Hetzner Cloud** (tried with an image that had its address; the bounty runs so):
   `--rescue 'hcloud server enable-rescue --ssh-key KEY NAME && hcloud server reset
   NAME'`. The rescue system is for one start: `reboot` in it starts the disk, so no

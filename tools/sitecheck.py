@@ -13,7 +13,7 @@ whose If-None-Match names what it would get is told "not modified". Exit 0 if al
 holds.
 
 Environment: B (build directory, default build), HOST and PORT (default 127.0.0.1:8443;
-over tap: HOST=10.0.2.15 PORT=443), SRC (address to connect from), T (seconds to wait
+over tap: HOST=10.0.2.15 PORT=443; over IPv6: HOST=fd00:15::15), SRC (address to connect from), T (seconds to wait
 for anything, default 20). With "quick" as argument: fewer fetches of the large file.
 GONE=1 (over tap only): also a client that vanishes, which takes three minutes.
 """
@@ -42,7 +42,7 @@ class Conn(BioClient):
     """A TLS client over a TCP socket we also hold: so a record can be sent in pieces."""
 
     def __init__(self, mss=None, rcvbuf=None, src=None):
-        sock = socket.socket()
+        sock = socket.socket(socket.AF_INET6 if ":" in HOST else socket.AF_INET)
         if mss:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_MAXSEG, mss)
         if rcvbuf:
@@ -277,7 +277,7 @@ def main():
         check(f"the largest file ({paths[big]['length']} bytes) to {n} clients at once, twice each", lambda: many(n))
 
     def curl(suite):
-        cmd = ["curl", "-s", "--max-time", str(int(4 * T)), "--connect-to", f"{NAME}:{PORT}:{HOST}:{PORT}", "--tls13-ciphers", suite]
+        cmd = ["curl", "-s", "--max-time", str(int(4 * T)), "--connect-to", f"{NAME}:{PORT}:{'[' + HOST + ']' if ':' in HOST else HOST}:{PORT}", "--tls13-ciphers", suite]
         if SRC:
             cmd += ["--interface", SRC]
         ca = os.path.join(B, "ca.pem")

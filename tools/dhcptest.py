@@ -3,14 +3,17 @@
 
     DHCPD=none unshare -Urn ./tap.sh python3 tools/dhcptest.py [SEED]      (a minute)
 
-An image without an address of its own (the default) must: ask again when nobody answers;
-take no notice of what is not a server's answer to it (another number, a wrong checksum,
-other ports, a message cut short, options that say they are longer than the message) nor
-of an answer it did not ask for; ask the server that made the offer for the address
-offered, and serve on it; ask to keep it at half its time, as RFC 2131 has a client ask
-that has heard nothing from its own server; take an answer without a UDP checksum; give
-the address up when told "no", ask anew, and serve on the new one and not on the old; and
-be there after a few thousand answers damaged at random.
+An image without an address of its own (the default) must: answer nobody while it has
+none (not even who asks for 0.0.0.0); ask again when nobody answers, each time with a
+number of its own; take no notice of what is not a server's answer to it (another
+number, the number of its question before this one, a wrong checksum, other ports, a
+message cut short, options that say they are longer than the message) nor of an answer
+it did not ask for; ask the server that made the offer for the address offered, and no
+second server for another; take a yes only to the address it asked for, and serve on
+it; ask to keep it at half its time, as RFC 2131 has a client ask that has heard nothing
+from its own server; take an answer without a UDP checksum; give the address up when
+told "no", ask anew, and serve on the new one and not on the old; and be there after a
+few thousand answers damaged at random.
 """
 import os
 import random
@@ -64,12 +67,27 @@ t1 = time.time()
 check("  as a broadcast of 342 bytes from 0.0.0.0, a message of 300, with no address named",
       (m1.length, m1.to, m1.src, m1.ciaddr, m1.bootp) == (342, "255.255.255.255", "0.0.0.0", "0.0.0.0", 300)
       and 50 not in m1.opts and 54 not in m1.opts, f"{m1} {m1.length} {m1.to} {m1.bootp} {m1.opts}")
+arp = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0806))
+arp.bind((os.environ.get("TAP", "k2t"), 0))
+arp.settimeout(0.3)
+arp.send(b"\xff" * 6 + srv.mac + b"\x08\x06" + bytes([0, 1, 8, 0, 6, 4, 0, 1]) + srv.mac + ip(SID) + bytes(6) + ip("0.0.0.0"))
+try:
+    while True:
+        f, a = arp.recvfrom(100)
+        if a[2] != socket.PACKET_OUTGOING and f[20:22] == b"\0\x02":
+            check("  who asks for 0.0.0.0 meanwhile gets no answer", False, f.hex())
+            break
+except socket.timeout:
+    check("  who asks for 0.0.0.0 meanwhile gets no answer", True)
 m = expect(1, 6, "nobody answers: it asks again")
-check("  2 or 4 s later, with the same number", 1.5 < time.time() - t1 < 4.6 and m.xid == m1.xid, f"{time.time() - t1:.1f} s")
+check("  2 or 4 s later, with another number, and says that it has asked for longer",
+      1.5 < time.time() - t1 < 4.6 and m.xid != m1.xid and m.secs > m1.secs > 0, f"{time.time() - t1:.1f} s, {m.xid.hex()} {m1.xid.hex()}, {m1.secs} {m.secs}")
 
 # 2. What is no answer to it
 other = bytes(x ^ 0x55 for x in m.xid)
 say(m, 5, A2, xid=other)                                    # another client's number
+say(m, 5, A2, xid=m1.xid)                                   # the number of its question before this one
+say(m, 2, A2, xid=m1.xid)
 say(m, 5, A2, sum="wrong")
 say(m, 5, A2, sport=1067)
 say(m, 5, A2, dport=1068)
@@ -80,7 +98,7 @@ say(m, 5, A2, opts=bytes([54, 4]) + ip(SID) + bytes([51, 4, 0, 0, 14, 16, 255]))
 say(m, 5, A2, opts=bytes([0] * 20 + [255, 53, 1, 5]))       # what is behind the end
 say(m, 2, A2, xid=other)
 say(m, 2, A2, cut=240)
-check("no notice is taken of what is not an answer to it (9 kinds): no request follows", srv.get(0.5) is None)
+check("no notice is taken of what is not an answer to it (10 kinds): no request follows", srv.get(0.5) is None)
 check("  and it does not serve on the address they named", not fetch(A2, 1))
 
 # 3. An offer: it asks that server for that address. The request is lost: it starts over
@@ -89,10 +107,16 @@ r = expect(3, 2, "an offer: it asks for the address (REQUEST)")
 check("  from 0.0.0.0 still, naming the address and the server that offered it",
       (r.src, r.ciaddr, r.to) == ("0.0.0.0", "0.0.0.0", "255.255.255.255") and r.opts.get(50) == ip(A) and r.opts.get(54) == ip(SID),
       f"{r} {r.opts}")
-check("  and does not serve on it before it is told yes", not fetch(A, 1))
+say(m, 2, A2)
+check("  another server's offer for the same question gets no request", srv.get(0.5) is None)
+check("  and it does not serve on anything before it is told yes", not fetch(A, 1))
 m = expect(1, 10, "no answer to the request: it asks anew (DISCOVER)")
 say(m, 2, A)
 r = expect(3, 2, "  and for the address again")
+say(r, 5, A2, 6)                                            # yes, to another address than it asked for
+say(r, 5, "0.0.0.0", 6)                                     # yes, to none
+time.sleep(0.2)
+check("a yes to another address than it asked for, or to none, is no yes", not fetch(A2, 1) and not fetch(A, 1))
 say(r, 5, A, 6)                                             # yes, for six seconds
 t0 = time.time()
 time.sleep(0.2)
@@ -109,8 +133,8 @@ check("an answer it did not ask for (yes to another address, no) changes nothing
 r = expect(3, 8, "it asks to keep the address")
 dt = time.time() - t0
 check("  after half its time and a second", 3.5 < dt < 5.5, f"{dt:.1f} s")
-check("  as its owner (ciaddr), from it, to everybody, naming neither address nor server",
-      (r.src, r.ciaddr, r.to) == (A, A, "255.255.255.255") and 50 not in r.opts and 54 not in r.opts and r.xid == m1.xid,
+check("  as its owner (ciaddr), from it, to everybody, naming neither address nor server, with a number of its own",
+      (r.src, r.ciaddr, r.to) == (A, A, "255.255.255.255") and 50 not in r.opts and 54 not in r.opts and r.xid not in (m.xid, m1.xid),
       f"{r} to {r.to} {r.opts}")
 say(r, 5, A, 6, sum="none")                                 # yes, without a UDP checksum
 t0 = time.time()

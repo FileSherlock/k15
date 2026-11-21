@@ -11,6 +11,10 @@ IP ?=
 KNOCK ?=
 KNOCKDEF := $(if $(KNOCK),-DKNOCK_A=$(word 1,$(subst $(comma), ,$(KNOCK))) -DKNOCK_B=$(word 2,$(subst $(comma), ,$(KNOCK))),)
 OURIP := $(if $(IP),-DOURIP=$(shell python3 -c 'import ipaddress; print("0x" + ipaddress.IPv4Address("$(IP)").packed[::-1].hex())'),)
+# IP6: an IPv6 address for the image as well (it is not asked for anywhere: a host says
+# which one a machine has). Without it the image has no IPv6 in it.
+IP6 ?=
+OURIP6 := $(if $(IP6),$(shell python3 -c 'import ipaddress; b = ipaddress.IPv6Address("$(IP6)").packed; print("-DIP6A=0x%016x -DIP6B=0x%016x" % (int.from_bytes(b[:8], "little"), int.from_bytes(b[8:], "little")))'),)
 # CAP=n (tests): no more than n slots in each connection table, however much memory there is.
 # IDLE=n (tests): how long a connection must have been quiet to be replaced when there is no room
 # TSHARE=n: the table of TLS connections gets 1/2^n of the memory (default 3: an eighth), the
@@ -52,6 +56,9 @@ all: $(B)/disk.img
 $(B)/ip: FORCE
 	@mkdir -p $(B)
 	@printf '%s' '$(IP)' > $@.$$$$; if cmp -s $@.$$$$ $@; then rm $@.$$$$; else mv $@.$$$$ $@; fi
+$(B)/ip6: FORCE
+	@mkdir -p $(B)
+	@printf '%s' '$(IP6)' > $@.$$$$; if cmp -s $@.$$$$ $@; then rm $@.$$$$; else mv $@.$$$$ $@; fi
 FORCE:
 
 $(B)/disk.img: src/boot.asm $(B)/os.bin tools/mkdisk.py
@@ -96,8 +103,8 @@ $(B)/site.conf: FORCE
 $(PACKED) &: tools/pack.py $(B)/site.conf $(GEN)
 	P80=$(P80) HSTS=$(HSTS) CACHE=$(CACHE) HEADERS='$(HEADERS)' COMPRESS=$(COMPRESS) python3 tools/pack.py $(SITE) $(B)
 
-$(B)/os.bin: src/os.asm $(GEN) $(PACKED) $(B)/ip
-	nasm -f bin $(OURIP) $(KNOCKDEF) $(TABLEDEF) $(DEBUGDEF) $(WINDEF) -I$(B)/ -o $@ -l $(B)/os.lst src/os.asm
+$(B)/os.bin: src/os.asm $(GEN) $(PACKED) $(B)/ip $(B)/ip6
+	nasm -f bin $(OURIP) $(OURIP6) $(KNOCKDEF) $(TABLEDEF) $(DEBUGDEF) $(WINDEF) -I$(B)/ -o $@ -l $(B)/os.lst src/os.asm
 	@chmod go= $@ $(B)/os.lst
 	@echo "image: $$(stat -c %s $@) bytes, of which the site: $$(stat -c %s $(B)/site.bin)"
 	@python3 tools/jcc.py $(B)/os.lst $(HOT) || echo "(these jumps lie on 32-byte boundaries: see HOT in src/os.asm)"

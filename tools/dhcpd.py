@@ -30,8 +30,8 @@ def ip(a):
 
 
 class Msg:
-    """A client's message: kind (1 DISCOVER, 3 REQUEST), xid, mac, ciaddr, src (the IP
-    header's source), to (its destination), opts {number: value}, length (of the frame)."""
+    """A client's message: kind (1 DISCOVER, 3 REQUEST), xid, secs, mac, ciaddr, src (the
+    IP header's source), to (its destination), opts {number: value}, length (of the frame)."""
 
     def __init__(self, f):
         self.length = len(f)
@@ -39,6 +39,7 @@ class Msg:
         b = f[42:]
         self.bootp = len(b)
         self.xid, self.ciaddr, self.mac = b[4:8], socket.inet_ntoa(b[12:16]), b[28:34]
+        self.secs = struct.unpack(">H", b[8:10])[0]
         self.opts, o = {}, b[240:]
         while o and o[0] != 255:
             if o[0] == 0:

@@ -9,6 +9,8 @@
 # another DHCP server in its place; DHCPD=none runs none, and then COMMAND is not kept
 # waiting for the guest to answer (it is the server: tools/dhcptest.py), unless STATIC=1
 # says that the image has its address (so that such a one is seen to need no server).
+# An image with an IPv6 address (make IP6=fd00:15::15: the tests') has the host at
+# fd00:15::2 and fd00:15::32 to ::63 as well.
 set -euo pipefail
 cd "$(dirname "$0")"
 export B=${B:-build}
@@ -18,8 +20,14 @@ TAP=k2t
 
 ip link del "$TAP" 2>/dev/null || true
 ip tuntap add dev "$TAP" mode tap
-sysctl -q "net.ipv6.conf.$TAP.disable_ipv6=1" 2>/dev/null || true
-ip link set "$TAP" multicast off
+if [[ -s $B/ip6 ]]; then
+  sysctl -q "net.ipv6.conf.$TAP.accept_ra=0" 2>/dev/null || true
+  ip -6 addr add fd00:15::2/64 dev "$TAP" nodad
+  for i in $(seq 32 63); do ip -6 addr add "fd00:15::$i/64" dev "$TAP" nodad; done
+else
+  sysctl -q "net.ipv6.conf.$TAP.disable_ipv6=1" 2>/dev/null || true
+  ip link set "$TAP" multicast off
+fi
 ip addr add 10.0.2.2/24 dev "$TAP"
 for i in $(seq 32 63); do ip addr add "10.0.2.$i/24" dev "$TAP"; done
 ip link set "$TAP" up
@@ -31,6 +39,7 @@ if [[ -n ${LOSS:-} ]]; then
   tc qdisc add dev "$TAP" root netem loss "$LOSS%"
   tc qdisc add dev "$TAP" handle ffff: ingress
   tc filter add dev "$TAP" parent ffff: protocol ip u32 match u32 0 0 action gact pass random netrand drop $((100 / LOSS))
+  tc filter add dev "$TAP" parent ffff: protocol ipv6 u32 match u32 0 0 action gact pass random netrand drop $((100 / LOSS))
 fi
 # REORDER=n: n% of the packets to the guest overtake the others, which are held 5 ms (not with LOSS)
 [[ -n ${REORDER:-} ]] && tc qdisc add dev "$TAP" root netem delay 5ms reorder "$REORDER%"

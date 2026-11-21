@@ -51,15 +51,17 @@ is history, a measurement series or a description of how a routine works. Those 
   or two lines, or fix the docs it contradicts. Delete what is no longer true.
 
 ## Where it stands
-- The system is 13,955 bytes with an address of its own (`IP=`, `-i`), and 14,405
+- The system is 13,955 bytes with an address of its own (`IP=`, `-i`), and 14,469
   without, which is the default since 2026-11-21: it asks for its address by DHCP
-  (450 bytes; the timer that goes by the round trip is 64 in both). It
+  (514 bytes; the timer that goes by the round trip is 64 in both). With an IPv6
+  address (`IP6=`, `-6`: it has to be told one) it is 752 bytes more: 15,221. It
   boots from GRUB or a BIOS boot sector, uses all the
   RAM and up to 4 processors, modern virtio-net, and serves GET and HEAD by path with
   compressed forms, ETag and 304, keep-alive, and a redirect on port 80.
-- DHCP has been tried against QEMU's server, dnsmasq and the tests' own, not yet on a
-  real machine: `hcloud` has no token here since the bounty began (the user took it
-  away: the rescue system is a way to the bounty's key).
+- DHCP has been tried against QEMU's server, dnsmasq and the tests' own, and IPv6
+  against Linux over a tap; neither on a real machine yet: `hcloud` has no token here
+  since the bounty began (the user took it away: the rescue system is a way to the
+  bounty's key).
 - Memory per held connection: 24 bytes on port 80, 128 bytes for TLS.
 - 15kb.org runs the bounty's image since 2026-11-20: packed from the branch `bounty`,
   alone on the server's disk (no Linux), with a Let's Encrypt certificate until
@@ -78,10 +80,10 @@ is history, a measurement series or a description of how a routine works. Those 
 The user's list for this branch (2026-11-21), in this order. Done, as far as it goes
 without a real machine: DHCP; one-step publishing (`./k15 publish`, `ci/publish.yml`);
 the raw disk from a rescue system as the main way onto a machine, with what three
-hosts' documentation says. Still to be seen on a host: all three (the user has to give
-a token for a project that is not the bounty's, or run them: docs/server.md says what
-was tried where). To do:
-4. IPv6, and a retransmission timer that knows the round trip.
+hosts' documentation says; a retransmission timer that knows the round trip; IPv6.
+Still to be seen on a host: all of them but the timer (the user has to give a token
+for a project that is not the bounty's, or run them: docs/server.md says what was
+tried where). To do:
 5. Reproducible builds: the system part rebuilt byte for byte from source by anyone.
 6. Handshake speed, last: OpenSSL's assembly does the ladder and the signature in about
    a fifth fewer cycles; it is the riskiest code to touch.
@@ -127,9 +129,11 @@ Don't change the source or a test script while a suite runs.
   `unshare -Urn tools/tlsfuzz.sh` (three minutes).
 - After touching `dhask`, `dhsend`, `dhcp` or what `tcp` lets through to them:
   `unshare -Urn tools/dhcptest.sh` (a minute), a few times, and once with `real`.
+- After touching `tcp6`, `nd`, `prf6`, `find`, `tcp_seg` or `drain`: `B=build-site6
+  unshare -Urn ./tap.sh python3 tools/v6test.py`, and the suite's `*6*` runs.
 - After touching `k15`: `tools/k15test.sh` and `unshare -Urn tools/hosttest.sh` (a
   minute: a machine that is made up; what a host does is not seen there).
-- After anything else: `tools/suite.sh` (67 runs, a quarter of an hour). Also with `SMP=1` and
+- After anything else: `tools/suite.sh` (83 runs, twenty minutes). Also with `SMP=1` and
   `SMP=4` after touching what processors share or how the machine starts. On 4,
   `raw1m_20k` fails when the host is busy: run it alone before believing it.
 - After touching boot or the polling loops: `measure.sh` with `DEBUG=1`, `KNOCK=` and

@@ -7,7 +7,8 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   [--hsts SECONDS] [--cache SECONDS] [--header 'Name: value'] [--no-compress]` makes
   OUT/os.bin and OUT/disk.img (the image asks for its address where it boots, by DHCP,
   so it is not tied to a machine; with `-i IP` it has that address, asks nobody, and is
-  450 bytes smaller; port 80 redirects to https://NAME/ unless `--plain80`;
+  514 bytes smaller; with `-6 IP6` it has that IPv6 address as well, which is 752
+  bytes; port 80 redirects to https://NAME/ unless `--plain80`;
   `--no-compress`: no file is packed a second and third time, compressed; `--san` is a
   further name for the certificate, `www.NAME` say: the server does not look at the
   name it is asked for, so every name that points at it and is in its certificate gets
@@ -52,14 +53,15 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   and key schedule 1,600, SHA-256 450, curves 3,000 with their programs and constants,
   the cipher 1,000, certificate 230; among them 49 of padding in front of the
   routines a handshake spends its time in: see HOT in "How the curve code works". That
-  is an image with an address of its own; one without, the default, has 450 bytes
-  more, the DHCP client: 14,405. Of the
+  is an image with an address of its own; one without, the default, has 514 bytes
+  more, the DHCP client: 14,469; and one with an IPv6 address 752 more than that:
+  15,221. Of the
   874 that the night of 2026-11-12 added: frames for the card to cut 450, window scaling
   and what goes with it 130, the forms of a file 290; `seal` got faster in the same
   bytes.) `make B=dir CERT=dir NAME=n IP=a.b.c.d SITE=folder P80=redirect HSTS=seconds
   COMPRESS=0 KNOCK=a,b` builds another image: its identity, the name in a generated
   certificate (`SAN='a b'`: its further names), the address it answers on (without
-  `IP`: the one it is given where it boots), what it
+  `IP`: the one it is given where it boots; `IP6=`: an IPv6 address beside it), what it
   serves, what port 80 does, whether files are packed compressed too, and
   (development only) the two ports that reset it. The scripts take `B` from the
   environment. Only the address,
@@ -83,7 +85,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   none (a browser may not believe it there). OUT/site.json says what each path must
   return (for the tests), OUT/page80.bin what port 80 says.
 - `tools/suite.sh [JOBS] [name...]`: everything below, a few at a time, one line each
-  (67 runs, a quarter of an hour). `SMP=1` or `SMP=4` in front for other machines than the
+  (83 runs, twenty minutes). `SMP=1` or `SMP=4` in front for other machines than the
   default of 2 processors. Its verdict is strict: one failed connection is a FAIL. Under
   a loaded host a run that overflows rings on purpose (`raw1m_20k`) can time out a few
   hundred of a million (on 4 processors it does every time the suite runs five at once):
@@ -254,11 +256,13 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   image's DHCP client against a server that does what the test wants
   (`tools/dhcptest.py`, made of `tools/dhcpd.py`). It must ask again when nobody
   answers; take no notice of what is not a server's answer to it (another number, a
-  wrong checksum, other ports, a message cut short, options longer than the message)
-  nor of an answer it did not ask for; ask the server that offered for the address
-  offered and serve on it and on no other; ask to keep it at half its time; take an
-  answer without a UDP checksum; give the address up when told no, ask anew and serve
-  on the new one; and be there after 13,000 answers damaged at random. `... dhcptest.sh
+  number, its own question's before this one, a wrong checksum, other ports, a message
+  cut short, options longer than the message) nor of an answer it did not ask for; ask
+  each time with a new number; ask the server that offered for the address offered,
+  and no second server; take a yes only to that address, and serve on it and on no
+  other; ask to keep it at half its time; take an answer without a UDP checksum; give
+  the address up when told no, ask anew and serve on the new one; and be there after
+  13,000 answers damaged at random. `... dhcptest.sh
   real` (80 s; `dhcp_dnsmasq`) is the same image against dnsmasq: an address, and a
   minute later the renewal. The suite's `static_*` runs are an image built with
   `IP=10.0.2.15`, over tap without any DHCP server.
@@ -270,6 +274,16 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   built `RACE=3 CAP=16`, in which the one free slot of a bucket is somebody else's
   between being counted and being taken; the connection must then not be made anywhere
   else.
+- `B=build-site6 unshare -Urn ./tap.sh python3 tools/v6test.py` (seconds; the suite's
+  `v6`): an image built with `IP6=fd00:15::15`, frame by frame: the neighbour
+  advertisement for whoever asks for our address, and nothing for six kinds of other
+  question; a SYN-ACK from our address and none for five kinds of SYN that are not for
+  us or not as we take them; a file in records of 1,220 bytes; 3,000 frames with wrong
+  lengths. The tap has fd00:15::2 and ::32 to ::63 when the image has such an address,
+  and `V6=1` in front of `taprunc.sh` and `tools/sitetest.sh tap` makes their clients
+  come that way (the suite's `tls6*`, `plain6*`, `real6*`, `hrr6*`, `site6*`; `small6`:
+  four addresses with the same ports into 1,024 slots; `v6_*4*`: the same image over
+  IPv4).
 - `B=build-site DELAY=300 unshare -Urn ./tap.sh python3 tools/rtttest.py` (a quarter of
   a minute; the suite's `rtt`): over a round trip of 300 ms, with nothing lost, no
   segment of a response may go twice (a page of one segment on a connection that

@@ -48,7 +48,13 @@ static conn *C;
 static int N, ep, inflight, opened, served, hs_err, get_err, closed_err, in_use;
 static int INFLIGHT = 4, TIMEOUT = 60, PLAIN;
 static SSL_CTX *ctx;
-static struct sockaddr_in src, dst;
+static struct sockaddr_storage src, dst;   // (IPv4, or IPv6 if SRC_IP is such an address)
+static socklen_t alen;
+static char srcname[64];
+// (the port of an address of either kind)
+static in_port_t *portof(struct sockaddr_storage *a) {
+    return a->ss_family == AF_INET6 ? &((struct sockaddr_in6 *)a)->sin6_port : &((struct sockaddr_in *)a)->sin_port;
+}
 static char expect[4096];
 static int expect_len;
 
@@ -72,7 +78,7 @@ static void want(conn *c, int ev) {
 
 static void fail(conn *c, const char *why) {
     static const char *const what[] = {"unused", "connecting", "handshake", "idle", "request", "response", "failed"};
-    fprintf(stderr, "FAILED: %s port %d while in %s: %s\n", inet_ntoa(src.sin_addr), ntohs(src.sin_port) + (int)(c - C),
+    fprintf(stderr, "FAILED: %s port %d while in %s: %s\n", srcname, ntohs(*portof(&src)) + (int)(c - C),
             what[c->st], why);
     if (c->st == CONNECTING || c->st == HANDSHAKE) hs_err++, inflight--;
     else if (c->st == REQUEST || c->st == RESPONSE) get_err++, inflight--, opened--;
@@ -174,19 +180,19 @@ static void start(int i) {
     conn *c = &C[i];
     int one = 1;
     struct linger lg = {1, 0};  // reset on exit, so the next run can reuse the ports at once
-    c->fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    c->fd = socket(src.ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (c->fd < 0) { perror("socket"); exit(1); }
     setsockopt(c->fd, SOL_SOCKET, SO_LINGER, &lg, sizeof lg);
     setsockopt(c->fd, IPPROTO_TCP, 1 /* TCP_NODELAY */, &one, sizeof one);
-    struct sockaddr_in a = src;
-    a.sin_port = htons(ntohs(src.sin_port) + i);
+    struct sockaddr_storage a = src;
+    *portof(&a) = htons(ntohs(*portof(&src)) + i);
     c->st = CONNECTING;
     c->deadline = now() + TIMEOUT;
     inflight++;
     in_use = i + 1;
-    if (bind(c->fd, (void *)&a, sizeof a) < 0 ||
-        (connect(c->fd, (void *)&dst, sizeof dst) < 0 && errno != EINPROGRESS)) {
-        fprintf(stderr, "bind/connect port %d: %s\n", ntohs(a.sin_port), strerror(errno));
+    if (bind(c->fd, (void *)&a, alen) < 0 ||
+        (connect(c->fd, (void *)&dst, alen) < 0 && errno != EINPROGRESS)) {
+        fprintf(stderr, "bind/connect port %d: %s\n", ntohs(*portof(&a)), strerror(errno));
         return fail(c, "bind/connect");
     }
     c->ev = EPOLLOUT;
@@ -252,14 +258,24 @@ int main(int argc, char **argv) {
     if (!f) { perror(argv[4]); return 2; }
     expect_len = fread(expect, 1, sizeof expect, f);
     fclose(f);
-    src.sin_family = dst.sin_family = AF_INET;
-    inet_pton(AF_INET, argv[1], &src.sin_addr);
-    src.sin_port = htons(atoi(argv[2]));
+    // (over IPv6 if SRC_IP is such an address: then the guest is fd00:15::15, or DST=[address]:port)
+    int six = strchr(argv[1], ':') != NULL;
     char dip[64] = "10.0.2.15", name[256] = "", path[600];
     int dport = PLAIN ? 80 : 443;
-    if (getenv("DST")) sscanf(getenv("DST"), "%63[^:]:%d", dip, &dport);
-    inet_pton(AF_INET, dip, &dst.sin_addr);
-    dst.sin_port = htons(dport);
+    if (six) strcpy(dip, "fd00:15::15");
+    if (getenv("DST") && sscanf(getenv("DST"), "[%63[^]]]:%d", dip, &dport) < 1) sscanf(getenv("DST"), "%63[^:]:%d", dip, &dport);
+    snprintf(srcname, sizeof srcname, "%s", argv[1]);
+    src.ss_family = dst.ss_family = six ? AF_INET6 : AF_INET;
+    alen = six ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+    if (six) {
+        inet_pton(AF_INET6, argv[1], &((struct sockaddr_in6 *)&src)->sin6_addr);
+        inet_pton(AF_INET6, dip, &((struct sockaddr_in6 *)&dst)->sin6_addr);
+    } else {
+        inet_pton(AF_INET, argv[1], &((struct sockaddr_in *)&src)->sin_addr);
+        inet_pton(AF_INET, dip, &((struct sockaddr_in *)&dst)->sin_addr);
+    }
+    *portof(&src) = htons(atoi(argv[2]));
+    *portof(&dst) = htons(dport);
     const char *bdir = getenv("B") ? getenv("B") : "build";
     snprintf(path, sizeof path, "%s/name", bdir);
     if (!(f = fopen(path, "rb")) || !fgets(name, sizeof name, f)) { perror(path); return 2; }

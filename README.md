@@ -31,8 +31,8 @@ day. [docs/server.md](docs/server.md) has the hosts, and what was tried where.
 
 What you get, and what you don't:
 
-- **Small.** The system is 14,405 bytes (13,955 if it is given its address instead of
-  asking for it). The image is that plus your files, each stored
+- **Small.** The system is 14,469 bytes (13,955 if it is given its address instead of
+  asking for it; 752 more with IPv6). The image is that plus your files, each stored
   as the response it is sent as (and, where that makes it shorter, once more compressed
   with gzip and with brotli, for clients that take that).
 - **Nothing to break into.** No kernel, no shell, no file system, no user accounts, no
@@ -72,8 +72,8 @@ What you get, and what you don't:
   Nothing renews by itself: `./k15 publish --if-due` is there to be run daily, does
   nothing until the certificate has a month left, and then makes the new key where it
   runs: only a request for a certificate travels to the server.
-  One site per server, one address (IPv4, from DHCP: there is no IPv6), GET and HEAD
-  and nothing else, requests of up to
+  One site per server, one address (IPv4, from DHCP; and an IPv6 address if it is told
+  one: `-6`), GET and HEAD and nothing else, requests of up to
   4 KB, nothing compressed
   that was not packed that way, no ranges, TLS 1.3 clients only. Of a request's
   headers two are read: Accept-Encoding and If-None-Match (a client that has a file is
@@ -96,7 +96,7 @@ tools/outside.sh fetch   # what the next three need, into ext/ (Wycheproof, Valg
 make outside         # the crypto against Wycheproof's vectors and RFC 6979's
 make ct              # the crypto under Valgrind: no jump and no address is made of a secret
 unshare -Urn tools/tlsfuzz.sh   # tlsfuzzer against the image
-tools/suite.sh       # all 67 regression runs: loss, reordering, scale, browsers, a site of 80 files
+tools/suite.sh       # all 83 regression runs: loss, reordering, scale, browsers, a site of 80 files
 tools/sitetest.sh    # that site alone: every path, every kind of client
 unshare -Urn ./tap.sh ./taprunc.sh 2000 1024 4   # 8,000 connections from 4 source IPs
 gcc -O2 -o build/rawc tools/rawc.c

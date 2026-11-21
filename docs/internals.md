@@ -45,6 +45,8 @@ Read the part you are about to change. `tools/ec.py` has the curve code's other 
   In it: `.walk` (records, whole or put together), `.tx` (a response on its way).
 - `dhask`, `dhsend`, `dhcp`: where our address comes from, if the image has none ("Our
   address", below).
+- `tcp6`, `nd`, `our6`, `prf6`, `cuts`, and `.v6` in `tcp_seg`: IPv6, if the image is
+  built with an address for it ("IPv6", below).
 - `record` (a client's record: authentic? a request? for which response), `pick` and
   `seek` (which form of it, by the request's Accept-Encoding and If-None-Match), `geom`
   (how the response in hand is cut), `sendseg` (one segment of it), `sendrun` (all the
@@ -120,34 +122,99 @@ nasm won't do that for a plain number). Needs 64 MiB or more.
 An image is built without an address (the default) or with one (`make IP=a.b.c.d`,
 `./k15 pack -i`). With one, it is a constant in two comparisons (`NOTOURS`: the ARP
 request's target, the IP header's destination), nobody is asked, and there is no UDP in
-the image. Without, it is a variable, and a DHCP client is assembled in (450 bytes):
+the image. Without, it is a variable, and a DHCP client is assembled in (514 bytes):
 - What we send never needs it: a frame of ours answers one, and goes from the address
   that one was sent to, to where it came from (`tcp_seg` takes both from the frame in
   hand, `ethhdr` the card's address). So an address is all DHCP has to give us: no
   mask, no router, no name server is asked for or looked at.
-- The first processor asks when it is time (`dhask`, every turn of its polling loop, by
-  `DHT`): with no address a DISCOVER, with one a REQUEST to keep it. Both go to
-  everybody (the REQUEST as RFC 2131 has a client ask that has heard nothing from its
-  own server, "rebinding": to send it to the server alone we would have to find the
-  way there). 342 bytes, of which 300 are the message: the least there may be. Again
-  after 2 s, 4 s, ... 128 s and then every 128 s, until an answer comes.
-- An answer is a frame like any other (`tcp` lets UDP through to `dhcp` whatever
-  address it is sent to), so it goes to whichever processor its addresses hash to:
-  what the processors know of all this is in low memory, where it is everybody's
-  (`MYIP`, `DHT`, `DHB`). It counts if its UDP checksum is right or left out (0: OVN's
-  DHCP does that), if it is from port 67 to port 68, has our number (`DHX`: 32 bits
-  from `rand` at boot), **and we are asking** (`DHB`): once we have our address, nobody
-  can tell us another until we ask again, so somebody far away who guesses the number
-  has milliseconds a day to hit. Its options are walked as far as the message goes,
-  and the first four bytes of three are kept: the time (51), the kind (53), the
-  server's name for itself (54).
-- An OFFER, while we have no address, gets a REQUEST for the address it offers, naming
-  the server. An ACK makes the address ours: `MYIP`, and `DHT` is half its time from now
-  (and a second; six days at most, which is what the clock's 32 bits of ticks can
-  say). A NAK makes it not ours, and a second later we ask anew.
+- **All of it is the first processor's.** It asks when it is time (`dhask`, every turn
+  of its polling loop, by `DHT`): with no address a DISCOVER, with one a REQUEST to
+  keep it. Both go to everybody (the REQUEST as RFC 2131 has a client ask that has
+  heard nothing from its own server, "rebinding": to send it to the server alone we
+  would have to find the way there). 342 bytes, of which 300 are the message: the
+  least there may be. Again after 2 s, 4 s, ... 128 s and then every 128 s, until an
+  answer comes. And what may be an answer (UDP over IPv4, whatever address it is sent
+  to) is given to the first processor and to no other (`drain`), so what is known of
+  the asking has one reader and one writer; the others read the outcome, `MYIP`. (At
+  first an answer went to whichever processor its addresses hashed to, and that one
+  wrote `MYIP`, `DHT` and `DHB` while the first might be in the middle of asking: an
+  answer and a repeat within a few instructions of each other, or a yes and a no from
+  two servers on two processors, could leave no address and nothing being asked, for
+  days. The review of 2026-11-21.)
+- An answer counts if its UDP checksum is right or left out (0: OVN's DHCP does that),
+  if it is from port 67 to port 68, **has the number of the question being asked**
+  (`DHX`: 32 bits from `rand`, new for every question), **and we are asking** (`DHB`).
+  So once we have our address nobody can tell us another until we ask again; and
+  while we ask, also for days if no server answers a renewal, whoever has seen a
+  question's number on the link, or tries all of them from afar (1.2 TB), has until
+  the next question, 128 s at most. (With one number for as long as we were up, as it
+  was at first, an unanswered renewal left that door open for good.) Its options are
+  walked as far as the message goes, and the first four bytes of three are kept: the
+  time (51), the kind (53), the server's name for itself (54).
+- An OFFER, while we have no address and have asked for none (`DHA`), gets a REQUEST
+  for the address it offers, naming the server; another server's offer for the same
+  question gets nothing (a REQUEST that names the second would tell the first that
+  its offer is not taken, RFC 2131, 3.1). An ACK counts if it is for the address we
+  asked for (the one offered; or ours, when we ask to keep it): then that is `MYIP`,
+  and `DHT` is half its time from now (and a second; six days at most, which is what
+  the clock's 32 bits of ticks can say). A NAK makes it not ours, and a second later we
+  ask anew. What we send says for how long we have been asking (1, 2, 4, ... s: a
+  server can be told to leave a client to others until then).
 - `tools/dhcptest.py` plays the server, right and wrong (and 13,000 answers damaged at
-  random); `tools/dhcptest.sh real` is dnsmasq; every test through QEMU's own network
-  has QEMU's.
+  random; nine images with one of the rules taken out each fail it);
+  `tools/dhcptest.sh real` is dnsmasq; every test through QEMU's own network has
+  QEMU's.
+
+## IPv6
+Only in an image built with an IPv6 address (`make IP6=...`, `./k15 pack -6`): 752
+bytes. The address is not asked for anywhere: hosts differ in how a machine would learn
+it (Hetzner: not at all, it is written into the machine's configuration; others by
+router advertisements), and all of them can say which one it is.
+- **One layout.** A frame of IPv6 for us is made to look like the IPv4 frame that all
+  of `tcp` knows, in place (`tcp6`): its header is 20 bytes longer, so the segment moves
+  down 20 bytes; the frame keeps its type (0x86DD at 12), which is how `tcp_seg`, `find`
+  and `cuts` tell; the client's 16 bytes stay in the frame, in three pieces where an
+  IPv4 header has what nobody looks at again (14 to 25, 30 to 33). So the first 64
+  bytes of a frame still say who the client is and how to reach it, which is all the
+  timers keep of one (`tarm`, `tnote`), and nothing else had to learn of IPv6. (`P_ADV`
+  moved from where the IPv4 header had its id to where the frame had our card's
+  address, for the same reason.)
+- **What stands for the client in a slot** is not its address (a slot has four bytes for
+  that) but 32 bits of the keyed hash of address and ports, never 0 (`find`: P_IP).
+  Two clients are taken for one only if those bits and the port are the same: nobody
+  can pick an address for that, the key being ours; by chance it is one pair in 2^48,
+  and then the second takes the first's place, as a client that comes again from the
+  same port does. The hash is of the address, and through the cipher a second time of
+  the ports (`prf6`), so that what one address and port is told (the cookie) is of no
+  use from another address. `drain` makes the same hash of the frame as it came, so
+  the processor and the places that go with it are the same as `find`'s. (The first
+  version stored those 32 bits through a register the hash had just changed: every
+  client was 255.255.255.255 with its port, and the hash's last word was not the one
+  `drain` had. 1 connection in 5,000 hung under `REORDER=25`: two processors had one
+  place for early segments. The suite's `small6` is four addresses with the same
+  ports into a table of 1,024 slots, which that version fails outright.)
+- **Its checksum** (TCP's, and ICMPv6's) covers the addresses, the length, what
+  follows the header, and the segment: that is everything from the length on, in
+  another order, once the two bytes behind the length say 0 and what follows. So it is
+  summed in place, coming and going, as IPv4's is.
+- **What we send** (`tcp_seg.v6`): the frame begins 20 bytes before where one of IPv4
+  would, so that from ebx on TCP's header and what it carries lie as ever, also for
+  the frames the card cuts up (`txbig` leaves room in front; HOST_TSO6, which `cuts`
+  asks for apart from HOST_TSO4). From our address, to the client's, 64 hops.
+- **A segment is 1,220 bytes at most**, whatever the client says it takes (and whatever
+  its first ack says our SYN-ACK noted: that comes back in the ack's low bits, and is
+  the client's to send back or not): with its
+  headers that is 1,280, which every link of IPv6 has to carry. So no path is too
+  narrow for a segment of ours, nobody has to tell us that one was, and nobody is
+  listened to (IPv4 fragments what is too big, or says so to a sender that listens;
+  IPv6 only says so).
+- **Neighbours** (`nd`): who asks for our address (a neighbour solicitation that has
+  passed no router: 255 hops left, and whose sender says who it is) is told that it is
+  at our card's. That is all of ICMPv6: no echo, nothing about routers (a frame of
+  ours goes to where the one it answers came from), and one who asks whether the
+  address is free (from "::") gets no answer.
+- `tools/v6test.py` is all of that frame by frame; the suite's `*6*` runs are the
+  clients of the other runs over IPv6, and two of them the same image over IPv4.
 
 ## Processors
 The server's card has one receive queue, so the processors are fed in software. The
@@ -286,7 +353,7 @@ bytes.
   client answers a flight at once: it has its Finished to send, so no ack is held
   back in between; `tcp.est`), and the timer then waits 3 R (TCP's own rule after one
   measurement), a quarter of a second at least and a second at most. For a client up
-  to 83 ms away that is the quarter second it always was, to the tick. For one 300 ms
+  to 93 ms away that is the quarter second it always was, to the tick. For one 300 ms
   away it was a segment sent twice whenever an answer took a round trip to be
   acknowledged, which is always, and half the window gone for good each time: 200 KB
   took 12 s over 300 ms and takes 2.4 (`tools/rtttest.py`, the suite's `rtt`), and 6 MiB
@@ -604,6 +671,14 @@ removing the ones about TLS.
   5961, 5.2 wants the ack inside what we sent as well: a blind sender has less to guess). The IP header's checksum is not looked at: what we use of that header is
   fixed or goes into TCP's checksum, which is.
 - Port 80: one response, whatever is asked; a request body is not understood.
+- IPv6: one address, which the image is built with; nothing behind the header but TCP
+  (no other headers, no fragments); nobody is told that an address is taken (a
+  question from "::" gets no answer); no echo; a neighbour's question is answered
+  without its options being walked (one with an option of length 0 too, which RFC
+  4861 has thrown away); and we never say that we listen for such questions (no MLD
+  report): a switch that passes them only to those who said so will not pass them to
+  us, and then nobody finds us over IPv6. Not met yet: no real host has had this
+  image.
 - DHCP: an address that could not be renewed is used on (a server that gives up its
   address is no server; we go on asking every 128 s); nobody is asked whether the
   address offered is in use (no ARP probe, no DECLINE), and it is not given back (no
