@@ -66,6 +66,8 @@ dest    equ $ - 4               ; (where the next piece goes)
         mov [di-4], ecx
         int 0x15
         jc .done                ; (the end, said the other way)
+        cmp eax, 0x534D4150     ; (a BIOS that knows this call says "SMAP" back; what one
+        jne .done               ; that does not leaves there is no range)
         add di, 24
         cmp di, MMAP + 4 + 24 * MMAX
         jae .done

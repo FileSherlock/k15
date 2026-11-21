@@ -136,3 +136,10 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - The bounty's page is 19 bytes from losing its compressed forms: gzip has to bring `/`
   into one record (1,418 bytes with its head), and a real address packs worse than the
   placeholder's zeros. After a change to `site/index.html`, look at `site.json`'s forms.
+- A mask after `HOT` can be stale without the build saying so, as long as the routine
+  happens to sit well: `xdh`'s was, until 20 bytes of code in front of it moved it.
+- A session id of more than 32 bytes was echoed with lengths that wrapped at 256 (only
+  that client's ServerHello was wrong); a short ARP frame was answered from what the
+  frame before it left in `FR`. Both found by the audit in issue 1 (2026-11-21).
+- WSL exports the machine's name as NAME to every shell: make does not take a NAME from
+  the environment that is the host's name (not tried on WSL).

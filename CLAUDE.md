@@ -42,7 +42,7 @@ is history, a measurement series or a description of how a routine works. Those 
   or two lines, or fix the docs it contradicts. Delete what is no longer true.
 
 ## Where it stands
-- The system is 13,859 bytes. It boots from GRUB or a BIOS boot sector, uses all the
+- The system is 13,891 bytes. It boots from GRUB or a BIOS boot sector, uses all the
   RAM and up to 4 processors, modern virtio-net, and serves GET and HEAD by path with
   compressed forms, ETag and 304, keep-alive, and a redirect on port 80.
 - Memory per held connection: 24 bytes on port 80, 128 bytes for TLS.
@@ -63,7 +63,10 @@ is history, a measurement series or a description of how a routine works. Those 
 1. For the user to decide, each described in `docs/internals.md` ("Shortcuts that
    remain"): two TLS shortcuts that the tests from outside point at: a ChangeCipherSpec
    after the ServerHello, which RFC 8446 wants sent to a client that has a session id
-   (30 bytes or so); and a ClientHello in two records.
+   (30 bytes or so); and a ClientHello in two records. And from the audit of 2026-11-21
+   (github.com/FileSherlock/k15/issues/1), whose small findings are fixed: data is taken
+   whatever its ack says (its 2); the site's first bytes can be executed where the chain
+   is short (its 1: padding, 2.5 KB in the default image); its 4 to 7 and 11 to 13.
 2. The handshake further: OpenSSL's assembly does the ladder and the signature in
    about a fifth fewer cycles.
 3. Later: IPv6, DHCP, a retransmission timer that knows the round trip, pacing, zstd,

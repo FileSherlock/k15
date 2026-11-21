@@ -37,7 +37,8 @@ Read the part you are about to change. `tools/ec.py` has the curve code's other 
   once the device has sent what it last held, which `TXCNT`, the count of all frames
   ever queued, and the device's own count tell), queued by `tcp_big` with the 12 bytes
   in front that say how it is to be cut, and the device is told at once.
-- `tcp`: ARP requests for OURIP get a reply; then only IPv4 without options, unfragmented,
+- `tcp`: ARP requests for OURIP get a reply (whole ones: 42 bytes; behind a shorter frame
+  lies the one before it); then only IPv4 without options, unfragmented,
   TCP, to OURIP, with the TCP checksum right and a length that fits the frame and both
   headers (40 bytes at least: asked before 20 are taken off it), port 443 or 80 gets
   further. `tcp_send` cuts an answer into segments, `tcp_seg` builds and sends one.
@@ -500,7 +501,8 @@ there is; the key block of a direction is 32 bytes for the key's 16 and 12 of iv
 From k2, where they saved bytes, and from the first version that served files. Ask before
 removing the ones about TLS.
 - TLS 1.3 only, one suite: TLS_AES_128_GCM_SHA256 (wherever the client names it),
-  X25519, ecdsa_secp256r1_sha256; who lacks one of these is told so (an alert) and
+  X25519, ecdsa_secp256r1_sha256; who lacks one of these, or has a session id of more
+  than 32 bytes, is told so (an alert) and
   nothing else. Of the ClientHello the cipher suites, the versions, the groups and the
   x25519 key share are looked at (`handshake` walks the extensions; every length on the
   way is bounded by the ClientHello's end, and what is looked at inside an extension by
@@ -542,7 +544,8 @@ removing the ones about TLS.
   go goes at once), a first timeout of 0.25 s whatever the round trip is (a path
   slower than that gets a segment twice), and the old way (`tcp_send`) for the flight
   and port 80 (capped at 4 KiB unacknowledged on port 80). Our own window is 64 KB,
-  unscaled. The IP header's checksum is not looked at: what we use of that header is
+  unscaled. A segment's data is taken by its sequence number whatever its ack says (RFC
+  5961, 5.2 wants the ack inside what we sent as well: a blind sender has less to guess). The IP header's checksum is not looked at: what we use of that header is
   fixed or goes into TCP's checksum, which is.
 - Port 80: one response, whatever is asked; a request body is not understood.
 - `keys` writes 20 junk bytes after an IV: the handshake makes both key blocks in `KA` and
@@ -553,4 +556,5 @@ removing the ones about TLS.
   unused nonces wait in the stock. (The private key is in the same memory, which is
   data: read, written, never executed.)
 - The first page with data behind the code can be executed (code and what follows share
-  it: 4 KiB at most, of constants, among them the key).
+  it: 4 KiB at most, of constants, among them the key; and where the chain is short, as
+  the tests' is, the site's first bytes too. A chain of four certificates fills the page).

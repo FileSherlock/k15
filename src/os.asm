@@ -1128,7 +1128,8 @@ tramp:  cli
         jmp dword 8:apstart
 .no:    hlt
         jmp .no
-apcount: dd 0
+        times (tramp - $) & 3 db 0 ; (what `lock xadd` counts in lies on a multiple of 4 from
+apcount: dd 0                   ; TRAMP, a page's start: never across two cache lines)
 apgdt:  dw 23
         dd GDT
 TRAMPLEN equ $ - tramp
@@ -1330,7 +1331,9 @@ tcp:
         xor ebx, ebx            ; FR (and 0), all the way through
         cmp word [rbx+12], 0x0608
         jne .ip
-        cmp word [rbx+20], 0x0100 ; ARP request for our address: answer it
+        cmp dword [rbx+RXLEN], 42 ; ARP, and all of it (what lies behind a shorter frame is
+        jb .ret                 ; the frame before it): a request for our address is answered
+        cmp word [rbx+20], 0x0100
         jne .ret
         cmp dword [rbx+38], OURIP
         jne .ret
@@ -3382,6 +3385,9 @@ handshake:
         mov al, 70
         test dl, 1
         jz .alert
+        mov al, 50              ; ("decode error": a session id is 32 bytes at most, RFC 8446,
+        cmp byte [rsi+38], 32   ; 4.1.2. Our ServerHello has the client's, and with a longer
+        ja .alert               ; one its lengths would not fit their one byte)
         mov al, 40
         cmp dword [SUITE], 0
         jl .alert
@@ -3932,7 +3938,7 @@ R_A24   equ REGS + 13*32
 R_D     equ REGS + 14*32
 R_C     equ REGS + 15*32
 
-        HOT 0x00FFE0C0
+        HOT 0x18001FFC
 ; xdh: our X25519 key share for the secret E (clamped as in RFC 7748: a multiple of 8, so
 ; every point of small order makes R_X = 0) to rdi (which moves on 32 bytes), and R_X = the
 ; secret we share with the client whose key share is at rsi.
@@ -5091,9 +5097,9 @@ L_HRR:  db "HelloRetryRequest"
 ; told so has the table the BIOS left it, or the one it is started up with: at address 0,
 ; which is where the frame in hand lies. A fault would then go where sixteen bytes of a
 ; client's packet say (tools/wxtest.sh, 6 and 7).
-GDT:    dq 0
-        dq 0x00209A0000000000   ; 8: code, 64-bit
-        dq 0x0000920000000000   ; 16: data
+GDT:    dq 0                    ; (both marked as accessed: a processor that loads one not
+        dq 0x00209B0000000000   ; 8: code, 64-bit      marked writes that mark, and this
+        dq 0x0000930000000000   ; 16: data             table is in the image: not written)
 GDTR:   dw 23
         dd GDT
 %include "gen.inc"

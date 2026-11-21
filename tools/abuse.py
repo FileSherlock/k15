@@ -6,7 +6,8 @@
   2. a ClientHello without an x25519 key share gets no working session, and one with bytes
      that look like the start of one in another extension is served all the same; a
      client that can't be served (no TLS 1.3, not our cipher suite, no x25519, no
-     share for it after being asked, or a share of small order) gets a fatal alert that
+     share for it after being asked, a share of small order, or a session id of more
+     than 32 bytes) gets a fatal alert that
      says why, and the end of the connection: nothing that only looks like an answer
   3. junk instead of a ClientHello, an oversized "ClientHello", and a real one cut short
      anywhere or with any of its lengths gone wrong, do no harm
@@ -293,6 +294,27 @@ def main():
                   said(with_share(b"\x01" + bytes(31))) == ILLEGAL_PARAMETER)
     good &= check("and so is one sent after being asked",
                   said(shareless, ccs + with_share(b"\x01" + bytes(31))) == ILLEGAL_PARAMETER)
+    # (a session id is 32 bytes at most: the ServerHello that had a longer one's had lengths
+    # that did not say what followed them, until 2026-11-21)
+    def with_sid(n):
+        return record(hello[:1] + (len(hello) - 4 + n - hello[38]).to_bytes(3, "big") + hello[4:38]
+                      + bytes([n]) + os.urandom(n) + hello[39 + hello[38]:])
+
+    DECODE_ERROR = bytes.fromhex("15030300020232")
+    good &= check("a session id of 33 bytes is told \"decode error\", and so is one of 255",
+                  said(with_sid(33)) == DECODE_ERROR and said(with_sid(255)) == DECODE_ERROR)
+    s = socket.create_connection((HOST, PORT), timeout=1)
+    s.sendall(with_sid(32))
+    flight = b""
+    try:
+        while len(flight) < 132 or len(flight) < 132 + int.from_bytes(flight[130:132], "big"):
+            flight += s.recv(4096) or b"x" * 4096
+    except OSError:
+        pass
+    s.close()
+    good &= check("one of 32 bytes gets a ServerHello whose lengths are right",
+                  flight[:5] == bytes([22, 3, 3, 0, 122]) and flight[5:9] == bytes([2, 0, 0, 118])
+                  and flight[127] == 23 and int.from_bytes(flight[130:132], "big") == len(flight) - 132)
     good &= check("junk in a handshake record is told \"protocol version\"",
                   said(record(os.urandom(300))) == PROTOCOL_VERSION)
     good &= check("and a normal client is served after them", served())

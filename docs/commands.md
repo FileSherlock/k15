@@ -28,7 +28,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   for its owner's eyes only (umask 077), and /boot/k15.bin on the server for root's.
 - `make` assembles `src/os.asm` into `build/os.bin` (loaded at 1 MiB) and `build/disk.img`
   (`src/boot.asm` + the image; what the tests boot), with the site of `www/` in it.
-  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 13,859,
+  `python3 tools/sizes.py build/os.lst` = bytes per routine. (Of the system's 13,891,
   about: boot, clock calibration, page tables, driver and the other processors 2,700,
   network 4,300 with the timers, requests and the forms of a file 700, TLS handshake
   and key schedule 1,600, SHA-256 450, curves 3,000 with their programs and constants,

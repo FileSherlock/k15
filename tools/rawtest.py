@@ -114,6 +114,34 @@ def plain_bound(s, eth):
     return None
 
 
+def arp_whole(s, mac):
+    """An ARP request for our address gets its reply; one cut short gets none, whatever the
+    frame before it left behind it (before 2026-11-21 the 14 bytes of an ARP frame's
+    Ethernet header, sent after a whole request, were answered as that request)."""
+    whole = b"\xff" * 6 + mac + b"\x08\x06" + bytes.fromhex("0001080006040001") + mac + socket.inet_aton("10.0.2.2") + bytes(6) + OURS
+
+    def replies(frame):
+        s.send(whole)
+        s.send(frame)
+        s.settimeout(0.3)
+        n = 0
+        while True:
+            try:
+                f = s.recv(65536)
+            except TimeoutError:
+                break
+            n += f[12:14] == b"\x08\x06" and f[20:22] == b"\x00\x02" and f[28:32] == OURS
+        s.settimeout(None)
+        return n
+
+    if replies(whole) != 2:
+        return "a whole ARP request for our address was not answered"
+    for n in range(14, 42):
+        if replies(whole[:n]) != 1:
+            return "an ARP frame of %d bytes was answered" % n
+    return None
+
+
 def main():
     rng = random.Random(SEED)
     s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
@@ -153,12 +181,12 @@ def main():
                 print("FAIL: the machine was gone after frame %d: %s" % (i, f[:54].hex()))
                 return 1
     time.sleep(0.3)
-    why = plain_bound(s, eth)
+    why = arp_whole(s, eth[6:12]) or plain_bound(s, eth)
     if why:
         print("FAIL:", why)
         return 1
     ok = alive() and real()
-    print("ok: the machine is there, port 80 is bounded, and it serves as before" if ok else "FAIL: the machine no longer serves (seed %d)" % SEED)
+    print("ok: the machine is there, a short ARP frame gets no answer, port 80 is bounded, and it serves as before" if ok else "FAIL: the machine no longer serves (seed %d)" % SEED)
     return 0 if ok else 1
 
 

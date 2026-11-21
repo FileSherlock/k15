@@ -62,6 +62,13 @@ $(B)/disk.img: src/boot.asm $(B)/os.bin tools/mkdisk.py
 # NAME: the name a generated certificate is for, and the one of a certificate's names
 # that port 80 sends everybody to (default: the certificate's first). SAN='a b': further
 # names for a generated certificate. $(B)/names.conf changes when they do.
+# (A NAME from the environment that is this machine's own name is not meant for us: WSL
+# exports that to every shell, and the first build would make its certificate for it.)
+ifeq ($(origin NAME),environment)
+ifeq ($(NAME),$(shell hostname))
+NAME :=
+endif
+endif
 GEN := $(B)/gen.inc $(B)/ec.inc $(B)/regs.inc $(B)/conf.inc
 ID := $(CERT)/server.key $(CERT)/server.pem
 $(ID) &:
