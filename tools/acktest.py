@@ -25,7 +25,12 @@ part in it), on port 80:
   among them;
 - what waits for an ack (port 80 sends 4 KiB at a time) is not let go by one whose
   sequence number is a megabyte from the client's, either way, though its ack is right;
-  it is by the client's, also from a little before what we expect and a little behind.
+  it is by the client's, also from a little before what we expect and a little behind;
+- a RST ends a connection at one number, the one our acks have said: not a byte before
+  it or behind, and, while an answer of several segments is on its way (when our acks
+  hold the client's last byte back, `tcp_send`), at that held-back number and not where
+  the client's own numbers are. That is the number a host has that knows nothing of
+  the connection but our segments, which is what a RST is mostly from.
 On port 443: bytes with such an ack are not put where the ClientHello goes, which then
 gets its flight.
 
@@ -153,6 +158,18 @@ class Raw:
         return data.startswith(begins) and len(data) > 0 and acked in (len(body), len(body) - 1), g
 
 
+def upto(c, g):
+    """how many bytes of ours the client has, by these segments"""
+    return max((((q - c.iss - 1) & M) + len(d) for _, q, _, d in g if d), default=0)
+
+
+def gone(c, ack, seq, body):
+    """Is a segment of the client's now told that there is no such connection (a RST and nothing else)?"""
+    c.send(0x18, ack, body, seq=seq)
+    g = c.got(0.3)
+    return bool(g) and all(f & 4 and not d for f, _, _, d in g), g
+
+
 def show(g):
     return "; ".join("flags %02x seq %d ack %d, %d bytes" % (f, q, a, len(d)) for f, q, a, d in g) or "nothing"
 
@@ -219,6 +236,47 @@ def framewise(s, mac):
         more = sum(len(d) for _, _, _, d in g)
         check(f"  the client's ack, {what}, lets the next 4 KiB go", 0 < more <= 4096, show(g))
         ours += more
+    # a RST: one number ends a connection
+    c = Raw(s, mac, 80)
+    ok, g = c.taken(req, begins=b"HTTP/1.1 ")
+    if ok:
+        ours = c.iss + 1 + upto(c, g)
+        c.seq += len(req)
+        for by in (-1, 1, 1 << 31):
+            c.send(0x04, 0, seq=c.seq + by)
+        c.got(0.05)
+        ok, g = c.taken(req, ack=ours, begins=b"HTTP/1.1 ")
+        check("port 80: a RST a byte before what we expect, a byte behind it, or half the numbers there are away is not taken: the next request "
+              "gets its response", ok, show(g))
+        ours = c.iss + 1 + upto(c, g)
+        c.seq += len(req)
+        c.send(0x04, 0)
+        c.got(0.05)
+        ok, g = gone(c, ours, c.seq, req)
+        check("port 80: a RST at what we expect is the connection's end: the next request is told that there is none", ok, show(g))
+    else:
+        check("port 80 answers a request (before the RSTs)", False, show(g))
+    for what, rsts, stays in (("where the client's own numbers are (a byte behind what our acks say), or two bytes before", (0, 1, -2, 1 << 31), True),
+                              ("where our acks say we are", (-1,), False)):
+        c = Raw(s, mac, 80)
+        c.send(0x18, c.iss + 1, b"\n\n" * 600)          # an answer of several segments: 4 KiB of it go
+        g = c.got(0.2)
+        n = upto(c, g)
+        if not (0 < n <= 4096 and len({a for _, _, a, _ in g}) == 1):
+            check("port 80 sends up to 4 KiB of answers, in segments that all acknowledge the same", False, show(g))
+            continue
+        sent = g[0][2] + 1                              # (what we have taken: a byte more than those acks say)
+        for by in rsts:
+            c.send(0x14 if by == 0 else 0x04, c.iss + 1 + n, seq=sent + by)
+        c.got(0.05)
+        if stays:
+            c.send(0x10, c.iss + 1 + n, seq=sent)
+            g = c.got(0.3)
+            check(f"port 80: while our acks hold the client's last byte back, a RST {what}, is not taken: the client's ack lets the next 4 KiB go",
+                  0 < sum(len(d) for _, _, _, d in g) and not any(f & 4 for f, _, _, _ in g), show(g))
+        else:
+            ok, g = gone(c, c.iss + 1 + n, sent, b"\n")
+            check(f"port 80: while our acks hold the client's last byte back, a RST {what} is the connection's end", ok, show(g))
     c = Raw(s, mac, 443)
     ok, g = c.refused(0x18, c.iss + 1 + 5000, bytes([22, 3, 1, 0, 200]) + bytes(60))
     check("port 443: bytes whose ack is not the client's get an ack and nothing else", ok, show(g))

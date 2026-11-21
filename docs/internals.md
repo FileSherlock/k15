@@ -419,7 +419,9 @@ The old way, and what both share:
   client's are and where ours are (RFC 9293, 3.10.7.4; RFC 5961, 5.2): one try in
   2^15 for the first, one in 2^12 or 2^13 for the second. An ack alone used to do:
   with a response on its way, one made-up ack in ten thousand moved `C_ACK` past what
-  the client had, and the response never ended. `tools/acktest.py`.
+  the client had, and the response never ended. A RST is the connection's end at one
+  number: the one our acks have said (`ackno`), which is what a host answers with
+  that knows nothing of the connection but our segments. `tools/acktest.py`.
 - In-order data is taken (a segment that overlaps what we have is trimmed), data from
   further on is kept (see below) and gets an ack of what we expect, a keep-alive probe
   gets an ack.
@@ -564,7 +566,7 @@ The old way, and what both share:
   each in a quiet one's place, and none in the place of one that kept talking. A
   connection that gave way and had never been sent anything but its SYN-ACK is made
   again by its next packet: its ack still is a valid cookie.
-- A slot is freed by a RST with the expected sequence number, and by a FIN: it gets our
+- A slot is freed by a RST at the number our acks have said, and by a FIN: it gets our
   FIN, and if the client had everything we sent, the slot is free at once (a lost FIN of
   ours means the client's next FIN gets a RST). If the client still lacks something, the
   slot stays (`F_CLOSED`) and answers retransmissions until the client's ack covers our
@@ -695,12 +697,14 @@ removing the ones about TLS.
   5961, 5.2 says: no older than the largest window it ever offered, which we don't
   keep); the acks we send for segments we refuse are not counted or held back (its
   section 7 wants a limit: a count is something an outsider can read, and we answer
-  one for one); a RST counts only at exactly the next number we expect, and one that
-  is merely near gets no ack (its section 3). That is not the number a host answers
-  with that has lost the connection while a request's last byte is not acknowledged
-  yet (`F_DEFER`: our ack is one behind, and so is its RST): its RSTs free nothing,
-  and the timer sends to it every 16 s for as long as it answers (not fixed: read,
-  not seen on a machine). A packet that others overtook has its window taken as if it
+  one for one); a RST counts only at exactly the number our acks have said, and one
+  that is merely near gets no ack (its section 3). While a request's last byte is not
+  acknowledged yet (`F_DEFER`: our ack is one behind) that is one before the number
+  of a client that still has the connection and gives it up: its RST frees nothing,
+  and the next segment of ours that reaches it gets one that does (its host has no
+  such connection by then, and answers with our ack's number). One number, not both:
+  each more is a number more for somebody else to guess.
+  A packet that others overtook has its window taken as if it
   were the client's latest. And a segment we refuse still says that the address is
   alive (`C_AGE`: one a minute keeps a slot from being given up). The
   IP header's checksum is not looked at: what we use of that header is fixed or goes
@@ -712,8 +716,8 @@ removing the ones about TLS.
   without its options being walked (one with an option of length 0 too, which RFC
   4861 has thrown away); and we never say that we listen for such questions (no MLD
   report): a switch that passes them only to those who said so will not pass them to
-  us, and then nobody finds us over IPv6. Not met yet: no real host has had this
-  image.
+  us, and then nobody finds us over IPv6. Hetzner Cloud's network does find us; no
+  other host has had this image.
 - DHCP: an address that could not be renewed is used on (a server that gives up its
   address is no server; we go on asking every 128 s); nobody is asked whether the
   address offered is in use (no ARP probe, no DECLINE), and it is not given back (no

@@ -25,16 +25,19 @@ on virtio SCSI (1af4:1048), /dev/sda in the rescue system.
 SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse. A cx23 boots
 `disk.img` written over the whole of /dev/sda, and again after a reset.
 
-**What has been on a real machine and what has not.** On Hetzner: an image with its
-address built in, started by GRUB beside a Linux (`--grub`) and from the raw disk
-(`tools/bounty_ceremony.sh`, which runs `blkdiscard`, `dd`, `reboot` and certbot with a
-request in the rescue system: the commands `./k15` runs there). Not yet, anywhere: an
-image that asks for its address (what a host's DHCP says to it, how long its leases
-are), IPv6, `./k15 publish|deploy|renew` with `--rescue`, the workflow on GitHub. Nor
-an image that goes a few bytes above 1 MiB, as every image now does (docs/internals.md,
-"Memory"): here the boot sector puts it there under SeaBIOS, QEMU's multiboot loader
-does, and GRUB's does too (its EFI build, read in memory; the image does not run
-under UEFI); GRUB on a BIOS machine, the `--grub` way, is still to be seen.
+**What has been on a real machine and what has not.** On Hetzner Cloud (cx23; the
+second one tried had an "AMD EPYC-Rome Processor", GRUB 2.14 and a BIOS): an image
+that asks for its address, with an IPv6 address as well, started by GRUB beside a
+Linux (`./k15 deploy --grub`) and from the raw disk (`./k15 deploy --rescue`: with
+`--first` 54 s from the command to a verified fetch; then without, the machine showing
+the key at the end of its disk); it serves over both, and is back within seconds of a
+reset. Every image lies a little above 1 MiB (docs/internals.md, "Memory"): GRUB on a
+BIOS machine puts it there, and so does the boot sector. What Hetzner's DHCP says: the
+address with a mask of /32, the router 172.31.1.1 (also as a classless route), a lease
+of a day, T1 12 h, T2 21 h. Not yet, anywhere: a lease renewed (half a day on such a
+machine, and nothing on the page says that it happened), `./k15 publish` and `renew`
+with a certificate authority that is not the test's own (`tools/bounty_ceremony.sh`
+ran the same commands for 15kb.org), the workflow on GitHub.
 
 ## Onto a machine that is k15's alone
 The image needs nothing on a machine's disk but itself: `disk.img`, written over the
@@ -93,7 +96,8 @@ UEFI alone), a virtio network card, an IPv4 address by DHCP (or `-i`), and a pro
 as the README says. For IPv6 it has to be told the machine's address (`-6`): the one
 the host shows for it (at Hetzner the first of the machine's /64, `...::1`, is the
 custom; where addresses are made from the card's, the one made so).
-- **Hetzner Cloud** (see above for what was tried):
+- **Hetzner Cloud** (see above for what was tried; an address it gives out has been
+  another machine's: with `--grub`, ssh has to know the new machine first):
   `--rescue 'hcloud server enable-rescue --ssh-key KEY NAME && hcloud server reset
   NAME'`. The rescue system is for one start: `reboot` in it starts the disk, so no
   `--boot`. One disk, /dev/sda. Their documentation: "By default, cloud servers obtain

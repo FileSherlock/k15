@@ -473,11 +473,16 @@ publish() {
 # ---------------------------------------------------------------------------------------
 # A server that keeps its Linux: the image goes beside it, and GRUB starts it.
 # linux HOST RESET: make sure Linux is running there and stays (a "hold" for the chain into
-# k15, if that is installed); if ssh does not answer, RESET is run first
+# k15, if that is installed); if ssh does not answer, RESET is run first. (A server that
+# does answer and will not have us, or that has other host keys than the ones we know for
+# its address, is not one to reset: it is a Linux that is running.)
 linux() {
-  local host=$1 reset=$2
+  local host=$1 reset=$2 why
   RSH=(ssh "${SSHO[@]}" "root@$host")
-  if ! "${RSH[@]}" 'touch /run/k15.hold' 2>/dev/null; then
+  if ! why=$("${RSH[@]}" 'touch /run/k15.hold' 2>&1); then
+    case $why in *"verification failed"*|*"Permission denied"*)
+      die "ssh root@$host answers, but not to us: ${why##*$'\n'} (ssh root@$host has to work first)";;
+    esac
     [[ -n $reset ]] || die "ssh root@$host does not answer. If k15 is running there, say how to reset the server: --reset 'COMMAND'"
     echo "resetting the server: $reset"
     bash -c "$reset" >/dev/null

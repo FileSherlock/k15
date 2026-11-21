@@ -10,7 +10,9 @@
 # certificate that is made when there is none. A file that gets shorter by it is packed
 # compressed as well and goes that way to a client that says it takes that; one that has
 # the file already is told so; with --no-compress there is none of the first.
-# (./k15 deploy, and renew's part on the server, need a server: docs/server.md.)
+# (./k15 deploy, and renew's part on the server, need a server: docs/server.md. One thing
+# of deploy --grub is seen here, with an ssh that is made up: a machine that answers but
+# not to us is said to, with what ssh said, and is not reset.)
 cd "$(dirname "$0")/.." || exit 1
 PORT=${PORT:-8513}
 OUT=build-k15test CERT=cert-k15test
@@ -100,4 +102,12 @@ rm -f $OUT2.out
 ./k15 pack $OUT/www -n k15priv.test -c $CERT2 -o $OUT2 --no-compress > /dev/null 2>&1
 check "with --no-compress nothing is packed twice" "$(! grep -q 'Content-Encoding' $OUT2/site.json && grep -q '^compress=0$' $OUT2/pack.conf &&
   grep -q 'Content-Encoding' $OUT/site.json && grep -q '^compress=1$' $OUT/pack.conf && [[ $(stat -c %s $OUT2/site.bin) -lt $(stat -c %s $OUT/site.bin) ]] && echo ok)"
+# --grub: a server whose ssh answers, but with other host keys than the ones we know for its address, is not reset
+mkdir -p $OUT/bin
+printf '#!/bin/sh\necho "@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @" >&2\necho "Host key verification failed." >&2\nexit 255\n' > $OUT/bin/ssh
+chmod +x $OUT/bin/ssh
+rm -f $OUT/was-reset
+R=$(PATH=$OUT/bin:$PATH ./k15 deploy 192.0.2.7 $OUT --grub --reset "touch $OUT/was-reset" 2>&1)
+check "deploy --grub: a server that answers ssh with host keys we do not know for it is left alone, and that is what is said (${R:0:70}...)" \
+  "$([[ $? != 0 && $R == *"answers, but not to us: Host key verification failed."* && ! -e $OUT/was-reset ]] && echo ok)"
 exit $bad

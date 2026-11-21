@@ -18,7 +18,9 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - Snap Firefox can't start through its launcher: `tools/ffcheck.py` runs the binary.
 - `crontab` can't be written from Claude's shell. Use a systemd user timer.
 - Hetzner's web console garbles `|` and `[`: use ssh. A recycled cloud address has an
-  old host key: give ssh its own known-hosts file for a load generator.
+  old host key: give ssh its own known-hosts file for a load generator. (`./k15 deploy
+  --grub` took such a server for one that does not answer, and reset it. It says what
+  ssh said now, and leaves the server alone.)
 - WSL exports the machine's name as NAME to every shell: make does not take a NAME from
   the environment that is the host's name (not tried on WSL).
 
@@ -87,6 +89,10 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - A page a loader read through is not empty. The boot sector reads the image in pieces
   at 0x8000, the page the other processors start in, which can be executed: it held
   the image's last piece, site and all. What is made executable is zeroed first.
+- Two hosts send a RST, with two numbers: one that has the connection and gives it
+  up, at its own next number; one that has none, at the number of our ack. They
+  differ while our ack is held back a byte. We take the second: every later segment
+  of ours brings it.
 - The sequence number is looked at before the ack, or the ack alone will do: with any
   sequence number at all, a made-up ack moved `C_ACK`, and one in ten thousand ended
   a response. The first rule about acks (data and FIN only) left that open; the

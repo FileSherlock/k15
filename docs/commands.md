@@ -295,11 +295,14 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   client that comes again from the same port, with sequence numbers far from its old
   ones or among them, is a new connection in the old one's place; an ack for all we
   sent, with a sequence number a megabyte from the client's, lets nothing go of what
-  waits for it, and the client's does. And a real client's connection, into which 21
-  such segments are sent, fetches the page again. (Against the image before these
-  rules 13 of its 25 checks fail; without the sequence number's check 3, without the
-  ack's 10; and each of the two clients that come again gets nowhere if its way to a
-  new connection is cut.)
+  waits for it, and the client's does; a RST ends a connection at the number our acks
+  have said and at no other (a byte before, a byte behind; and, while a long answer's
+  segments hold the client's last byte back, not where the client's own numbers are).
+  And a real client's connection, into which 21 such segments are sent, fetches the
+  page again. (Against the image before these rules 15 of its 29 checks fail; without
+  the sequence number's check 3, without the ack's 10, with a RST taken at the next
+  number we expect 2; and each of the two clients that come again gets nowhere if its
+  way to a new connection is cut.)
 - `unshare -Urn tools/dhcptest.sh` (a minute; the suite's `dhcp`, and `dhcp_smp4`): the
   image's DHCP client against a server that does what the test wants
   (`tools/dhcptest.py`, made of `tools/dhcpd.py`). It must ask again when nobody

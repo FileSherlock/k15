@@ -1520,10 +1520,10 @@ tcp:
         xor eax, eax            ; this packet is as good as lost
 .slot:  test dl, 4
         jz .nrst
-        inc eax                 ; RST: if it is the next thing its connection expects, that
-        jz .ret                 ; was the connection
-        mov eax, [rbx+P_SEQ]
-        cmp eax, [rbp+C_NXT]
+        inc eax                 ; RST: if it is where our acks have said its connection is
+        jz .ret                 ; (`ackno`: one number, and the one a host has that knows
+        call ackno              ; no more of the connection than our segments), that was
+        cmp edi, [rbx+P_SEQ]    ; the connection
         jne .ret
 .free:  and dword [rbp+C_IP], 0
 .gone:  ret
