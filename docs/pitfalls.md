@@ -134,6 +134,9 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - Look at the headers of every kind of answer after a deploy (200, 404, 301, 405).
 - Which certificates a chain can do without is a question about other people's trust
   stores, not this machine's.
+- What a file is called (its Content-Type) came from this machine's /etc/mime.types
+  for the endings pack.py does not know: the same site packed differently on another
+  machine. Python's own table now.
 - A rescue system has host keys nobody has seen: ssh there proves nothing. What does:
   the machine's disk has the key of the certificate the site just showed (`k15`:
   `itself`). Before that, nothing secret goes to it.

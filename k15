@@ -133,6 +133,8 @@ build() {
   if [[ -s $5/ca.pem ]]; then
     echo "its certificate is under a private CA: clients need $5/ca.pem (curl --cacert $5/ca.pem)"
   fi
+  # (what anybody can make again from the source, the certificate and the site: tools/repro.sh)
+  echo "without its key: sha256 $(sed -n 's/^  the image .*: //p' "$5/made") (the system alone: $(sed -n 's/^  the system .*: //p' "$5/made"); $5/made says how it was made)"
   # shellcheck disable=SC2086
   local no
   no=$(lacks "$4/server.pem" "$2" ${10})

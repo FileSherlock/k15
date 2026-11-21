@@ -114,6 +114,18 @@ custom; where addresses are made from the card's, the one made so).
   create`, the latter only with a partition table and cloud-init in it); UpCloud (no
   rescue system: a second server writes the disk).
 
+### Is that machine running what the source makes?
+Nobody can read a machine's disk from outside, and its image holds its key, so the
+image cannot be handed round. What can be: `made`, which every build writes beside the
+image (`./k15 publish` prints its hashes, so a workflow's log has them) and which
+says what the image is without its key. Whoever has it, this source at the commit it
+names, and the certificates the server shows, makes the system part again with
+`tools/repro.sh system made chain.pem` and gets the same bytes or not: so "the 14 KB
+are what the repository says" is something anybody can check, as far as the owner's
+word that `made` is the running image's goes. (The site's part is the site, packed:
+`KEYLESS=1 ./k15 pack` with the same folder and settings makes the whole image
+without its key, the same bytes if gzip and brotli are the versions `made` names.)
+
 ### A push publishes
 `ci/publish.yml` is a GitHub workflow for the repository that holds a site (its head
 says what to tell it: five variables, two secrets). A push to `main` runs `./k15

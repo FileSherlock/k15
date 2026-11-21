@@ -67,6 +67,23 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   environment. Only the address,
   the names, the site and its settings are tracked: after changing another setting,
   `make -B`.
+- **Is an image what this source makes?** Every build writes `OUT/made`: the commit, the
+  assembler, what the assembler was told (the defines, the nine numbers of site.inc,
+  the certificate chain's hash), how the site was packed and with what, and three
+  hashes of the image **without its key**: of the system, of the site, of both. No
+  secret is in it; `./k15 pack` prints the hashes. `make KEYLESS=1` (or `KEYLESS=1
+  ./k15 pack ... -c DIR`, DIR holding server.pem alone) makes that image from the
+  certificates: the same bytes as the one with the key, but for the key's 32, and it
+  cannot sign. `tools/repro.sh system MADE CHAIN.pem` makes the system part of
+  somebody else's image again from this checkout, their `made` and the certificates
+  their server shows (`openssl s_client -showcerts`), and says whether it is the same
+  bytes: the site is not needed for that (of the site the system knows nine numbers),
+  nor what compressed it; the assembler has to be the one `made` names (NASM 3.01
+  here: whether another version makes the same bytes has not been tried).
+  `tools/repro.sh` alone (seconds; the suite's `repro`) is the check that this holds:
+  an image made twice (another folder, umask, time zone, language, order of files) is
+  the same bytes; made without the key it differs in those 32 bytes and nowhere else;
+  and its system part made from `made` and the certificate alone is the same again.
 - `tools/pack.py FOLDER OUT` (what `make` runs): every file becomes its response (status
   line, headers, body), found through a hash table of paths. A folder's `index.html` is
   served at the folder's name with a slash, the name without it redirects there,
@@ -85,7 +102,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   none (a browser may not believe it there). OUT/site.json says what each path must
   return (for the tests), OUT/page80.bin what port 80 says.
 - `tools/suite.sh [JOBS] [name...]`: everything below, a few at a time, one line each
-  (83 runs, twenty minutes). `SMP=1` or `SMP=4` in front for other machines than the
+  (84 runs, twenty minutes). `SMP=1` or `SMP=4` in front for other machines than the
   default of 2 processors. Its verdict is strict: one failed connection is a FAIL. Under
   a loaded host a run that overflows rings on purpose (`raw1m_20k`) can time out a few
   hundred of a million (on 4 processors it does every time the suite runs five at once):

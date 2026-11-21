@@ -163,15 +163,24 @@ def le(v, n=32):
 
 
 def main(out):
-    if not (os.path.exists(f"{CERT}/server.key") and os.path.exists(f"{CERT}/server.pem")):
-        make_identity([os.environ.get("NAME") or "127.0.0.1"] + os.environ.get("SAN", "").split())
-    key = serialization.load_pem_private_key(open(f"{CERT}/server.key", "rb").read(), None)
-    chain = x509.load_pem_x509_certificates(open(f"{CERT}/server.pem", "rb").read())
-    if not isinstance(key, ec.EllipticCurvePrivateKey) or key.curve.name != "secp256r1":
-        sys.exit("gen.py: cert/server.key must be an ECDSA P-256 key")
-    if key.public_key().public_numbers() != chain[0].public_key().public_numbers():
-        sys.exit("gen.py: cert/server.key does not match the first certificate in cert/server.pem")
-    d = key.private_numbers().private_value
+    # KEYLESS=1: an image without its key, from the certificates alone. It is what anybody
+    # can make who has no key, and the same bytes as the image that has it, but for the
+    # key's 32: for comparing (tools/repro.sh), not for running: it cannot sign.
+    if os.environ.get("KEYLESS"):
+        if not os.path.exists(f"{CERT}/server.pem"):
+            sys.exit(f"gen.py: KEYLESS=1 makes an image from the certificates in {CERT}/server.pem, and there are none")
+        chain = x509.load_pem_x509_certificates(open(f"{CERT}/server.pem", "rb").read())
+        d = 0
+    else:
+        if not (os.path.exists(f"{CERT}/server.key") and os.path.exists(f"{CERT}/server.pem")):
+            make_identity([os.environ.get("NAME") or "127.0.0.1"] + os.environ.get("SAN", "").split())
+        key = serialization.load_pem_private_key(open(f"{CERT}/server.key", "rb").read(), None)
+        chain = x509.load_pem_x509_certificates(open(f"{CERT}/server.pem", "rb").read())
+        if not isinstance(key, ec.EllipticCurvePrivateKey) or key.curve.name != "secp256r1":
+            sys.exit("gen.py: cert/server.key must be an ECDSA P-256 key")
+        if key.public_key().public_numbers() != chain[0].public_key().public_numbers():
+            sys.exit("gen.py: cert/server.key does not match the first certificate in cert/server.pem")
+        d = key.private_numbers().private_value
 
     # what to trust and what to call the server when testing
     private = os.path.exists(f"{CERT}/ca.pem") and chain[-1].issuer == x509.load_pem_x509_certificate(

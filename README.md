@@ -67,6 +67,10 @@ What you get, and what you don't:
   time.) Over a distance a
   window may grow past 64 KB, but only slowly: without SACK, what is lost in a large
   window comes back a segment a round trip.
+- **Checkable.** An image without its key is the same bytes for whoever makes it, and
+  every build says what that is (`OUT/made`): the system part can be made again from
+  this repository, that file and the certificates a server shows, and compared
+  (`tools/repro.sh`).
 - **Clunky on purpose.** Content and certificate are part of the image: a change is a new
   image, written from the host's rescue system: a minute or two without a server.
   Nothing renews by itself: `./k15 publish --if-due` is there to be run daily, does
@@ -96,7 +100,7 @@ tools/outside.sh fetch   # what the next three need, into ext/ (Wycheproof, Valg
 make outside         # the crypto against Wycheproof's vectors and RFC 6979's
 make ct              # the crypto under Valgrind: no jump and no address is made of a secret
 unshare -Urn tools/tlsfuzz.sh   # tlsfuzzer against the image
-tools/suite.sh       # all 83 regression runs: loss, reordering, scale, browsers, a site of 80 files
+tools/suite.sh       # all 84 regression runs: loss, reordering, scale, browsers, a site of 80 files
 tools/sitetest.sh    # that site alone: every path, every kind of client
 unshare -Urn ./tap.sh ./taprunc.sh 2000 1024 4   # 8,000 connections from 4 source IPs
 gcc -O2 -o build/rawc tools/rawc.c

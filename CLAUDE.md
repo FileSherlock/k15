@@ -83,8 +83,9 @@ the raw disk from a rescue system as the main way onto a machine, with what thre
 hosts' documentation says; a retransmission timer that knows the round trip; IPv6.
 Still to be seen on a host: all of them but the timer (the user has to give a token
 for a project that is not the bounty's, or run them: docs/server.md says what was
-tried where). To do:
-5. Reproducible builds: the system part rebuilt byte for byte from source by anyone.
+tried where). And reproducible builds (`OUT/made`, `make KEYLESS=1`, `tools/repro.sh`:
+the system part made again from the source, `made` and the certificates), with one
+assembler: whether another version of NASM makes the same bytes is not known. To do:
 6. Handshake speed, last: OpenSSL's assembly does the ladder and the signature in about
    a fifth fewer cycles; it is the riskiest code to touch.
 
@@ -133,7 +134,9 @@ Don't change the source or a test script while a suite runs.
   unshare -Urn ./tap.sh python3 tools/v6test.py`, and the suite's `*6*` runs.
 - After touching `k15`: `tools/k15test.sh` and `unshare -Urn tools/hosttest.sh` (a
   minute: a machine that is made up; what a host does is not seen there).
-- After anything else: `tools/suite.sh` (83 runs, twenty minutes). Also with `SMP=1` and
+- After touching `tools/gen.py`, `tools/pack.py`, `tools/made.py` or the Makefile:
+  `tools/repro.sh` (seconds).
+- After anything else: `tools/suite.sh` (84 runs, twenty minutes). Also with `SMP=1` and
   `SMP=4` after touching what processors share or how the machine starts. On 4,
   `raw1m_20k` fails when the host is busy: run it alone before believing it.
 - After touching boot or the polling loops: `measure.sh` with `DEBUG=1`, `KNOCK=` and

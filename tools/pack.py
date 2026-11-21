@@ -116,6 +116,9 @@ def fnv(path):
     return h
 
 
+mimetypes.init([])      # (Python's own table, not this machine's /etc/mime.types: the same site packs the same everywhere)
+
+
 def content_type(name):
     ext = os.path.splitext(name)[1].lower()
     return TYPES.get(ext) or mimetypes.guess_type(name)[0] or "application/octet-stream"

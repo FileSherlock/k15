@@ -145,6 +145,8 @@ T[site_reorder]="REORDER=25 $SITE"
 T[site_notso_loss3]="B=build-site-notso LOSS=3 $SITE quick"
 # a large file through a path narrower than the window: no slower than a window of 64 KB was
 T[bneck]='tools/bnecktest.sh'
+# the image is the same bytes whoever makes it, and without its key what anybody can make (tools/repro.sh)
+T[repro]='tools/repro.sh'
 # a round trip of 300 ms and nothing lost: nothing is sent twice (the timer goes by the round trip)
 T[rtt]='B=build-site DELAY=300 unshare -Urn ./tap.sh python3 tools/rtttest.py'
 ORDER="measure measure_tcg browsers tls tls_loss3 tls_mtu300_loss3 tls_reorder twice twice_reorder plain plain_loss3 plain_mtu300_loss3
@@ -156,7 +158,7 @@ ORDER="measure measure_tcg browsers tls tls_loss3 tls_mtu300_loss3 tls_reorder t
   static_measure static_tls_loss3 static_plain v6 tls6 tls6_loss3 tls6_mtu1280_loss3 tls6_reorder plain6 plain6_loss3
   real6_loss3 real6_reorder hrr6_loss3 small6 site6 site6_reorder v6_tls4_loss3 k15 host wx site site_tap site_loss3 site_mtu600_loss3
   site_reorder
-  site_notso_loss3 site6_loss3 site4_v6_loss3 bneck rtt"
+  site_notso_loss3 site6_loss3 site4_v6_loss3 bneck rtt repro"
 
 # the images and clients first (not in parallel)
 [[ -f cert-real/server.pem ]] || python3 tools/mkchain.py cert-real >/dev/null || exit 1
@@ -196,6 +198,7 @@ verdict() {  # name, exit code -> one line
     wx) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 9 ok; $(grep -m1 '^FAIL' "$f")";;
     bneck) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 4 ok; $(grep -m1 '^FAIL' "$f" | cut -c1-80)";;
     rtt) [[ $rc == 0 ]] && v=ok; note=$(tr '\n' ';' <"$f" | cut -c1-150);;
+    repro) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 6 ok; $(grep -m1 '^FAIL' "$f" | cut -c1-90)";;
     k15) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 24 ok; $(grep -m1 '^FAIL' "$f")";;
     host) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 24 ok; $(grep -m1 '^FAIL' "$f" | cut -c1-90)";;
     site*) [[ $rc == 0 ]] && grep -q '^ok' "$f" && grep -q '^all ok' "$f" && v=ok; note="$(grep -c '^ok' "$f") checks ok; $(grep -m2 '^FAIL' "$f" | cut -c1-90 | tr '\n' ';')";;

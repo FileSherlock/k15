@@ -63,6 +63,11 @@ Read the part you are about to change. `tools/ec.py` has the curve code's other 
 - `tools/gen.py`: certificate, curve programs and constants -> `build/*.inc`.
   `tools/pack.py`: the site -> `build/site.bin`, `site.inc`.
   `tools/mkdisk.py`: the disk image. `k15`: the tool on top.
+  `tools/made.py`: `build/made`, what the image is without its key and how it was
+  made; `tools/repro.sh` makes one again from that (docs/commands.md). The key is 32
+  bytes of the image (64 behind `EDC`: d R mod n), and nothing else in it depends on
+  the key; the system depends on the site by the numbers of site.inc alone, and on
+  nothing of the machine that makes it but the assembler.
 - `tools/mksite.py`, `tools/sitecheck.py`, `tools/sitetest.sh`, `tools/tlsclient.py`,
   `tools/wxtest.sh`, `tools/jcc.py`, `tools/tlsprobe.sh`, `tools/k15test.sh`: the test
   site and its checker, the shared TLS client pieces, the W^X test (and what else must be

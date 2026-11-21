@@ -77,11 +77,15 @@ ifeq ($(NAME),$(shell hostname))
 NAME :=
 endif
 endif
+# KEYLESS=1: the image without its key, made from the certificates alone ($(CERT) needs
+# no server.key): the same bytes as the one that has the key, but for the key's 32. For
+# comparing (tools/repro.sh; $(B)/made says what an image is without its key): it cannot sign.
+KEYLESS ?=
 GEN := $(B)/gen.inc $(B)/ec.inc $(B)/regs.inc $(B)/conf.inc
-ID := $(CERT)/server.key $(CERT)/server.pem
+ID := $(if $(KEYLESS),,$(CERT)/server.key) $(CERT)/server.pem
 $(ID) &:
 	@mkdir -p $(B)
-	CERT=$(CERT) python3 tools/gen.py $(B)
+	KEYLESS=$(KEYLESS) CERT=$(CERT) python3 tools/gen.py $(B)
 
 $(B)/names.conf: FORCE
 	@mkdir -p $(B)
@@ -89,7 +93,7 @@ $(B)/names.conf: FORCE
 
 $(GEN) &: tools/gen.py tools/ec.py $(ID) $(B)/names.conf
 	@mkdir -p $(B)
-	CERT=$(CERT) python3 tools/gen.py $(B)
+	KEYLESS=$(KEYLESS) CERT=$(CERT) python3 tools/gen.py $(B)
 
 # The site: every file under $(SITE) as the response it is sent as, and the table of paths.
 # It is made again when $(B)/site.conf changes, which lists the settings and the files
@@ -106,6 +110,7 @@ $(PACKED) &: tools/pack.py $(B)/site.conf $(GEN)
 $(B)/os.bin: src/os.asm $(GEN) $(PACKED) $(B)/ip $(B)/ip6
 	nasm -f bin $(OURIP) $(OURIP6) $(KNOCKDEF) $(TABLEDEF) $(DEBUGDEF) $(WINDEF) -I$(B)/ -o $@ -l $(B)/os.lst src/os.asm
 	@chmod go= $@ $(B)/os.lst
+	@P80=$(P80) HSTS=$(HSTS) CACHE=$(CACHE) HEADERS='$(HEADERS)' COMPRESS=$(COMPRESS) python3 tools/made.py $(B) $(OURIP) $(OURIP6) $(KNOCKDEF) $(TABLEDEF) $(DEBUGDEF) $(WINDEF)
 	@echo "image: $$(stat -c %s $@) bytes, of which the site: $$(stat -c %s $(B)/site.bin)"
 	@python3 tools/jcc.py $(B)/os.lst $(HOT) || echo "(these jumps lie on 32-byte boundaries: see HOT in src/os.asm)"
 
