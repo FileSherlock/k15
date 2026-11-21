@@ -122,13 +122,15 @@ T[site_notso_loss3]="B=build-site-notso LOSS=3 $SITE quick"
 T[bneck]='tools/bnecktest.sh'
 ORDER="measure measure_tcg browsers tls tls_loss3 tls_mtu300_loss3 tls_reorder twice twice_reorder plain plain_loss3 plain_mtu300_loss3
   plain_reorder raw1m raw1m_20k raw_4g tls_4g churn churn_idle idle real_measure real_loss3
+# a round trip of 300 ms and nothing lost: nothing is sent twice (the timer goes by the round trip)
+T[rtt]='B=build-site DELAY=300 unshare -Urn ./tap.sh python3 tools/rtttest.py'
   real_mtu300_loss3 real_reorder hrr hrr_loss3 hrr_mtu300_loss3
   hrr_reorder real_hrr_loss3 redirect raw_redirect tls_isn31 tls_isn32 tls_isn31_loss3
   plain_isn32_loss3 real_isn31_loss3 real_isn32_reorder site_wrap31 site_wrap32 site_wrap31_loss3
   site_wrap32_loss3 site_keylife site_gone race1 race2 race3 cpus3 tlsfuzz hellofuzz rawframes dhcp dhcp_smp4 dhcp_dnsmasq
   static_measure static_tls_loss3 static_plain k15 wx site site_tap site_loss3 site_mtu600_loss3
   site_reorder
-  site_notso_loss3 bneck"
+  site_notso_loss3 bneck rtt"
 
 # the images and clients first (not in parallel)
 [[ -f cert-real/server.pem ]] || python3 tools/mkchain.py cert-real >/dev/null || exit 1
@@ -166,6 +168,7 @@ verdict() {  # name, exit code -> one line
     bneck) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 4 ok; $(grep -m1 '^FAIL' "$f" | cut -c1-80)";;
     k15) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 24 ok; $(grep -m1 '^FAIL' "$f")";;
     site*) [[ $rc == 0 ]] && grep -q '^ok' "$f" && grep -q '^all ok' "$f" && v=ok; note="$(grep -c '^ok' "$f") checks ok; $(grep -m2 '^FAIL' "$f" | cut -c1-90 | tr '\n' ';')";;
+    rtt) [[ $rc == 0 ]] && v=ok; note=$(tr '\n' ';' <"$f" | cut -c1-150);;
     *) note=$(grep '^SCORE' "$f"); [[ $note == SCORE* && $note != "SCORE 0.0"* ]] && ! grep -q FAILED "$f" && v=ok
        note="${note#*= }; $(grep -c FAILED "$f") failed; $(grep -m1 -o 'open_s [0-9.]*' "$f")";;
   esac

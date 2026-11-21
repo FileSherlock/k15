@@ -231,7 +231,8 @@ OO_DATA equ 16
 T_TIME  equ 38              ; A connection that waits for an ack (`tarm`) is the first 64 bytes
 T_ACK   equ 42              ;   of a frame of its client, and in place of its sequence number,
 T_TRY   equ 46              ;   ack and header length: since when, for which ack, the how
-                            ;   manieth time
+T_RTO   equ 0               ;   manieth time; and in place of our card's address's first
+                            ;   byte: how long it waits the first time (C_RTO)
 %ifndef HOST
 TABV    equ (BIGB + (MAXCPU * BIGS << 16) + 0x1FFFFF) & ~0x1FFFFF ; The table space: from 18 MiB up (see the top of this file). Boot
                             ; divides it: n handshake buffers, n places of 2 KiB for early
@@ -312,6 +313,10 @@ F_CA    equ 8               ;   ClientHello; F_CA (after it): something was lost
                             ;   connection once.
 C_CW    equ 39              ; a byte: so many segments of a response may be on their way (`tcp.tx`)
 C_KIV   equ 40              ; our application key | iv (44 bytes), then the client's
+C_T0    equ 100             ; (In the client's 44, where AES-128 has no use for 16 bytes of a
+C_RTO   equ 104             ;   key's 32:) when our flight went out (0: its round trip has
+                            ;   been taken), and how long this connection's timer waits
+                            ;   the first time, in units of 1/64 s (`tarm`)
 TSLOT   equ 128
 
 ; What 32-bit code calls pushad and popad: the seven registers of old besides rsp (so the
@@ -1650,10 +1655,25 @@ tcp:
         je .nhs
         cmp [rbp+C_ST], ebx
         je .nhs
-        cmp [rbp+C_LEN], bx
+        mov edi, [rbp+C_T0]     ; It has our flight. The first time: how long that took is
+        test edi, edi           ; the round trip R (the client answers a flight at once: it
+        jz .rtt                 ; has its Finished to send), and the timer for what we send
+        mov [rbp+C_T0], ebx     ; from now on (`tarm`) waits 3 R (TCP's own rule after one
+        neg edi                 ; measurement, RFC 6298), but a quarter of a second at
+        add edi, [TNOW]         ; least, which is what it waited before it knew of round
+        shr edi, 5              ; trips, and a second at most: a flight that had to go
+        lea edi, [rdi+rdi*2]    ; twice took longer than the round trip, by the client's
+        cmp edi, 16             ; own timer, and a timer made of that would leave what is
+        jae .r16                ; lost at the end of a response lying for seconds. (In
+        mov dil, 16             ; units of 1/64 s.)
+.r16:   cmp edi, 64
+        jbe .r64
+        mov dil, 64
+.r64:   mov [rbp+C_RTO], dil
+.rtt:   cmp [rbp+C_LEN], bx
         jne .nhs
-        mov [rbp+C_HS], bx      ; (it has our flight, and no record of its own is being put
-.nhs:   btr dword [rbp+C_FLG], F_DEFER_BIT ; together: the handshake buffer can go to another)
+        mov [rbp+C_HS], bx      ; (And no record of its own is being put together: the
+.nhs:   btr dword [rbp+C_FLG], F_DEFER_BIT ; handshake buffer can go to another)
                                 ; If that was an answer of several segments, its
         jnc .ak1                ; data is acknowledged only now
         inc byte [rbx+P_MORE]
@@ -1825,6 +1845,9 @@ tcp:
         mov eax, [rbp+C_SND]
         add eax, ecx
         mov [rbp+C_RS], eax     ; (behind it our responses will begin)
+        mov eax, [TNOW]         ; (And from now to the client's answer is the connection's
+        mov [rbp+C_T0], eax     ; round trip, which its timer goes by: `.est`. Until that
+        mov byte [rbp+C_RTO], 16 ; is known: a quarter of a second.)
         push rdi
         mov esi, OB
         lea edi, [rbx+HS_FL]
@@ -2652,6 +2675,8 @@ tarm:   pushad
         mov [rax+T_ACK], edx
         mov dl, [TQTRY]
         mov [rax+T_TRY], dl
+        mov dl, [rbp+C_RTO]
+        mov [rax+T_RTO], dl
         inc dword [TQT]
         or byte [rbp+C_FL2], F_ARMED
 .full:  popad
@@ -2663,8 +2688,9 @@ tqslot: and eax, [TMMASK]
         ret
 
 ; tqrun: the connection that has been in that queue the longest (if there is one). If it
-; has not waited a quarter of a second yet (twice as long for each time it has been sent
-; to in vain, up to 16 s), it goes to the back. If it has: its frame
+; has not waited as long as its round trip says yet (C_RTO: a quarter of a second for a
+; client nearby; twice as long for each time it has been sent to in vain, up to 16 s),
+; it goes to the back. If it has: its frame
 ; is put where a frame from its client would be, and if the client then has everything,
 ; that is that; if its ack has moved since, it joins the queue afresh; if not, what it
 ; asks for is sent again, as for a client that asks (E_RTO in `tcp.tx`). Only when there
@@ -2682,11 +2708,15 @@ tqrun:  mov eax, [TQH]
         xchg eax, esi
         mov edx, [TNOW]         ; (`tidle` has just read the clock)
         sub edx, [rsi+T_TIME]
+        movzx eax, byte [rsi+T_RTO]
+        shl eax, 5              ; (how long the first time, in ticks)
         mov cl, [rsi+T_TRY]
-        shr edx, cl
+        shl eax, cl
         push 8
         pop rcx
-        cmp edx, 512
+        cmp edx, 1 << 15        ; (16 s is the longest wait there is)
+        jae .due
+        cmp edx, eax
         jae .due
         mov eax, [TQT]
         inc dword [TQT]

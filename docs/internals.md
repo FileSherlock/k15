@@ -270,7 +270,8 @@ bytes.
 - **The timer for what we sent** (`tarm`, `tqrun`). A connection that is owed something
   (an ack is outstanding, or the client's window is shut) is in its processor's queue,
   once: the first 64 bytes of a frame of its client's, the time, the ack. A polling loop
-  with nothing else to do takes the oldest: not a quarter second old yet (512 ticks of
+  with nothing else to do takes the oldest: not old enough yet (as old as its round
+  trip says, below; in ticks of
   1/2048 s, from `clock`, which scales `rdtsc` by `TSCM` calibrated against timer 2 at
   boot; twice as long for every time in vain, up to 16 s): to the back. Old enough: if
   the client has everything by now, that is that; if its ack has moved, back into the
@@ -280,6 +281,22 @@ bytes.
   minute or two) has gone: it is sent a reset, and its slot is free. One that takes no
   more for now but answers when it is sent to stays, as in TCP. (The reset has the number we got to, `C_SND`: a client that lacks some of what
   we sent does not take it, RFC 5961. For one that has gone that is all the same.)
+- **How long the timer waits** is the connection's own (`C_RTO`, since 2026-11-21): its
+  round trip R is measured once, from our flight going out to the client having it (a
+  client answers a flight at once: it has its Finished to send, so no ack is held
+  back in between; `tcp.est`), and the timer then waits 3 R (TCP's own rule after one
+  measurement), a quarter of a second at least and a second at most. For a client up
+  to 83 ms away that is the quarter second it always was, to the tick. For one 300 ms
+  away it was a segment sent twice whenever an answer took a round trip to be
+  acknowledged, which is always, and half the window gone for good each time: 200 KB
+  took 12 s over 300 ms and takes 2.4 (`tools/rtttest.py`, the suite's `rtt`), and 6 MiB
+  through 20 Mbit/s did not arrive in two minutes and takes 31 s. A second at most
+  because the measurement is from the flight's first sending: if that was lost, it
+  holds the client's own timeout, and what is lost at the end of a response should not
+  lie for seconds on a path that loses things. A round trip of over a second therefore
+  still gets segments twice. Beside the last commit's image (`tools/bneck.sh`, the
+  paths of bench/README.md): the same on all with a round trip of 100 ms or less (the
+  path that loses 1% took 14 to 25 s with either, nine fetches each).
 - A request for the next response is taken only when the client has acknowledged all of
   this one. One that comes earlier (two requests at once) is as good as not arrived, and
   what follows it in its segment too: the client sends it again (`.busy`).
@@ -397,7 +414,8 @@ The old way, and what both share:
   (`C_ST`), the response in hand (`C_SR`, `C_RS`, `C_AS`: ten bytes), its handshake buffer
   and how much of a record is in it, a byte of flags and the window's shift (`C_FL2`), a
   byte of window (`C_CW`), and 88 bytes of keys (two of 32, of which AES-128 uses 16, with
-  their 12 of iv). They fill the table space behind the buffers: the TLS table gets an
+  their 12 of iv; five of the 16 that the client's key leaves over say when the flight
+  went out and how long the timer waits: `C_T0`, `C_RTO`). They fill the table space behind the buffers: the TLS table gets an
   eighth (`TSHARE`), port 80 the rest.
 - A connection is in one of two buckets of 16 slots, picked by two words of `prf(addresses,
   ports)`; a new one goes into the bucket with more free slots (`find`), into the first
@@ -576,8 +594,11 @@ removing the ones about TLS.
   (0.2 s).
 - TCP: no SACK and no timestamps (so what is lost is found a segment a round trip, and
   a window past 64 KB opens slowly: "How TCP works here"), no pacing (what an ack lets
-  go goes at once), a first timeout of 0.25 s whatever the round trip is (a path
-  slower than that gets a segment twice), and the old way (`tcp_send`) for the flight
+  go goes at once), a round trip measured once, at the handshake, and never again (a
+  path that gets slower afterwards gets segments twice), a SYN-ACK sent again after
+  0.25 s whatever the round trip is (to a client more than that away it goes twice;
+  the client then acknowledges twice, which looks like a loss to our flight, and that
+  goes twice as well), and the old way (`tcp_send`) for the flight
   and port 80 (capped at 4 KiB unacknowledged on port 80). Our own window is 64 KB,
   unscaled. A segment's data is taken by its sequence number whatever its ack says (RFC
   5961, 5.2 wants the ack inside what we sent as well: a blind sender has less to guess). The IP header's checksum is not looked at: what we use of that header is

@@ -65,6 +65,11 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - A processor always has an interrupt table unless it is told an empty one. Ask QEMU
   (`info registers -a`) what each processor has.
 - A timer that sends again needs an end.
+- What one timer sends unasked, another part takes for a sign: the SYN-ACK that goes
+  again after 0.25 s makes a client 300 ms away acknowledge twice, and the flight goes
+  twice for that. "A flight sent twice says nothing of the round trip" then left every
+  such client without one, which is every client the measurement was for. Watch the
+  wire at the round trip the change is about (`DELAY=300`), not at the tap's 0.1 ms.
 - Waiting to send is no reason not to receive: drain the device's ring from every
   loop that waits.
 - Under overload what matters is where frames wait: deep rings of our own, not the
@@ -96,6 +101,9 @@ One or two lines each. Add to it when something costs an hour; delete what stops
   its answer lost), TCPTimeouts (data), TcpInErrs (a SYN-ACK of ours sent again).
 - A step at 1 s in the times is a SYN, at 200 ms a segment. A smooth tail is a queue.
 - A number nobody measured is a guess. A feature somebody else sized is not sized.
+- Two fetches through a path that loses packets say nothing: 6 MiB through 1% loss took
+  14 to 25 s with one and the same image. A rule was changed for a difference of that
+  size before nine fetches each showed there was none.
 - A grade is what the grader says today. Compare with a site that has the grade
   before writing down why.
 - A fix is read best by somebody who has not heard why it is right: the review of the

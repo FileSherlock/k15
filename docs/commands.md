@@ -270,6 +270,18 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   (`--prove`, `--verify HOST`) proving the live TLS certificate and the Bitcoin wallet share
   the same scalar without revealing it. `--gen CERT [-n NAME] [--san NAME]...` makes a
   24-word BIP-39 wallet (`m/84'/0'/0'/0/0`), `server.key`, `csr.pem` and `bounty.proof`;
+- `B=build-site DELAY=300 unshare -Urn ./tap.sh python3 tools/rtttest.py` (a quarter of
+  a minute; the suite's `rtt`): over a round trip of 300 ms, with nothing lost, no
+  segment of a response may go twice (a page of one segment on a connection that
+  stays, a file of 200 KB). The timer as it was before 2026-11-21 sent 26 twice.
+- `unshare -Urn tools/hosttest.sh` (a minute; the suite's `host`): `./k15 publish`,
+  `deploy` and `renew` against a machine that is made up: its disk a file, its rescue
+  system this shell with `lsblk`, `blockdev`, `blkdiscard`, `reboot`, `apt-get` and
+  `certbot` replaced (the last by a certificate authority of the test's own), ssh a
+  script (`K15_SSH`), and "start from the disk" a QEMU on that file whose ports are
+  127.0.0.1's in an otherwise empty network. 24 checks, from "a machine with a Linux
+  on its disk is not written to" to "a machine whose key file has the site's public
+  half and another secret is sent nothing"; `V=1` in front shows what the tool says.
   `--restore` checks or restores from the 24 words; `--wif` prints WIF; `--test` checks
   BIP-173, BIP-84 and proof soundness.
 - `tools/bounty_ceremony.sh [--dry-run | --staging | --redeploy | --revoke]`: RAM-only (`/dev/shm`)
