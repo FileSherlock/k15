@@ -4,7 +4,11 @@
 # slirp walking every open socket. No root needed inside a throwaway namespace:
 # Usage: [B=build] [KVM=1] [SMP=1] [MEM=n] [LOSS=1] [REORDER=25] [DELAY=20] [MTU=n] unshare -Urn ./tap.sh COMMAND [ARGS...]   e.g. ... ./taprunc.sh 2000 1024 4
 # (The VM has 2 processors and 256 MiB unless SMP and MEM say otherwise.)
-# The host is 10.0.2.2 plus 10.0.2.32-63; the guest is 10.0.2.15.
+# The host is 10.0.2.2 plus 10.0.2.32-63; the guest is 10.0.2.15: the address its image was
+# built with, or the one it is given here by tools/dhcpd.py. DHCPD='COMMAND' in front runs
+# another DHCP server in its place; DHCPD=none runs none, and then COMMAND is not kept
+# waiting for the guest to answer (it is the server: tools/dhcptest.py), unless STATIC=1
+# says that the image has its address (so that such a one is seen to need no server).
 set -euo pipefail
 cd "$(dirname "$0")"
 export B=${B:-build}
@@ -20,7 +24,9 @@ ip addr add 10.0.2.2/24 dev "$TAP"
 for i in $(seq 32 63); do ip addr add "10.0.2.$i/24" dev "$TAP"; done
 ip link set "$TAP" up
 # LOSS=n: drop n% of the packets in each direction (host -> guest by netem, guest -> host by
-# an ingress filter), and MTU=n sets the tap's MTU (a small one splits the client's segments)
+# an ingress filter), and MTU=n sets the tap's MTU (a small one splits the client's segments;
+# once the guest answers: a DHCP message is 328 bytes, and no network has to carry less
+# than 576)
 if [[ -n ${LOSS:-} ]]; then
   tc qdisc add dev "$TAP" root netem loss "$LOSS%"
   tc qdisc add dev "$TAP" handle ffff: ingress
@@ -30,12 +36,18 @@ fi
 [[ -n ${REORDER:-} ]] && tc qdisc add dev "$TAP" root netem delay 5ms reorder "$REORDER%"
 # DELAY=n: what goes to the guest takes n ms (a round trip of that length; not with LOSS or REORDER)
 [[ -n ${DELAY:-} ]] && tc qdisc add dev "$TAP" root netem delay "${DELAY}ms" limit 100000
-[[ -n ${MTU:-} ]] && ip link set "$TAP" mtu "$MTU"
+DPID=
+case ${DHCPD-} in
+  none) ;;
+  "") python3 tools/dhcpd.py "$TAP" >/dev/null 2>&1 & DPID=$!;;
+  *) bash -c "$DHCPD" >/dev/null 2>&1 & DPID=$!;;
+esac
 LOG=$(mktemp)
 # MON=path: QEMU's monitor on that unix socket (to ask a guest that hangs where it is)
 qemu "${IMG%os.bin}disk.img" "tap,ifname=$TAP,script=no,downscript=no" ${MON:+-monitor unix:$MON,server,nowait} >"$LOG" 2>&1 &
 export QEMU_PID=$!
-trap 'kill $QEMU_PID 2>/dev/null || true; wait $QEMU_PID 2>/dev/null || true; ip link del '"$TAP"' 2>/dev/null || true; rm -f "$LOG"' EXIT
+trap 'kill $QEMU_PID $DPID 2>/dev/null || true; wait $QEMU_PID 2>/dev/null || true; ip link del '"$TAP"' 2>/dev/null || true; rm -f "$LOG"' EXIT
+[[ ${DHCPD-} == none && -z ${STATIC:-} ]] && { "$@"; exit; }
 
 CURL=(curl -s --max-time 3 -o /dev/null --interface 10.0.2.32 --connect-to "$NAME:443:10.0.2.15:443")
 [[ -s $B/ca.pem ]] && CURL+=(--cacert "$B/ca.pem")
@@ -45,4 +57,5 @@ for _ in $(seq 1 40); do
   sleep 0.25
 done
 [[ -n "$up" ]] || { echo "FAIL: guest not answering over tap (verified fetch)"; cat "$LOG"; exit 1; }
+[[ -n ${MTU:-} ]] && ip link set "$TAP" mtu "$MTU"
 "$@"

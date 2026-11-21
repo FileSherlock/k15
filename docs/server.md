@@ -18,6 +18,12 @@ MRG_RXBUF, CTRL_VQ, EVENT_IDX, INDIRECT_DESC), MAC 92:00:0a:76:c2:50. Address
 2.28.113.14/32, everything through the gateway 172.31.1.1 (d2:74:7f:6e:37:e3). Disk: 38 GB
 on virtio SCSI (1af4:1048), Ubuntu 26.04 with GRUB 2.14.
 
+`tap.sh` gives the guest its address as a network would: `tools/dhcpd.py` answers its
+DHCP on the tap (10.0.2.15, an hour at a time), and through QEMU's own network QEMU's
+server does. An image without an address has not been on a real machine yet
+(2026-11-21): what Hetzner's DHCP says to it, and how long its leases are, is still to
+be seen there.
+
 SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse. A cx23 boots `disk.img`
 written over the whole of /dev/sda from the rescue system, and again after a reset
 (2026-11-14, on a second server; that is how `tools/bounty_ceremony.sh` deploys).

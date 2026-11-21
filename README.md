@@ -88,7 +88,7 @@ tools/outside.sh fetch   # what the next three need, into ext/ (Wycheproof, Valg
 make outside         # the crypto against Wycheproof's vectors and RFC 6979's
 make ct              # the crypto under Valgrind: no jump and no address is made of a secret
 unshare -Urn tools/tlsfuzz.sh   # tlsfuzzer against the image
-tools/suite.sh       # all 59 regression runs: loss, reordering, scale, browsers, a site of 80 files
+tools/suite.sh       # all 65 regression runs: loss, reordering, scale, browsers, a site of 80 files
 tools/sitetest.sh    # that site alone: every path, every kind of client
 unshare -Urn ./tap.sh ./taprunc.sh 2000 1024 4   # 8,000 connections from 4 source IPs
 gcc -O2 -o build/rawc tools/rawc.c

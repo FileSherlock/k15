@@ -37,12 +37,14 @@ Read the part you are about to change. `tools/ec.py` has the curve code's other 
   once the device has sent what it last held, which `TXCNT`, the count of all frames
   ever queued, and the device's own count tell), queued by `tcp_big` with the 12 bytes
   in front that say how it is to be cut, and the device is told at once.
-- `tcp`: ARP requests for OURIP get a reply (whole ones: 42 bytes; behind a shorter frame
-  lies the one before it); then only IPv4 without options, unfragmented,
-  TCP, to OURIP, with the TCP checksum right and a length that fits the frame and both
-  headers (40 bytes at least: asked before 20 are taken off it), port 443 or 80 gets
+- `tcp`: ARP requests for our address get a reply (whole ones: 42 bytes; behind a shorter
+  frame lies the one before it); then only IPv4 without options, unfragmented,
+  TCP, to our address, with the TCP checksum right and a length that fits the frame and
+  both headers (40 bytes at least: asked before 20 are taken off it), port 443 or 80 gets
   further. `tcp_send` cuts an answer into segments, `tcp_seg` builds and sends one.
   In it: `.walk` (records, whole or put together), `.tx` (a response on its way).
+- `dhask`, `dhsend`, `dhcp`: where our address comes from, if the image has none ("Our
+  address", below).
 - `record` (a client's record: authentic? a request? for which response), `pick` and
   `seek` (which form of it, by the request's Accept-Encoding and If-None-Match), `geom`
   (how the response in hand is cut), `sendseg` (one segment of it), `sendrun` (all the
@@ -113,6 +115,39 @@ What the page tables say (`start`):
 - The card's structures (and the local APIC), each in 4 MiB of its own in GiB 505.
 Variables in BSS are reached relative to the instruction pointer (`BSS equ mb + ...`:
 nasm won't do that for a plain number). Needs 64 MiB or more.
+
+## Our address
+An image is built without an address (the default) or with one (`make IP=a.b.c.d`,
+`./k15 pack -i`). With one, it is a constant in two comparisons (`NOTOURS`: the ARP
+request's target, the IP header's destination), nobody is asked, and there is no UDP in
+the image. Without, it is a variable, and a DHCP client is assembled in (450 bytes):
+- What we send never needs it: a frame of ours answers one, and goes from the address
+  that one was sent to, to where it came from (`tcp_seg` takes both from the frame in
+  hand, `ethhdr` the card's address). So an address is all DHCP has to give us: no
+  mask, no router, no name server is asked for or looked at.
+- The first processor asks when it is time (`dhask`, every turn of its polling loop, by
+  `DHT`): with no address a DISCOVER, with one a REQUEST to keep it. Both go to
+  everybody (the REQUEST as RFC 2131 has a client ask that has heard nothing from its
+  own server, "rebinding": to send it to the server alone we would have to find the
+  way there). 342 bytes, of which 300 are the message: the least there may be. Again
+  after 2 s, 4 s, ... 128 s and then every 128 s, until an answer comes.
+- An answer is a frame like any other (`tcp` lets UDP through to `dhcp` whatever
+  address it is sent to), so it goes to whichever processor its addresses hash to:
+  what the processors know of all this is in low memory, where it is everybody's
+  (`MYIP`, `DHT`, `DHB`). It counts if its UDP checksum is right or left out (0: OVN's
+  DHCP does that), if it is from port 67 to port 68, has our number (`DHX`: 32 bits
+  from `rand` at boot), **and we are asking** (`DHB`): once we have our address, nobody
+  can tell us another until we ask again, so somebody far away who guesses the number
+  has milliseconds a day to hit. Its options are walked as far as the message goes,
+  and the first four bytes of three are kept: the time (51), the kind (53), the
+  server's name for itself (54).
+- An OFFER, while we have no address, gets a REQUEST for the address it offers, naming
+  the server. An ACK makes the address ours: `MYIP`, and `DHT` is half its time from now
+  (and a second; six days at most, which is what the clock's 32 bits of ticks can
+  say). A NAK makes it not ours, and a second later we ask anew.
+- `tools/dhcptest.py` plays the server, right and wrong (and 13,000 answers damaged at
+  random); `tools/dhcptest.sh real` is dnsmasq; every test through QEMU's own network
+  has QEMU's.
 
 ## Processors
 The server's card has one receive queue, so the processors are fed in software. The
@@ -548,6 +583,13 @@ removing the ones about TLS.
   5961, 5.2 wants the ack inside what we sent as well: a blind sender has less to guess). The IP header's checksum is not looked at: what we use of that header is
   fixed or goes into TCP's checksum, which is.
 - Port 80: one response, whatever is asked; a request body is not understood.
+- DHCP: an address that could not be renewed is used on (a server that gives up its
+  address is no server; we go on asking every 128 s); nobody is asked whether the
+  address offered is in use (no ARP probe, no DECLINE), and it is not given back (no
+  RELEASE: we don't shut down); T1 is half the lease whatever options 58 and 59 say;
+  the number in our messages is one for as long as we are up; the first server to
+  offer is taken. While we have no address, ours is 0.0.0.0: a neighbour who asks for
+  that gets an answer.
 - `keys` writes 20 junk bytes after an IV: the handshake makes both key blocks in `KA` and
   copies them into the slot.
 - The handshake's scratch (transcript, key schedule, curve registers) is one per

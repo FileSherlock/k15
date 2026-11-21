@@ -9,7 +9,7 @@ PORT=${PORT:-8443}
 IMG=${1:-}
 export B=${B:-build}
 if [[ -z "$IMG" ]]; then
-  make -s all B="$B" CERT="${CERT:-cert}" >/dev/null     # (NAME, SITE, P80, HSTS: from the environment)
+  make -s all B="$B" CERT="${CERT:-cert}" >/dev/null     # (NAME, IP, SITE, P80, HSTS: from the environment)
   IMG=$B/os.bin
 fi
 EXPECT=$(cat www/index.html)

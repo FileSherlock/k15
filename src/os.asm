@@ -5,7 +5,8 @@
 ;       starts the other processors if there are any (up to MAXCPU in all).
 ; CPU:  64-bit, with rdrand (secrets), AES and PCLMULQDQ (the hash that places connections;
 ;       AES-GCM), SSE4.1, and BMI2 and ADX (mulx, adcx, adox: the curves).
-; NIC:  virtio-net (modern PCI interface), polled. Our IP is baked in (OURIP).
+; NIC:  virtio-net (modern PCI interface), polled. Our address is what a DHCP server gives
+;       us (`dhcp`), or the one the image is built with (make IP=a.b.c.d: OURIP).
 ; TCP:  ports 443 (TLS) and 80 (one response for everybody: the page, or where to go); see `tcp`.
 ; TLS:  1.3, TLS_AES_128_GCM_SHA256, X25519 (asked for
 ;       with a HelloRetryRequest if need be), ecdsa_secp256r1_sha256.
@@ -84,6 +85,10 @@ TXLOCK  equ 0x9F00          ; held from `txbuf` to `txgo` (not in the page of TR
 NCPUM   equ 0x9F04          ; is code); how many processors take frames, less 1 (a power of two, less 1)
 KST     equ 0x9F08          ; reset knock: 1 after the first port (development builds)
 TXCNT   equ 0x9F20          ; how many frames have ever been queued for sending (a qword: `txgo`)
+MYIP    equ 0x9F0C          ; Where the image has no address of its own: the one a DHCP server
+DHT     equ 0x9F10          ;   gave us (0: none yet), when to ask next (in ticks of 1/2048 s),
+DHB     equ 0x9F14          ;   and how often we have asked without an answer (a byte; 0:
+                            ;   nothing is being asked): see `dhcp`
 %ifndef HOST
 APMEM   equ 0x900000 + LOW  ; for each other processor 32 KiB: four page tables, its page 0,
 APBSS   equ 0xA00000 + LOW  ; and 2 MiB: its BSS
@@ -181,6 +186,7 @@ RLAST   equ NV + 208        ; what the processor's random number generator said 
 BIGQ    equ BSS + 0x0F100   ;   and for each of its buffers a count of frames queued (TXCNT)
                             ;   that is past the one it last held (qwords)
 HKS     equ BSS + 0x0F400   ; the eleven round keys of `prf`, made at boot
+DHX     equ HKS - 8         ;   (in front of them, made with them: the number our DHCP messages carry)
 HKO     equ HKS + 176       ;   and its output
 KA      equ BSS + 0x0F300   ; application keys as `keys` makes them (2 x 44 bytes + 20 of junk)
 %ifndef HOST
@@ -193,9 +199,18 @@ BIGB    equ 0x1000000 + LOW ; and for each processor BIGS buffers of 64 KiB, for
 %endif
 BIGS    equ 1 << BIGSH
 BIGPAY  equ 0xFF00          ; such a frame holds so many bytes of segments at most
-%ifndef OURIP
-%define OURIP 0x0F02000A    ; 10.0.2.15, as it is on the wire (make IP=a.b.c.d)
+; NOTOURS at, label: to `label` unless the address at `at` is ours: the one the image was
+; built with (make IP=a.b.c.d: OURIP, as it is on the wire), or else the one we were given
+; (MYIP; while we have none that is 0.0.0.0, which is nobody's). (Clobbers eax.)
+%macro NOTOURS 2
+%ifdef OURIP
+        cmp dword [%1], OURIP
+%else
+        mov eax, [abs MYIP]
+        cmp [%1], eax
 %endif
+        jne %2
+%endmacro
 %ifdef ISNTOP
 %ifndef ISNBITS
 %define ISNBITS 12
@@ -825,8 +840,13 @@ shaconst:
         mov rdx, [Q0+Q_NOTE]
         mov word [rdx], 0       ; notify queue 0: there are buffers
 
+%ifdef OURIP
         mov edi, HKS            ; the round keys for `prf`
         push 22
+%else
+        mov edi, DHX            ; the round keys for `prf` (and DHX)
+        push 23
+%endif
         pop rcx
         call rand
 
@@ -886,6 +906,10 @@ shaconst:
         xor eax, eax            ; is whatever the loader left in it)
         mov cl, 5
         rep stosq
+%ifndef OURIP
+        call clock              ; (no address yet: it is time to ask for one, `dhask`)
+        mov [rdi+DHT-TXLOCK-40], eax
+%endif
         mov ebx, 1
 .cpu:   mov r8d, ebx
         shl r8d, 15
@@ -987,6 +1011,9 @@ poll:
         cmp dword [CPUN], 0
         jne .ring
         call drain
+%ifndef OURIP
+        call dhask              ; (if it is time: for an address, or to keep ours)
+%endif
 .ring:  call ring1              ; then one frame of our own, if there is one
         jnz poll
         call txkick             ; none: time to tell the device what we have queued for it,
@@ -1335,8 +1362,7 @@ tcp:
         jb .ret                 ; the frame before it): a request for our address is answered
         cmp word [rbx+20], 0x0100
         jne .ret
-        cmp dword [rbx+38], OURIP
-        jne .ret
+        NOTOURS rbx+38, .ret
         call txbuf
         mov edi, ebx
         call ethhdr
@@ -1350,8 +1376,9 @@ tcp:
         mov esi, MAC
         movsd
         movsw
-        mov eax, OURIP
-        stosd
+        push 38                 ; with the address that was asked for;
+        pop rsi
+        movsd
         push 22                 ; the request's sender is its target
         pop rsi
         mov cl, 10
@@ -1364,11 +1391,14 @@ tcp:
         jne .ret                ; what we use of it is fixed here or goes into TCP's.)
         test word [rbx+20], 0xFF3F
         jnz .ret
+%ifndef OURIP                   ; (Or, where our address is somebody's to give: UDP, to
+        cmp byte [rbx+23], 17   ; whatever address, all of it in this frame: it may be what
+        je .len                 ; a DHCP server says, `dhcp`.)
+%endif
         cmp byte [rbx+23], 6
         jne .ret
-        cmp dword [rbx+30], OURIP
-        jne .ret
-        movzx ecx, word [rbx+16]
+        NOTOURS rbx+30, .ret
+.len:   movzx ecx, word [rbx+16]
         xchg cl, ch             ; IP total length
         lea eax, [rcx+14]
         cmp eax, [RXLEN]
@@ -1386,6 +1416,10 @@ tcp:
         add ecx, 12
         call csum
         pop rcx
+%ifndef OURIP
+        cmp byte [rbx+23], 17
+        je dhcp
+%endif
         test ax, ax
         jz .sums
 .bad:   count 0
@@ -3211,10 +3245,9 @@ tcp_seg: xor r8d, r8d
         shl eax, 16
         mov ah, 6
         stosd
-        mov eax, OURIP
-        stosd
-        mov eax, [abs P_IP]
-        stosd
+        mov rax, [abs P_IP]     ; the addresses: from ours, which is where the frame in
+        ror rax, 32             ; hand was sent to, to the client's
+        stosq
         mov eax, [abs P_PORTS]
         rol eax, 16
         stosd
@@ -3264,6 +3297,184 @@ csum:
         not edx
         xchg eax, edx
         ret
+
+%ifndef OURIP
+; ----------------------------------------------------------------------------
+; Our address, where the image has none of its own: a DHCP server's to give (RFC 2131). We
+; ask everybody for one (DISCOVER); a server offers one (OFFER); we ask that server for it
+; (REQUEST); it says yes (ACK), and for how long. Half that time later we ask to keep it
+; (REQUEST again, with the address as ours), and so on for as long as we are up. That is
+; all of it: who our neighbours are and where the world is we need not be told, since
+; every frame of ours answers one, and goes to where that one came from.
+; The first processor asks, when it is time (DHT). The answer is a frame like any other,
+; and whichever processor it goes to takes it: what they know of all this is in low
+; memory, where it is everybody's (MYIP, DHT, DHB: from rbp on, here).
+; If no answer comes we ask again, after 2 s, 4 s, 8 s, ... and then every 128 s, for ever.
+; An address that we could not get renewed is used on: a server that gives up its address
+; is no server.
+;
+; dhask (the first processor's, every turn of its polling loop): if it is time, ask. With
+; no address, for one; with one, to keep it, as a client asks that has heard nothing from
+; its own server: everybody. (Clobbers everything. By the clock as it was last read: a
+; frame or an idle turn ago.)
+dhask:  mov ebp, MYIP
+        mov eax, [TNOW]
+        sub eax, [rbp+DHT-MYIP] ; (how late it is)
+        js dhcp.ret
+        mov cl, [rbp+DHB-MYIP]  ; (the how manieth time, up to 7: so long until the next,
+        cmp cl, 7               ; from now)
+        adc cl, 0
+        mov [rbp+DHB-MYIP], cl
+        mov edx, 2048
+        shl edx, cl
+        add eax, edx
+        add [rbp+DHT-MYIP], eax
+        xor eax, eax
+        push 1                  ; DISCOVER,
+        pop rdx
+        cmp [rbp], eax
+        je dhsend
+        mov dl, 3               ; or REQUEST
+; dhsend: a DHCP message of type dl, to everybody: 1, DISCOVER; or 3, REQUEST, which asks
+; to keep the address we have (eax = 0), or for the address eax that a server has offered
+; (whose name for itself is the upper half of rdx). 342 bytes: the least such a message
+; may have (300, behind the headers), nearly all of them zero. (rbp = MYIP. Clobbers
+; everything.)
+dhsend: push rdx
+        push rax
+        call txbuf
+        mov edi, ebx
+        xor eax, eax
+        mov ecx, 342
+        rep stosb
+        mov edi, ebx
+        dec eax
+        stosd
+        stosw                   ; To everybody,
+        mov esi, MAC
+        movsd
+        movsw                   ; from us:
+        mov esi, DHHDR          ; IPv4, UDP from port 68 to port 67, a request
+        mov cl, DHHLEN
+        rep movsb
+        mov eax, [DHX]
+        stosd                   ; with our number,
+        mov eax, [rbp]
+        mov [rbx+26], eax       ; from our address, if we have one,
+        scasd
+        stosd                   ; which is then also what we say is ours (ciaddr),
+        add edi, 12
+        lea esi, [rbx+6]
+        movsd
+        movsw                   ; by the owner of our card's address (chaddr).
+        lea edi, [rbx+278]
+        mov eax, 0x63538263     ; Then the options: the four bytes that say there are any,
+        stosd
+        mov eax, 0xFF000135     ; which message this is (53), and that this was all (255)
+        stosd
+        pop rax
+        pop rdx
+        mov [rdi-2], dl
+        test eax, eax
+        jz .sum
+        mov word [rdi-1], 0x0432 ; or, before that: which address we ask for (50), and
+        inc edi                 ; whose offer it was (54)
+        stosd
+        mov ax, 0x0436
+        stosw
+        shr rdx, 32
+        xchg eax, edx
+        stosd
+        dec byte [rdi]
+.sum:   lea esi, [rbx+14]       ; (the IP header's checksum. UDP's is left out, as it may be)
+        push 20
+        pop rcx
+        call csum
+        mov [rbx+24], ax
+        mov ecx, 342
+        jmp txgo
+
+; dhcp: what may be a DHCP server's message: the frame in FR, which is UDP and whole
+; (`tcp`: ecx = its length behind the IP header, ax = its checksum, 0 if right; ebx = 0).
+; It counts if that is right or left out (0 in its place), if it is from port 67 to port
+; 68, has our number, and we are asking (so nobody can tell us our address at a time of
+; their choosing). Behind 240 bytes of fixed fields come the options: which, how long,
+; value, as far as the message goes (the lengths are the sender's: an option counts if
+; all of it lies inside the message; one too short to have any has none, and says
+; nothing). Three matter, and the first four bytes of each are kept: for how long the
+; address is ours (51: seconds; if not said, for ever), which message this is (53), and
+; what the server calls itself (54).
+;   An offer (2), while we have no address: we ask that server for the address it offers.
+;   Yes (5, ACK): the address is ours. Half its time from now, but after 2^19 s (six days)
+;     at the latest, we ask to keep it.
+;   No (6, NAK): we have no address, and ask anew a second from now.
+; (Clobbers everything.)
+dhcp:   test ax, ax
+        jz .sum
+        cmp [rbx+40], bx
+        jne .ret
+.sum:   cmp dword [rbx+34], 0x44004300
+        jne .ret
+        mov eax, [DHX]
+        cmp [rbx+46], eax
+        jne .ret
+        mov ebp, MYIP
+        cmp [rbp+DHB-MYIP], bl
+        je .ret
+        lea edi, [rbx+rcx+34]   ; Where the message ends (and four zero bytes behind it:
+        mov [rdi], ebx          ; what is read of a value is the message's, or that).
+        push rbx                ; What the options say, by number, from 51 on: four bytes
+        push -1                 ; each (none yet: for ever, no message, nobody's)
+        mov esi, 282            ; (FR + 282: the first option)
+.opt:   lea eax, [rsi+2]
+        cmp eax, edi
+        ja .seen
+        lodsw                   ; which, and how long
+        test al, al
+        jnz .o
+        dec esi                 ; (padding is a byte)
+        jmp .opt
+.o:     cmp al, 255             ; (the end)
+        je .seen
+        movzx edx, ah
+        add edx, esi            ; where this one ends
+        cmp edx, edi
+        ja .seen
+        sub al, 51
+        cmp al, 3
+        ja .nx
+        movzx eax, al
+        mov ecx, [rsi]
+        mov [rsp+rax*4], ecx
+.nx:    mov esi, edx
+        jmp .opt
+.seen:  pop rcx                 ; for how long (as it was sent),
+        pop rdx                 ; which message, and (the upper half) whose
+        mov eax, [rbx+58]       ; the address it is about
+        cmp dl, 2
+        jne .n2
+        cmp [rbp], ebx
+        jne .ret
+        inc dl                  ; (a REQUEST)
+        jmp dhsend
+.n2:    cmp dl, 5
+        je .yes
+        cmp dl, 6
+        jne .ret
+        xor eax, eax
+        xor ecx, ecx
+.yes:   mov [rbp], eax
+        bswap ecx               ; (seconds: 1,024 ticks are half of one)
+        mov eax, 1 << 20
+        cmp ecx, eax
+        cmova ecx, eax
+        shl ecx, 10
+        call clock
+        lea eax, [rax+rcx+2048]
+        mov [rbp+DHT-MYIP], eax
+        mov [rbp+DHB-MYIP], bl
+.ret:   ret
+%endif
 
 ; ----------------------------------------------------------------------------
 ; handshake: ClientHello message at rsi (ecx bytes), connection at rbp.
@@ -5107,6 +5318,13 @@ H_AE:   db "*accept-encoding:"   ; header names as `seek` sees them, the line en
 H_INM:  db "*if-none-match:"
 T_BR:   db "br"
 T_GZ:   db "gzip"
+%ifndef OURIP
+DHHDR:  db 8, 0, 0x45, 0, 328 >> 8, 328 & 255, 0, 0, 0, 0 ; a DHCP message's frame from its type on
+        db 64, 17, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255 ; (`dhsend`): IPv4, 328 bytes, UDP, to
+        db 0, 68, 0, 67, 308 >> 8, 308 & 255, 0, 0 ; everybody; port 68 to 67, 308 bytes, no sum;
+        db 1, 1, 6, 0           ; a request, from an Ethernet card (six bytes of address)
+DHHLEN  equ $ - DHHDR
+%endif
 SYNOPT: db 2, 4, 1460 >> 8, 1460 & 255 ; maximum segment size: what fits an Ethernet frame
         db 1, 3, 3, 0           ; (padding,) window scale: ours is not shifted
 MSSTAB: dw 216, 536, 1220, 1440 ; the sizes we cut our segments to (the client's, rounded down)

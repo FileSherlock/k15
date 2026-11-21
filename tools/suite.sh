@@ -94,6 +94,17 @@ T[tlsfuzz]='IFTHERE=1 unshare -Urn tools/tlsfuzz.sh'
 T[hellofuzz]='unshare -Urn ./tap.sh python3 tools/hellofuzz.py'
 # frames that no router would pass on: lengths that say less than there must be, and the like
 T[rawframes]='unshare -Urn ./tap.sh python3 tools/rawtest.py'
+# An image's address: the default image has none and asks for one (DHCP). Over tap that is
+# tools/dhcpd.py's to give, through QEMU's own network QEMU's; here against a server that
+# answers right and wrong as the test wants (tools/dhcptest.py), the same on four
+# processors, and against dnsmasq (not run where there is none). And an image built with
+# an address of its own, which asks nobody.
+T[dhcp]='unshare -Urn tools/dhcptest.sh'
+T[dhcp_smp4]='SMP=4 unshare -Urn tools/dhcptest.sh'
+T[dhcp_dnsmasq]='IFTHERE=1 unshare -Urn tools/dhcptest.sh real'
+T[static_measure]='B=build-static IP=10.0.2.15 PORT=8493 ./measure.sh'
+T[static_tls_loss3]="B=build-static LOSS=3 DHCPD=none STATIC=1 $TLS"
+T[static_plain]='B=build-static DHCPD=none STATIC=1 PLAIN=1 INFLIGHT=64 unshare -Urn ./tap.sh ./taprunc.sh 4000 1024 4'
 # the tool: ./k15 pack and ./k15 run
 T[k15]='PORT=8513 tools/k15test.sh'
 # only code is executed, and neither code nor site is written (tools/wxtest.sh)
@@ -114,7 +125,8 @@ ORDER="measure measure_tcg browsers tls tls_loss3 tls_mtu300_loss3 tls_reorder t
   real_mtu300_loss3 real_reorder hrr hrr_loss3 hrr_mtu300_loss3
   hrr_reorder real_hrr_loss3 redirect raw_redirect tls_isn31 tls_isn32 tls_isn31_loss3
   plain_isn32_loss3 real_isn31_loss3 real_isn32_reorder site_wrap31 site_wrap32 site_wrap31_loss3
-  site_wrap32_loss3 site_keylife site_gone race1 race2 race3 cpus3 tlsfuzz hellofuzz rawframes k15 wx site site_tap site_loss3 site_mtu600_loss3
+  site_wrap32_loss3 site_keylife site_gone race1 race2 race3 cpus3 tlsfuzz hellofuzz rawframes dhcp dhcp_smp4 dhcp_dnsmasq
+  static_measure static_tls_loss3 static_plain k15 wx site site_tap site_loss3 site_mtu600_loss3
   site_reorder
   site_notso_loss3 bneck"
 
@@ -125,6 +137,7 @@ make -s B=build-small CAP=1024 >/dev/null || { echo "BUILD FAILED (small)"; exit
 make -s B=build-small-idle CAP=1024 IDLE=0 >/dev/null || { echo "BUILD FAILED (small-idle)"; exit 1; }
 make -s B=build-small-idle1 CAP=1024 IDLE=1 >/dev/null || { echo "BUILD FAILED (small-idle1)"; exit 1; }
 make -s B=build-real CERT=cert-real >/dev/null || { echo "BUILD FAILED (real)"; exit 1; }
+make -s B=build-static IP=10.0.2.15 >/dev/null || { echo "BUILD FAILED (static)"; exit 1; }
 env $REDIR make -s >/dev/null || { echo "BUILD FAILED (redirect)"; exit 1; }
 make -s B=build-isn31 ISNTOP=0x7FF00000 >/dev/null && make -s B=build-isn32 ISNTOP=0xFFF00000 >/dev/null || { echo "BUILD FAILED (isn)"; exit 1; }
 make -s B=build-real-isn31 CERT=cert-real ISNTOP=0x7FF00000 >/dev/null && make -s B=build-real-isn32 CERT=cert-real ISNTOP=0xFFF00000 >/dev/null || { echo "BUILD FAILED (real isn)"; exit 1; }
@@ -136,19 +149,19 @@ mkdir -p build-keylife && python3 tools/mksite.py build-keylife/www >/dev/null &
 mkdir -p build-site && python3 tools/mksite.py build-site/www >/dev/null && make -s B=build-site SITE=build-site/www >/dev/null || { echo "BUILD FAILED (site)"; exit 1; }
 mkdir -p build-site-notso && python3 tools/mksite.py build-site-notso/www >/dev/null && make -s B=build-site-notso SITE=build-site/www NOTSO=1 >/dev/null || { echo "BUILD FAILED (site, no TSO)"; exit 1; }
 [[ -x build/rawc && build/rawc -nt tools/rawc.c ]] || gcc -O2 -o build/rawc tools/rawc.c || exit 1
-for b in build build-real build-small build-small-idle build-isn31 build-isn32 build-real-isn31 build-real-isn32; do
+for b in build build-real build-static build-small build-small-idle build-isn31 build-isn32 build-real-isn31 build-real-isn32; do
   [[ -x $b/tapc && $b/tapc -nt tools/tapc.c ]] || gcc -O2 -o $b/tapc tools/tapc.c -lssl -lcrypto || exit 1
 done
 
 verdict() {  # name, exit code -> one line
   local n=$1 rc=$2 f=$LOGS/$1.log v=FAIL note=
   case $n in
-    measure*|real_measure|redirect) grep -q '^PASS' "$f" && v=ok; note=$(grep -m1 -E '^(PASS|FAIL)' "$f");;
+    measure*|real_measure|static_measure|redirect) grep -q '^PASS' "$f" && v=ok; note=$(grep -m1 -E '^(PASS|FAIL)' "$f");;
     browsers) [[ $rc == 0 ]] && grep -q 'refused OK' "$f" && v=ok; note=$(tr '\n' ';' <"$f" | tail -c 120);;
     raw*|twice*) [[ $rc == 0 ]] && ! grep -q -E ' [1-9][0-9]* (reset|timed out)' "$f" && v=ok
        note=$(grep '^RAW total' "$f" | tail -1 | cut -c1-80)
        note="$note; $(grep -o '[0-9]* reset, [0-9]* timed out' "$f" | tr '\n' ';')";;
-    churn*|idle|race*|cpus3|tlsfuzz|hellofuzz|rawframes) [[ $rc == 0 ]] && v=ok; note=$(tail -1 "$f" | cut -c1-110);;
+    churn*|idle|race*|cpus3|tlsfuzz|hellofuzz|rawframes|dhcp*) [[ $rc == 0 ]] && v=ok; note=$(tail -1 "$f" | cut -c1-110);;
     wx) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 9 ok; $(grep -m1 '^FAIL' "$f")";;
     bneck) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 4 ok; $(grep -m1 '^FAIL' "$f" | cut -c1-80)";;
     k15) [[ $rc == 0 ]] && v=ok; note="$(grep -c '^ok' "$f") of 24 ok; $(grep -m1 '^FAIL' "$f")";;

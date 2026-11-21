@@ -6,7 +6,9 @@
 #       OUT/os.bin (the image: what a multiboot loader such as GRUB starts) and OUT/disk.img
 #       (the same behind a boot sector: what a BIOS starts from a disk). NAME is what the
 #       certificate is for and what port 80 redirects to (a DNS name or an IP address;
-#       default 127.0.0.1), IP the address the server answers on (default 10.0.2.15, QEMU's).
+#       default 127.0.0.1). The image asks for its address where it boots (DHCP), so it
+#       runs on any machine whose network gives it one; with -i IP it has that address
+#       and asks nobody.
 #       --san: a further name the certificate is to be good for (www.NAME, say). The server
 #       does not look at the name it is asked for: every name that points at it and is in
 #       its certificate gets the same site.
@@ -77,7 +79,7 @@ build() {
   total=$(stat -c %s "$5/os.bin")
   site_bytes=$(stat -c %s "$5/site.bin")
   name=$(cat "$5/name")
-  echo "$5/os.bin: $total bytes ($((total - site_bytes)) of system, $site_bytes of site), for https://$name/ on $3"
+  echo "$5/os.bin: $total bytes ($((total - site_bytes)) of system, $site_bytes of site), for https://$name/ on ${3:-the address it is given where it boots (DHCP)}"
   if [[ -s $5/ca.pem ]]; then
     echo "its certificate is under a private CA: clients need $5/ca.pem (curl --cacert $5/ca.pem)"
   fi
@@ -95,7 +97,7 @@ build() {
 }
 
 pack() {
-  local site=${1:-} name=127.0.0.1 ip=10.0.2.15 cert= out= p80=redirect hsts= cache=600 headers= sans= compress=1
+  local site=${1:-} name=127.0.0.1 ip= cert= out= p80=redirect hsts= cache=600 headers= sans= compress=1
   [[ -n $site ]] || die "pack: which folder?"
   site=$(abs "$site")
   [[ -d $site ]] || die "pack: no such folder: '$site'"

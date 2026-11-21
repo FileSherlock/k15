@@ -19,13 +19,16 @@ is history, a measurement series or a description of how a routine works. Those 
 
 ## Decided with the user
 - This is the branch `dev`, in /home/jaguarm/code/k15: the project is developed further
-  here and byte size is ignored for now (2026-11-21). `main` stays the small system; the
-  bounty's keys, certificates and images are only in ~/Desktop/k15, not in this checkout.
+  here. It stays minimalistic (the user, 2026-11-21: "size doesn't matter" was not
+  completely right): the features of "Next" are added, each in the smallest form that
+  does its job, and nothing beside them. `main` stays the small system; the bounty's
+  keys, certificates and images are only in ~/Desktop/k15, not in this checkout.
 - **Security can never be lowered, only raised.** Everything behind TLS is in scope:
   anything a packet can make it do. Port 80 says one public thing to everyone.
 - The measure was connections per byte of image (a feature has to pay for its bytes),
-  and is again when this branch goes back to `main`. Until then: say what a feature
-  costs, don't let that stop it.
+  and is again when this branch goes back to `main`. Until then: a feature of the list
+  is not stopped by its bytes, but it is built to cost few, and what it costs is said
+  (in "Where it stands" and in `docs/commands.md`).
 - Scope: the best product in its niche, "a clunky, limited but fast and secure OS".
   A new image for every change of content or certificate is the point, not a defect.
 - TLS 1.3 only, one cipher: AES-128-GCM, which every TLS 1.3 client has (no
@@ -47,9 +50,14 @@ is history, a measurement series or a description of how a routine works. Those 
   or two lines, or fix the docs it contradicts. Delete what is no longer true.
 
 ## Where it stands
-- The system is 13,891 bytes. It boots from GRUB or a BIOS boot sector, uses all the
+- The system is 13,891 bytes with an address of its own (`IP=`, `-i`), and 14,341
+  without, which is the default since 2026-11-21: it asks for its address by DHCP. It
+  boots from GRUB or a BIOS boot sector, uses all the
   RAM and up to 4 processors, modern virtio-net, and serves GET and HEAD by path with
   compressed forms, ETag and 304, keep-alive, and a redirect on port 80.
+- DHCP has been tried against QEMU's server, dnsmasq and the tests' own, not yet on a
+  real machine: `hcloud` has no token here since the bounty began (the user took it
+  away: the rescue system is a way to the bounty's key).
 - Memory per held connection: 24 bytes on port 80, 128 bytes for TLS.
 - 15kb.org runs the bounty's image since 2026-11-20: packed from the branch `bounty`,
   alone on the server's disk (no Linux), with a Let's Encrypt certificate until
@@ -65,9 +73,7 @@ is history, a measurement series or a description of how a routine works. Those 
   else; each is named in `tools/tlsfuzz.sh`.
 
 ## Next
-The user's list for this branch (2026-11-21), in this order:
-1. DHCP: an image that is not tied to one address boots on any provider and moves
-   without being packed again.
+The user's list for this branch (2026-11-21), in this order (its first, DHCP, is done):
 2. One-step publishing: a push to a repository packs and deploys (CI), and renewal that
    does not depend on a cron job on the user's machine.
 3. Provider-neutral deploy: the raw disk written from a rescue system (as
@@ -116,7 +122,9 @@ Don't change the source or a test script while a suite runs.
   `make outside` and `make ct` (`tools/outside.sh fetch` once, for what they run with).
 - After touching the handshake, records, or what a bad packet gets:
   `unshare -Urn tools/tlsfuzz.sh` (three minutes).
-- After anything else: `tools/suite.sh` (59 runs, ten minutes). Also with `SMP=1` and
+- After touching `dhask`, `dhsend`, `dhcp` or what `tcp` lets through to them:
+  `unshare -Urn tools/dhcptest.sh` (a minute), a few times, and once with `real`.
+- After anything else: `tools/suite.sh` (65 runs, a quarter of an hour). Also with `SMP=1` and
   `SMP=4` after touching what processors share or how the machine starts. On 4,
   `raw1m_20k` fails when the host is busy: run it alone before believing it.
 - After touching boot or the polling loops: `measure.sh` with `DEBUG=1`, `KNOCK=` and

@@ -1,15 +1,16 @@
 # B: where generated files go. CERT: the server's identity (see tools/gen.py). Both can be
 # set to build a second image, e.g. `make B=build-real CERT=cert-real`.
 comma := ,
-# IP: the address the server answers on, baked in (default: what QEMU's slirp expects).
-# For a real server: `make B=build-hz CERT=cert-hz NAME=<name or IP in the certificate> IP=a.b.c.d`.
+# IP: the address the server answers on, if the image is to have one of its own. Without it
+# (the default) the image asks for its address where it boots (DHCP), and is not tied to a
+# machine. For a real server: `make B=build-hz CERT=cert-hz NAME=<name or IP in the certificate>`.
 B ?= build
 CERT ?= cert
-IP ?= 10.0.2.15
+IP ?=
 # KNOCK=a,b (development): a TCP packet to port a, then one to port b, resets the machine
 KNOCK ?=
 KNOCKDEF := $(if $(KNOCK),-DKNOCK_A=$(word 1,$(subst $(comma), ,$(KNOCK))) -DKNOCK_B=$(word 2,$(subst $(comma), ,$(KNOCK))),)
-OURIP := $(shell python3 -c 'import ipaddress; print("0x" + ipaddress.IPv4Address("$(IP)").packed[::-1].hex())')
+OURIP := $(if $(IP),-DOURIP=$(shell python3 -c 'import ipaddress; print("0x" + ipaddress.IPv4Address("$(IP)").packed[::-1].hex())'),)
 # CAP=n (tests): no more than n slots in each connection table, however much memory there is.
 # IDLE=n (tests): how long a connection must have been quiet to be replaced when there is no room
 # TSHARE=n: the table of TLS connections gets 1/2^n of the memory (default 3: an eighth), the
@@ -96,7 +97,7 @@ $(PACKED) &: tools/pack.py $(B)/site.conf $(GEN)
 	P80=$(P80) HSTS=$(HSTS) CACHE=$(CACHE) HEADERS='$(HEADERS)' COMPRESS=$(COMPRESS) python3 tools/pack.py $(SITE) $(B)
 
 $(B)/os.bin: src/os.asm $(GEN) $(PACKED) $(B)/ip
-	nasm -f bin -DOURIP=$(OURIP) $(KNOCKDEF) $(TABLEDEF) $(DEBUGDEF) $(WINDEF) -I$(B)/ -o $@ -l $(B)/os.lst src/os.asm
+	nasm -f bin $(OURIP) $(KNOCKDEF) $(TABLEDEF) $(DEBUGDEF) $(WINDEF) -I$(B)/ -o $@ -l $(B)/os.lst src/os.asm
 	@chmod go= $@ $(B)/os.lst
 	@echo "image: $$(stat -c %s $@) bytes, of which the site: $$(stat -c %s $(B)/site.bin)"
 	@python3 tools/jcc.py $(B)/os.lst $(HOT) || echo "(these jumps lie on 32-byte boundaries: see HOT in src/os.asm)"

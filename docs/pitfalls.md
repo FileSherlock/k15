@@ -77,6 +77,12 @@ One or two lines each. Add to it when something costs an hour; delete what stops
   change it in between (`find`: the free slots of a bucket). Every walk has its own end.
 - A processor that has no work must not do the idle work either: its share of a shared
   table is somebody else's (`tidle`, with three processors).
+- r8 to r15 are the crypto's scratch: what is in them is secret until it is set. A
+  register that goes into a frame is set first (the server's name in a DHCP REQUEST was
+  whatever r9 held, until an offer without that option was thought of).
+- A test's server must not be able to say "yes, for a year" by accident: the random
+  DHCP answers silenced the client they were meant to exercise, and the test passed
+  with 150 of 13,000 read.
 - "It takes an hour and a nanosecond" is no reason to leave a race: a host takes a
   processor away for milliseconds, in the middle of anything. Close it, and make the
   test hold one side still (`RACE=n`, `tools/racetest.py`).

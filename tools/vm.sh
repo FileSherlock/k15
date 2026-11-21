@@ -6,7 +6,8 @@
 
 B=${B:-build}
 NAME=$(cat "$B/name")
-GUEST=$(cat "$B/ip")                                    # the address baked into the image
+GUEST=$(cat "$B/ip")                                    # the address the image was built with,
+GUEST=${GUEST:-10.0.2.15}                               # or the one QEMU's DHCP server will give it
 ACCEL=(-cpu max)
 if [[ ${KVM:-1} == 1 && -w /dev/kvm ]]; then ACCEL=(-accel kvm -cpu host); fi
 
