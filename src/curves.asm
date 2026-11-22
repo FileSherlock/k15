@@ -851,8 +851,6 @@ ecinit: mov edi, BSWAPM         ; (and what GHASH needs: how pshufb reverses 16 
         add edi, FSIZE
         dec bl
         jnz .f
-        mov byte [F25519+F_EXP], -21 ; (not 2^256 - 40 but 2^255 - 21)
-        mov byte [F25519+F_EXP+31], 0x7F
         mov edi, KOFFV          ; what a nonce loses before its nibbles are looked up
         mov al, 0x11
         mov cl, 32
