@@ -631,8 +631,10 @@ model that asserts every bound.
   1/k and needs four multiplications. The polling loops call `stock` when they have
   nothing else to do and the stock is empty, one k G a call; `sign` does when it finds
   none. So a signature costs 89,000 cycles under full load and next to nothing below it.
-- `inv` is a^(m-2) by squaring and multiplying, for all three moduli: 20,000 to 31,000
-  cycles, once a handshake (X25519) and twice per 64 (the signatures).
+- `inv` is a^(m-2), once a handshake (X25519) and twice per 64 (the signatures). Mod
+  2^255 - 19 by an addition chain (tools/ec.py, `CHAIN25519`: 254 squarings and 11
+  multiplications, 12,000 cycles; it uses T0-T3), for P-256's p and n by squaring and
+  multiplying bit by bit (27,000 and 30,000).
 - Our X25519 scalar is clamped and the client's u has its top bit cleared (RFC 7748), so
   every point of small order makes the shared secret all zeros, which `handshake` refuses.
 - r and s go out as DER INTEGERs of whatever length they have (`derint`); nothing is

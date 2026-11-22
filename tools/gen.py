@@ -216,7 +216,7 @@ def main(out):
         for name, prog in curve.PROGRAMS.items():  # them all in one go: keep them together)
             f.write(db(name, prog) + f"global X_{name}\nX_{name} equ XP + {at}\n")
             at += 8 * (len(prog) - 1) + 4          # unpacked: 16 bytes for 2, and 4 at the end
-        f.write(f"NPROG equ {len(curve.PROGRAMS)}\n")
+        f.write(f"NPROG equ {len(curve.PROGRAMS)}\n" + db("NSQ", bytes(curve.NSQ)))
     # What boot (`ecinit`) reads, in this order: P-256's G, times R; what it can't compute of
     # the group order n (its low half, and -1/n mod 2^64); the base point of edwards25519;
     # our private key d, times R mod n; and 2 d of edwards25519 (the two fill registers D, C)

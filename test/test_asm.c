@@ -165,6 +165,14 @@ int main(int argc, char **argv)
             SET(0, 0, 0, 1ull << 63); SET(~0ull, ~0ull, ~0ull, ~0ull >> 1); SET(~0ull, 0, 0, 0); SET(0, 0, 0, 1);
             SET(~0ull, ~0ull, ~0ull, mm[3]); SET(0, 0, 0, mm[3]);
             for (j = 0; j < 5; j++, n++) memcpy(v[n], m + 100 + 40 * j + 7 * f, 32);
+            for (j = 0; j < n; j++) { /* and the inversion of each (T1) */
+                u8 *x = (u8 *)v[j];
+                int c = f;
+                __asm__ volatile("call hinv" : "+S"(x), "+c"(c) : : SCRATCH);
+                printf("f%d_inv_%d ", f, j);
+                for (int b = 0; b < 32; b++) printf("%02x", REGS[R_T1 + b]);
+                printf("\n");
+            }
             for (j = 0; j < n; j++)
                 for (k = 0; k < n; k++) {
                     static const char *const op[] = {"hfas", "hfsub", "hfmul"};

@@ -39,7 +39,8 @@ Scalar multiplications, the three a handshake needs:
     first: no partial sum can then meet the point it is added to, except for a share of
     2^-240 or so of all nonces (see `sign`).
 Table lookups read all 16 entries of a window and keep one (the asm: with masks).
-One inversion a^(m-2) for all three moduli. The two X25519 results share one; the
+One inversion a^(m-2) for all three moduli (mod 2^255 - 19 by an addition chain, CHAIN25519;
+the others bit by bit). The two X25519 results share one; the
 signatures' r and 1/k are made 64 at a time (the asm's `stock`), with two inversions for
 all of them (`binv`: Montgomery's trick, which here gives exactly what `inv` gives).
 """
@@ -165,6 +166,40 @@ TOPRE = asm("""
     T1 = T1 - T0
     T0 = T3 + ZERO
 """)
+
+
+def chain(text):
+    """'DST = A^(2^N) * B' lines (or 'DST = A * B') -> (dst, a, n, b), as register numbers."""
+    out = []
+    for line in text.strip().splitlines():
+        dst, _, a, _, b = line.split("#")[0].split()
+        a, _, n = a.partition("^(2^")
+        out.append((REG[dst], REG[a], int(n.rstrip(")") or 0), REG[b]))
+    return out
+
+
+# The inversion mod 2^255 - 19 (`inv`): T1 = T0^(p - 2) by an addition chain, each line A
+# squared N times and then multiplied by B: 254 squarings and 11 multiplications, where bit
+# by bit it takes 255 and 252. T0-T3 only: what `xdh` and the table keep is elsewhere. In
+# the image it is a program whose operations say N (their index in NSQ, plus 1), which only
+# `inv` reads.
+CHAIN25519 = chain("""
+    T1 = T0 * T0            # 2
+    T2 = T1^(2^2) * T0      # 9
+    T0 = T2 * T1            # 11
+    T1 = T0^(2^1) * T2      # 2^5 - 1
+    T2 = T1^(2^5) * T1      # 2^10 - 1
+    T3 = T2^(2^10) * T2     # 2^20 - 1
+    T1 = T3^(2^20) * T3     # 2^40 - 1
+    T1 = T1^(2^10) * T2     # 2^50 - 1
+    T2 = T1^(2^50) * T1     # 2^100 - 1
+    T3 = T2^(2^100) * T2    # 2^200 - 1
+    T3 = T3^(2^50) * T1     # 2^250 - 1
+    T1 = T3^(2^5) * T0      # 2^255 - 21
+""")
+NSQ = sorted({n for _, _, n, _ in CHAIN25519})
+INV25519 = bytes(x for d, a, n, b in CHAIN25519 for x in (a << 4 | b, (NSQ.index(n) + 1) << 4 | d)) + b"\0"
+assert len(NSQ) < 16 and all(INV25519[:-1:2])
 # P-256, Jacobian coordinates (X : Y : Z), x = X/Z^2, y = Y/Z^3, everything times R. A table
 # entry is an affine point (x, y); C is R mod p (a 1). Adding one (8 M + 3 S; not for the
 # point itself, its negative or infinity: see the docstring), doubling (a = -3; boot only):
@@ -243,7 +278,8 @@ SIGN = asm("""
 
 PROGRAMS = {"INIT25519": INIT25519, "STEP25519": STEP25519, "INITED": INITED, "MADDED": MADDED,
             "KEYED": KEYED, "XPRE": XPRE, "XPOST": XPOST, "TOPRE": TOPRE, "INIT256": INIT256,
-            "MADD256": MADD256, "DBL256": DBL256, "TOAFF": TOAFF, "FIN256": FIN256, "SIGN": SIGN}
+            "MADD256": MADD256, "DBL256": DBL256, "TOAFF": TOAFF, "FIN256": FIN256, "SIGN": SIGN,
+            "INV25519": INV25519}
 
 
 class Field:
@@ -315,10 +351,19 @@ class Machine:
             r[dst] = (self.add, self.sub, self.mul)[op - 1](r[a], r[b])
 
     def inv(self, x):
-        """T1 = x^(m-2) by right-to-left square and multiply (bit 0 of m - 2 is always 1)."""
+        """T1 = x^(m-2): mod 2^255 - 19 by CHAIN25519, else by right-to-left square and
+        multiply (bit 0 of m - 2 is always 1)."""
         r, e = self.r, self.f.exp
+        r[REG["T0"]] = x
+        if self.f is F25519:
+            for dst, a, n, b in CHAIN25519:
+                v = r[a]
+                for _ in range(n):
+                    v = r[dst] = self.mul(v, v)
+                r[dst] = self.mul(v, r[b])
+            return
         assert e & 1
-        r[REG["T0"]] = r[REG["T1"]] = x
+        r[REG["T1"]] = x
         for i in range(1, 256):
             r[REG["T0"]] = self.mul(r[REG["T0"]], r[REG["T0"]])
             if e >> i & 1:
@@ -450,6 +495,11 @@ def selftest():
     from cryptography.hazmat.primitives.asymmetric import ec, utils
     from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 
+    e, tt = {REG["T0"]: 1}, range(REG["T0"], REG["T3"] + 1)  # the chain: p - 2, in T0-T3
+    for dst, a, n, b in CHAIN25519:
+        assert dst in tt and a in tt and b in tt and (n == 0 or b != dst)
+        e[dst] = (e[a] << n) + e[b]
+    assert e[REG["T1"]] == P25519 - 2
     mach = Machine()
     t25519, t256 = mach.table25519(), mach.table256()
     for row in t25519:

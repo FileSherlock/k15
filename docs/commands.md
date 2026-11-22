@@ -58,21 +58,23 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   `IP6`: an IPv6 address beside it), what it serves, what port 80 does, the headers every
   file gets, and whether files are packed compressed too. The scripts take `B` from the environment. Only the address, the names,
   the site and its settings are tracked: after changing another setting, `make -B`.
-- `python3 tools/sizes.py build/os.lst` = bytes per routine. Of the system's 14,103
+- `python3 tools/sizes.py build/os.lst` = bytes per routine. Of the system's 14,200
   with an address of its own, about: boot, clock calibration, page tables, driver and
   the other processors 2,710; network 4,390 with the timers; requests and the forms of
-  a file 740; TLS handshake and key schedule 1,650; SHA-256 450; curves 3,000 with
+  a file 740; TLS handshake and key schedule 1,650; SHA-256 450; curves 3,100 with
   their programs and constants; the cipher 1,000; certificate 230; among them 58 of
   padding in front of the routines a handshake spends its time in (HOT in "How the
-  curve code works"). With the DHCP client (the default) it is 14,617, and with IPv6
-  as well 15,337: 520 and 731 bytes of code more, and 52 and 41 of that padding,
+  curve code works"). With the DHCP client (the default) it is 14,714, and with IPv6
+  as well 15,434: 520 and 731 bytes of code more, and 52 and 41 of that padding,
   which goes by what happens to lie in front of those routines (between 33 and 64
   bytes). Whose segment it is costs 26 bytes, zeroing what loaders left where code
   can run 7, the ChangeCipherSpec in our flight 10, and what the audit's 4 to 7, 11
   and 13 asked for 55: a ClientHello's type, length and compression methods 36, the
   ServerHello's own version 12, a small MSS refused 8, a record without a content
   type 4, jumps that got longer 6, and any word for a method 11 fewer than a word in
-  capitals did. That nothing but code can be executed costs no padding.
+  capitals did. The 400 for a request without Host costs 38, the inversion's addition
+  chain 97 (64 of code, the chain 25, its counts of squarings 8). That nothing but code
+  can be executed costs no padding.
 - **Is an image what this source makes?** Every build writes `OUT/made`: the commit, the
   assembler, what the assembler was told (the defines, `DELTA` among them; the ten
   numbers of site.inc; the certificate chain's hash), how the site was packed and with

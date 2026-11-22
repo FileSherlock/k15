@@ -34,7 +34,7 @@ static u32 op(u8 *o, const u8 *c, u32 n, const u8 *kiv, u32 seq)
 }
 
 extern u8 E[], REGS[];
-enum { R_X = 3 * 32, R_Y = 4 * 32 }; /* as in tools/ec.py */
+enum { R_X = 3 * 32, R_Y = 4 * 32, R_T1 = 8 * 32 }; /* as in tools/ec.py */
 /* our key share for the secret E to pub, the secret shared with the owner of u to shared */
 static void xdh_(u8 *pub, u8 *shared, const u8 *u)
 {

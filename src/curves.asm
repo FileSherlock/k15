@@ -586,14 +586,17 @@ fmul:   mov r13, rsi
         mov [rdi+24], r11
         ret
 
-        HOT 0x07CFF071
+        HOT 0x61000070
 ; inv: T1 = (the four limbs at rsi) ^ (m - 2) in the field at rbp: the inverse, or for a
-; Montgomery field R^2 / it of a raw number, 1 / it of a stored one. Clobbers T0 and all
-; registers but rbp. (The exponent is no secret.)
+; Montgomery field R^2 / it of a raw number, 1 / it of a stored one. Clobbers T0 (and for
+; 2^255 - 19 T2 and T3) and all registers but rbp. (The exponent is no secret.) Mod 2^255
+; - 19 by the addition chain of tools/ec.py, the others bit by bit.
 inv:    mov edi, R_T0
         push 4
         pop rcx
         rep movsq               ; T0 = x
+        cmp ebp, F25519
+        je .chain
         lea rsi, [rdi-32]
         mov cl, 4
         rep movsq               ; T1 = x (bit 0 of m - 2 is set)
@@ -613,7 +616,29 @@ inv:    mov edi, R_T0
         pop rcx
 .s:     inc cl
         jnz .l
-        ret
+.ret:   ret
+.chain: mov esi, X_INV25519     ; (unpacked as `vm` has programs: dst, a, b, and for the op
+.op:    mov edi, [rsi]          ; its count of squarings in NSQ)
+        test edi, edi
+        jz .ret
+        mov ebx, [rsi+8]
+        mov ecx, [rsi+12]
+        movzx ecx, byte [rcx+NSQ]
+        push rsi
+        mov esi, [rsi+4]
+        jrcxz .m
+.sq:    push rcx
+        push rbx
+        mov ebx, esi
+        call fmul               ; dst = a^2, then dst = dst^2 so often,
+        pop rbx
+        pop rcx
+        mov esi, edi
+        loop .sq
+.m:     call fmul               ; then dst = that * b
+        pop rsi
+        add esi, 16
+        jmp .op
 
 ; ecinit (boot): the three fields, the constant registers and the two tables.
 ; A field is: 2^256 - M | M | -1/M mod 2^64 (0 for 2^255 - 19, which is reduced its own
