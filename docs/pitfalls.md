@@ -6,8 +6,8 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - `pkill -f pattern` and `pgrep -f pattern` match the shell that runs them, also over
   ssh. Use `pkill -f "holdloo[p]"`, or a pid file.
 - Long shell commands with a here-document can be refused: write a script file, run that.
-- `perf` is not allowed here unless the user allows it (`kernel.perf_event_paranoid`). Time pieces with `make bench`, or count cycles in the
-  guest (`DEBUG=1`).
+- `perf` is not allowed here unless the user allows it (`kernel.perf_event_paranoid`).
+  Time pieces with `make bench`, or count cycles in the guest (`DEBUG=1`).
 - `GROUPS=x command` gives the command nothing: bash keeps that name. Hence `KEX`.
 - A script that bash is running must not be rewritten in place. Don't edit what a
   background run uses.
