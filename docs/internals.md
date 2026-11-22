@@ -720,8 +720,9 @@ removing the ones about TLS.
   A header counts if it is in the record that has the request line; and a record that
   goes on with a header's line from its middle, a word and a space, is taken for a
   request with that method: the 405, and the end. A request needs a line that begins
-  "Host:" (any letters; RFC 9112, 3.2): without one, the 400 and the end. What it says
-  is not looked at, nor whether there are two. No Range, no
+  "Host:" (any letters; RFC 9112, 3.2) in that record: without one, the 400 and the
+  end (so a request in pieces, its first record `GET /` alone, gets the 400: tlsfuzzer
+  sends two such). What it says is not looked at, nor whether there are two. No Range, no
   If-Modified-Since (there are no dates), no `Connection: close` (the client has the
   Content-Length; we close first only after a 405 or a 400). No Date header: there is no clock.
 - Two requests at once on 443: the second waits for the client's retransmission timer

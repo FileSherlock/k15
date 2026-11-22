@@ -419,8 +419,7 @@ slots, 10.8 KiB); nginx + BoringSSL about 20; nginx + OpenSSL about 5.
    -lcrypto` (tapc the same).
 2. k15: build, `tools/deploy.sh`, then on the generator `./run.sh IP`.
    `hcloud server reset NAME` brings Linux back. (A server that keeps its Linux:
-   docs/server.md, "Beside a Linux". The server these numbers are from is the bounty's
-   now, has no Linux, and is not to be reset.)
+   docs/server.md, "Beside a Linux".)
 3. nginx: copy `bench/nginx.conf`, `www/index.html` and `cert-hz/server.pem` and
    `server.key` to `/root/k15bench/` on the server, `ssh root@server 'bash -s' <
    bench/setup-nginx.sh`, then `./run.sh IP`. With BoringSSL: `bench/build-nginx-boring.sh`

@@ -18,8 +18,8 @@ sha_ni, no avx512ifma. RAM: 1 MiB to 0x7ffdc000 below 4 GiB, another 1,952 MiB a
 Network: 1af4:1041 at 01:00.0, BAR 4 at 0xfd000000 (64-bit, but below 4 GiB),
 common/ISR/device/notify structures at +0/+0x1000/+0x2000/+0x3000, notify multiplier 4,
 rings of 256, **one queue pair** (no multiqueue on offer; it offers CSUM, GUEST_CSUM, TSO,
-MRG_RXBUF, CTRL_VQ, EVENT_IDX, INDIRECT_DESC), MAC 92:00:0a:76:c2:50. Address
-2.28.113.14/32, everything through the gateway 172.31.1.1 (d2:74:7f:6e:37:e3). Disk: 38 GB
+MRG_RXBUF, CTRL_VQ, EVENT_IDX, INDIRECT_DESC). Its address a /32, everything through
+the gateway 172.31.1.1 (d2:74:7f:6e:37:e3). Disk: 38 GB
 on virtio SCSI (1af4:1048), /dev/sda in the rescue system.
 
 SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse. A cx23 boots
@@ -175,8 +175,7 @@ runner, lives on the machine's disk, and is fetched from there by the next run.
 
 ## Beside a Linux (`--grub`)
 For a server that keeps its Linux: one that is measured, where a reset brings Linux and
-ssh back in 25 s. HOST is its address, NAME what the host calls it. **Not the bounty's
-server** (`k3`, 2.28.113.14): its disk has no Linux, and it is not reset (CLAUDE.md).
+ssh back in 25 s. HOST is its address, NAME what the host calls it.
 - `./k15 pack FOLDER -n HOST -i HOST -c cert-hz -o build-hz` (for the comparison's
   page: `./k15 pack www ... -o build-hzb --plain80`), then `./k15 deploy HOST build-hz
   --grub --reset 'hcloud server reset NAME'`: if Linux does not answer ssh (k15 is
@@ -215,20 +214,10 @@ server** (`k3`, 2.28.113.14): its disk has no Linux, and it is not reset (CLAUDE
   `HOME=DIR google-chrome --headless=new --no-sandbox --user-data-dir=DIR/c --dump-dom
   https://HOST/`; `tools/ffcheck.py https://HOST/ build-hz/ca.pem "Hello"`.
   Against a real name with a real certificate: Chrome as it is, and `REALDNS=1
-  tools/ffcheck.py https://15kb.org/ EMPTYFILE "served by"` (no CA to add; without
+  tools/ffcheck.py https://NAME/ EMPTYFILE "TEXT"` (no CA to add; without
   REALDNS it looks every name up as 127.0.0.1, where the tests' servers are).
-- SSL Labs: https://www.ssllabs.com/ssltest/analyze.html?d=15kb.org&hideResults=on&latest
+- SSL Labs: https://www.ssllabs.com/ssltest/analyze.html?d=NAME&hideResults=on&latest
   in a browser (a minute; `hideResults` keeps it off the boards of recent results).
-
-## The name 15kb.org
-The user's, at Namecheap, with Namecheap's name servers: `@` and `www` are A records
-for 2.28.113.14 (TTL 300), and `@` has two CAA records, `0 issue "letsencrypt.org"` and
-`0 issuewild ";"`, set through Namecheap's API with the settings of `~/.namecheap.env`
-(`namecheap.domains.dns.setHosts` replaces all records at once: read them first with
-`getHosts`). A resolver keeps an old answer for its time: `curl --resolve
-15kb.org:443:ADDRESS`, or Chrome with `--host-resolver-rules="MAP 15kb.org ADDRESS"`,
-until it forgets. What runs there, and that nothing renews or deploys it before the
-deadline: CLAUDE.md.
 
 ## The certificate (`tools/gen.py`, `cert/`)
 - `cert/server.key` (ECDSA P-256) and `cert/server.pem` (leaf, then intermediates) are the

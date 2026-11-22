@@ -1,9 +1,5 @@
 # k15
 
-**https://15kb.org/ is served by it** (SSL Labs: A with no warnings, where letsencrypt.org
-gets an A+ without post-quantum key exchange either. What letsencrypt.org has and
-15kb.org does not is TLS 1.2, guarded against downgrades: k15 speaks TLS 1.3 alone.)
-
 k15 turns a folder of static files into a bootable x86-64 HTTPS server: 14 KB of system
 with the files behind it, in one image. There is no operating system underneath, because
 it is one: its own boot sector, long mode, a virtio-net driver, ARP, TCP, TLS 1.3 and as

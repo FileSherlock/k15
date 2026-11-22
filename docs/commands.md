@@ -367,26 +367,3 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   one multiplication, and a record of a small page and of a full segment.
 - KVM is used when /dev/kvm is there; `KVM=0` emulates. `tools/vm.sh` reads `KVM` when it
   is sourced, not when `boot` runs.
-- `tools/bounty.py`: the Bitcoin address (`bc1q...`) whose private key a P-256 certificate's
-  private key also is, and a stdlib-only Cross-Curve Borromean DLEQ zero-knowledge proof
-  (`--prove`, `--verify HOST`) proving the live TLS certificate and the Bitcoin wallet share
-  the same scalar without revealing it. `--gen CERT [-n NAME] [--san NAME]...` makes a
-  24-word BIP-39 wallet (`m/84'/0'/0'/0/0`), `server.key`, `csr.pem` and `bounty.proof`;
-  `--restore` checks or restores from the 24 words; `--wif` prints WIF; `--test` checks
-  BIP-173, BIP-84 and proof soundness.
-- `tools/bounty_ceremony.sh [--dry-run | --staging | --redeploy | --revoke]`: RAM-only (`/dev/shm`)
-  ceremony that generates the 24 BIP-39 words, verifies your handwritten copy, gets a
-  90-day Let's Encrypt certificate inside Hetzner Rescue, wipes `/dev/sda` (removing Linux
-  completely), writes raw `disk.img` to `/dev/sda`, verifies the live server and shreds
-  `/dev/shm`. `--revoke` revokes the certificate using the saved ACME account key.
-  `--redeploy` takes the 24 words again, checks that they are the key of the saved
-  certificate and proof, packs and writes the disk as before: the same key, certificate
-  and address, for a change before the deadline. With `SERVER=NAME HOST=ADDRESS
-  DOMAIN=NAME` it is a rehearsal on another server: the page is changed in a copy, proof
-  and certificate go to `cert-DOMAIN/`, 15kb.org's renewal timer is left alone.
-- `tools/monitor_bounty.py [--watch SECONDS] [--notify] [--expect-funded] [--test]`: checks
-  DNS, TLS 1.3 leaf public key against `bounty.proof`, page/CSS/404 content (defacement),
-  port 80 redirect, closed port 22, and Bitcoin balance / mempool spends. `--host NAME
-  --ip ADDRESS` watches a rehearsal instead (proof in `cert-NAME/`). The page it expects
-  and the proof are `site/` and `bounty.proof` as committed in the branch `bounty`,
-  whatever is checked out (`--site DIR`, `--proof FILE`: others).

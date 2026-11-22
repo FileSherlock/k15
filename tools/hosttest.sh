@@ -11,7 +11,7 @@
 # while the machine is "in its rescue system", and nothing otherwise; and "start from the
 # disk" boots the file in QEMU, with its ports 443 and 80 at 127.0.0.1 of this otherwise
 # empty network. What a host's rescue system does with the same commands is not seen here:
-# tools/bounty_ceremony.sh ran them at Hetzner.
+# docs/server.md says what was seen at Hetzner.
 #
 # What must hold: a machine that has a Linux on its disk is not written to unless told how
 # it gets into its rescue system, and one that nothing vouches for is not touched without

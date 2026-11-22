@@ -5,7 +5,7 @@ each) that boots an x86-64 cloud server and serves a static site over TLS 1.3, w
 site packed behind it in the same image. `./k15 pack FOLDER`
 makes the image, `./k15 run` boots it in QEMU, `./k15 publish FOLDER HOST` puts a site
 on a machine in one step (`./k15 deploy HOST`: an image packed here).
-Public at https://github.com/FileSherlock/k15. https://15kb.org/ is deployed from here.
+Public at https://github.com/FileSherlock/k15.
 
 This file is rules and the present state, and it is kept short: no history, no
 measurement series, no description of how a routine works. Those are in `docs/`, read
@@ -22,9 +22,7 @@ when needed:
 ## Decided with the user
 - This checkout (/home/jaguarm/code/k15) is the branch `dev`: the project is developed
   further here, and stays minimalistic. The features of "Next" are added, each in the
-  smallest form that does its job, and nothing beside them. `main` is the small system;
-  `bounty` is what 15kb.org runs. The bounty's keys, certificates and images are in
-  ~/Desktop/k15 only, not in this checkout.
+  smallest form that does its job, and nothing beside them. `main` is the small system.
 - **Security can never be lowered, only raised.** Everything behind TLS is in scope:
   anything a packet can make it do. Port 80 says one public thing to everyone.
 - Bytes: on this branch a feature of the list is not stopped by what it costs, but it is
@@ -41,12 +39,11 @@ when needed:
 - The certificate chain stays at four certificates until the user says otherwise.
 - Ask before removing any of the TLS shortcuts listed in `docs/internals.md`.
 - Commit and push without asking: what has passed the tests below for its kind of change
-  goes onto `dev` and is pushed. Nothing goes from here to `main` or `bounty` without the
+  goes onto `dev` and is pushed. Nothing goes from here to another branch without the
   user's word.
 - `hcloud` may be used to create, reset and delete servers (a load generator costs by
   the hour: delete it, then `hcloud server list`), in the project for trials only:
-  every command with `HCLOUD_CONTEXT=k15-dev`. Never the bounty's (the context and the
-  server `k3`): below.
+  every command with `HCLOUD_CONTEXT=k15-dev`.
 - Tests run on 1 and 2 processors.
 
 ## Where it stands
@@ -141,6 +138,6 @@ Don't change the source or a test script while a suite runs.
   `tools/jcc.py build/os.lst mask ROUTINE` and the new mask after `HOT`.
 - Then a real machine, for anything that could behave differently there, and `bench/`
   from a load generator for anything that could change what it does under load: on a
-  server made for it, never the bounty's (below).
+  server made for it.
 - A claim about the machine is checked on the machine (QEMU's monitor, a packet
   capture), not read from the docs. A new behaviour gets a test that fails without it.

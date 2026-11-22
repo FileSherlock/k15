@@ -193,9 +193,6 @@ One or two lines each. Add to it when something costs an hour; delete what stops
   can be known before (does the site show a certificate? can the request be made?) is
   asked before, and what can only be known after starts the machine again when the
   answer is no.
-- The bounty's page is 19 bytes from losing its compressed forms: gzip has to bring `/`
-  into one record (1,418 bytes with its head), and a real address packs worse than the
-  placeholder's zeros. After a change to `site/index.html`, look at `site.json`'s forms.
 - `dd of=FILE` cuts a file to what it writes, and leaves a disk as long as it is: say
   `conv=notrunc`, so that a test with a file for a disk sees what a disk would.
 
