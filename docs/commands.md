@@ -63,13 +63,14 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   with an address of its own, about: boot, clock calibration, page tables, driver and
   the other processors 2,710; network 4,390 with the timers; requests and the forms of
   a file 700; TLS handshake and key schedule 1,600; SHA-256 450; curves 3,000 with
-  their programs and constants; the cipher 1,000; certificate 230; among them 59 of
+  their programs and constants; the cipher 1,000; certificate 230; among them 49 of
   padding in front of the routines a handshake spends its time in (HOT in "How the
   curve code works"). With the DHCP client (the default) it is 14,515, and with IPv6
-  as well 15,235: 520 and 731 bytes of code more, and 53 and 42 of that padding,
+  as well 15,267: 520 and 731 bytes of code more, and 43 and 64 of that padding,
   which goes by what happens to lie in front of those routines (between 33 and 64
-  bytes). Whose segment it is costs 26 bytes, and zeroing what loaders left where
-  code can run 7; that nothing but code can be executed costs no padding.
+  bytes). Whose segment it is costs 26 bytes, zeroing what loaders left where code
+  can run 7, and the ChangeCipherSpec in our flight 10 (which the padding took, but for
+  the last of those three); that nothing but code can be executed costs no padding.
 - **Is an image what this source makes?** Every build writes `OUT/made`: the commit, the
   assembler, what the assembler was told (the defines, `DELTA` among them; the nine
   numbers of site.inc; the certificate chain's hash), how the site was packed and with

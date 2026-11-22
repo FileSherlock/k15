@@ -14,9 +14,11 @@ as they are, with those four things said here instead:
   - Most offer signatures of RSA only, for a server is to sign with what the client
     offers. We sign with ecdsa_secp256r1_sha256 whatever it offers, which every client
     of TLS 1.3 has: here every client says so too.
-  - A server is to send a ChangeCipherSpec record after its ServerHello, for
-    middleboxes' sake. We send none (docs/internals.md, "Shortcuts that remain"): here
-    the server may send it or not.
+  - A server is to send a ChangeCipherSpec record after its first handshake message,
+    for middleboxes' sake. Ours comes after the ServerHello, also where a
+    HelloRetryRequest went before it (docs/internals.md, "Shortcuts that remain"). So
+    here, as in a client, the server's is passed over wherever it comes before its
+    EncryptedExtensions, and one has to have come by then.
   - Where a server is to answer with an alert and close, we pass over what we can't
     use and say nothing. So an alert or a close that is waited for may also be QUIET
     seconds (0.3) of silence. Anything else that comes instead still fails, and an alert
@@ -36,9 +38,9 @@ import sys
 
 EXT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ext")
 sys.path[:0] = [os.path.join(EXT, "py"), os.path.join(EXT, "tlsfuzzer")]
-from tlslite.constants import GroupName, SignatureScheme  # noqa: E402
+from tlslite.constants import ContentType, GroupName, SignatureScheme  # noqa: E402
 from tlslite.extensions import SignatureAlgorithmsExtension  # noqa: E402
-from tlsfuzzer.messages import Connect  # noqa: E402
+from tlsfuzzer.messages import Command, Connect  # noqa: E402
 import tlsfuzzer.expect as expect  # noqa: E402
 
 QUIET = float(os.environ.get("QUIET", "0.3"))
@@ -54,24 +56,22 @@ class Groups(object):
         return getattr(GroupName, name)
 
 
-class MayBeThere(expect.ExpectChangeCipherSpec):
-    """The server's ChangeCipherSpec, or at once what follows it: what the script waits
-    for next, or, if it is the script's turn after it, nothing."""
+class PassedOver(Command):
+    """Where a script waits for the server's ChangeCipherSpec: nothing. It is passed over
+    when it comes (`Impatient`), and `AfterOne` asks whether it did."""
 
-    def add_child(self, child):
-        if child.is_expect():
-            self.next_sibling = child
-        return super(MayBeThere, self).add_child(child)
+    def process(self, state):
+        pass
 
-    def is_command(self):
-        return self.child is None or not self.child.is_expect()
 
-    def is_expect(self):
-        return not self.is_command()
+class AfterOne(expect.ExpectEncryptedExtensions):
+    """The server's EncryptedExtensions, which a ChangeCipherSpec has to have come before."""
 
-    def process(self, state, msg=None):
-        if msg is not None:
-            super(MayBeThere, self).process(state, msg)
+    def process(self, state, msg):
+        if not getattr(state.msg_sock, "passed", 0):
+            raise AssertionError("no ChangeCipherSpec came before the server's EncryptedExtensions")
+        state.msg_sock.passed = None    # (from here on one is not passed over)
+        return super(AfterOne, self).process(state, msg)
 
 
 class AlertOrSilence(expect.ExpectNoMessage):
@@ -159,15 +159,34 @@ class WithOurs(SignatureAlgorithmsExtension):
 
 
 class Impatient(Connect):
+    """Waits less long; and passes over the server's ChangeCipherSpec records, as a client
+    is to at any time before the server's Finished (RFC 8446, 5): here, before its
+    EncryptedExtensions, and counted."""
+
     def __init__(self, hostname, port, version=(3, 0), timeout=WAIT):
         super(Impatient, self).__init__(hostname, port, version, timeout)
+
+    def process(self, state):
+        super(Impatient, self).process(state)
+        sock = state.msg_sock
+        theirs, sock.passed = sock.recvMessageBlocking, 0
+
+        def recv():
+            while True:
+                header, parser = theirs()
+                if (header.type != ContentType.change_cipher_spec or sock.passed is None
+                        or bytes(parser.bytes) != b"\x01"):
+                    return header, parser
+                sock.passed += 1
+        sock.recvMessageBlocking = recv
 
 
 Alert, Ticket = expect.ExpectAlert, expect.ExpectNewSessionTicket
 name = sys.argv[1].replace(".py", "").replace("-", "_")
 sys.argv = sys.argv[1:]
 script = importlib.import_module("tlsfuzzer._apps." + name)
-for theirs, ours in (("ExpectChangeCipherSpec", MayBeThere), ("ExpectAlert", AlertOrSilence), ("ExpectClose", CloseOrSilence),
+for theirs, ours in (("ExpectChangeCipherSpec", PassedOver), ("ExpectEncryptedExtensions", AfterOne),
+                     ("ExpectAlert", AlertOrSilence), ("ExpectClose", CloseOrSilence),
                      ("ExpectNewSessionTicket", TicketOrSilence), ("SignatureAlgorithmsExtension", WithOurs),
                      ("Connect", Impatient)) + ((("GroupName", Groups()),) if not os.environ.get("NOSWAP") else ()):
     if hasattr(script, theirs):         # (the names as the script has them; tlsfuzzer's own stay)

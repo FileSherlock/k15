@@ -1,7 +1,8 @@
 ; tls.asm: the TLS 1.3 handshake. A part of os.asm, which includes it.
 ; ----------------------------------------------------------------------------
 ; handshake: ClientHello message at rsi (ecx bytes), connection at rbp.
-; Writes ServerHello + encrypted flight to OB, returns edi = end. Clobbers all but rbp.
+; Writes our flight to OB (the ServerHello, a ChangeCipherSpec, and the rest in one sealed
+; record), returns edi = end. Clobbers all but rbp.
 handshake:
         push rbp
         push rcx                ; (the ClientHello's length)
@@ -294,6 +295,11 @@ handshake:
         sub ecx, esi
         mov ebx, KH
         push rax
+        mov eax, 0x00030314     ; Behind the ServerHello's record a ChangeCipherSpec, 14 03 03
+        stosd                   ; 00 01 01, whatever the client is: it is to pass over one
+        mov al, 1               ; at any time before our Finished (RFC 8446, 5), and to
+        stosb                   ; what stands in between and takes this for TLS 1.2, what
+        stosb                   ; follows is then that connection's encrypted rest (D.4)
         mov al, 0x16            ; what the record holds: handshake messages
         xor edx, edx            ; (its number; and CF = 0: encrypt)
         call seal               ; edi = end of output

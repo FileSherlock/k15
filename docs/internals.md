@@ -472,6 +472,8 @@ The old way, and what both share:
   with the request, which is made again from the second ClientHello: same session id,
   same suite). Clients send a ChangeCipherSpec record in front of the second one: while
   we wait for a ClientHello, a record that is not a handshake record is passed over.
+- Our flight is three records: the ServerHello, a ChangeCipherSpec (`14 03 03 00 01 01`:
+  "Shortcuts that remain" says where it stands), and one sealed record with the rest.
 - A client we can't serve gets seven bytes and our FIN: a fatal alert, "protocol version"
   if TLS 1.3 is not among the versions it offers (extension 43; a client of TLS 1.2 has
   none), "handshake failure" if our cipher suite is not among its, if x25519 is
@@ -668,12 +670,17 @@ removing the ones about TLS.
   check like any forgery, and is passed over. The first request proves the same thing.
 - A bad record is passed over, not answered with an alert. No close_notify, no KeyUpdate
   (a client that changes its keys is not understood after that; a connection of ours
-  ends before its key has sealed too much), no session tickets, no ChangeCipherSpec for
-  middleboxes.
+  ends before its key has sealed too much), no session tickets.
+- Our ChangeCipherSpec (for what stands in between and takes the connection for TLS
+  1.2) comes behind the ServerHello's record, on every handshake, whatever the client
+  sent: 10 bytes of code and nothing to ask. Where a HelloRetryRequest went before, a
+  server is to send it after that, its first handshake message (RFC 8446, D.4); ours
+  comes after the ServerHello there too, which a client passes over just the same.
 - A client record of more than 4 KB (a request with that many headers and cookies) ends
   the connection.
 - A ClientHello is one record. One that comes in two (TLS allows it; no browser does
-  it) is taken for a short one, which has no TLS 1.3 in it: "protocol version".
+  it) is taken for a short one, which has no TLS 1.3 in it: "protocol version". (Decided:
+  this one stays.)
 - What a client says it can verify (signature_algorithms) is not looked at, nor its
   legacy_version, nor whether its second ClientHello is its first with a key share. A
   malformed x25519 share is no share: it is asked for one (a HelloRetryRequest), where

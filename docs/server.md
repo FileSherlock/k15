@@ -44,9 +44,13 @@ machine is held to the certificate the site shows, which has to be one the world
 believes.) With Let's Encrypt itself: `publish --first`, then `--if-due` (nothing to
 do, nothing touched), then `publish` again in 55 s, the machine showing the key of the
 certificate the site had shown and keeping it, then with `--days 90` a new key and
-certificate the same way; curl believes each. Not yet, anywhere: a lease renewed (half
-a day on such a machine, and nothing on the page says that it happened); `renew
---grub` with Let's Encrypt; the workflow on GitHub.
+certificate the same way; curl believes each. A lease renewed: an image that counts
+what it asks of DHCP (`DEBUG=3`, docs/commands.md) had asked once and been told yes
+once for twelve hours, and twice at the next look, ten minutes later (due 12 h 0 min 1 s
+after the first yes), serving all the while; with the lease cut to two minutes
+(`DHMAX=120`) every question, one a minute, got its yes. So Hetzner's server answers a
+REQUEST that is sent to everybody. Not yet, anywhere: `renew --grub` with Let's
+Encrypt. The workflow on GitHub: "A push publishes", below.
 
 ## Onto a machine that is k15's alone
 The image needs nothing on a machine's disk but itself: `disk.img`, written over the

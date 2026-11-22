@@ -307,14 +307,15 @@ def main():
     s.sendall(with_sid(32))
     flight = b""
     try:
-        while len(flight) < 132 or len(flight) < 132 + int.from_bytes(flight[130:132], "big"):
+        while len(flight) < 138 or len(flight) < 138 + int.from_bytes(flight[136:138], "big"):
             flight += s.recv(4096) or b"x" * 4096
     except OSError:
         pass
     s.close()
-    good &= check("one of 32 bytes gets a ServerHello whose lengths are right",
+    good &= check("one of 32 bytes gets a ServerHello whose lengths are right, then a ChangeCipherSpec",
                   flight[:5] == bytes([22, 3, 3, 0, 122]) and flight[5:9] == bytes([2, 0, 0, 118])
-                  and flight[127] == 23 and int.from_bytes(flight[130:132], "big") == len(flight) - 132)
+                  and flight[127:133] == bytes([20, 3, 3, 0, 1, 1])
+                  and flight[133] == 23 and int.from_bytes(flight[136:138], "big") == len(flight) - 138)
     good &= check("junk in a handshake record is told \"protocol version\"",
                   said(record(os.urandom(300))) == PROTOCOL_VERSION)
     good &= check("and a normal client is served after them", served())

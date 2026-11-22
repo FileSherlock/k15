@@ -36,7 +36,8 @@ when needed:
 - TLS 1.3 only, one cipher: AES-128-GCM, which every TLS 1.3 client has (no
   ChaCha20-Poly1305: what it cost in bytes bought nothing).
 - Not to be built: session tickets, SACK, post-quantum key exchange, TLS 1.2 (so SSL
-  Labs stays at A, not A+), ACME or a clock inside the image.
+  Labs stays at A, not A+), ACME or a clock inside the image, a ClientHello in two
+  records.
 - The certificate chain stays at four certificates until the user says otherwise.
 - Ask before removing any of the TLS shortcuts listed in `docs/internals.md`.
 - Commit and push without asking: what has passed the tests below for its kind of change
@@ -58,7 +59,7 @@ when needed:
 ## Where it stands
 - The system is 14,515 bytes. It asks for its address by DHCP; built with one (`IP=`,
   `-i`) it has no DHCP client and is 14,001. With an IPv6 address as well (`IP6=`, `-6`:
-  it has to be told one) it is 15,235. (Between 33 and 64 of those bytes are padding
+  it has to be told one) it is 15,267. (Between 33 and 64 of those bytes are padding
   in front of the hot routines, which goes by what lies before them: `HOT`.)
 - It boots from a BIOS boot sector or GRUB, uses all the RAM and up to 4 processors,
   modern virtio-net, and serves GET and HEAD by path with compressed forms, ETag and
@@ -95,9 +96,6 @@ when needed:
   a fifth fewer cycles; it is the riskiest code to touch.
 
 For the user to decide:
-- Two TLS shortcuts of `docs/internals.md` ("Shortcuts that remain"): a ChangeCipherSpec
-  after the ServerHello for a client that has a session id, and a ClientHello in two
-  records.
 - What is left of the audit in github.com/FileSherlock/k15/issues/1: its 4 to 7 and 11
   to 13.
 - Later: pacing, zstd, taking out the reset knock.
