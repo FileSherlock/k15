@@ -349,8 +349,8 @@ tcp:
         jz .rtt                 ; has its Finished to send), and the timer for what we send
         mov [rbp+C_T0], ebx     ; from now on (`tarm`) waits 3 R (TCP's own rule after one
         neg edi                 ; measurement, RFC 6298), but a quarter of a second at
-        add edi, [TNOW]         ; least, which is what it waited before it knew of round
-        shr edi, 5              ; trips, and a second at most: a flight that had to go
+        add edi, [TNOW]         ; least, which is what it waits while the round trip is
+        shr edi, 5              ; not known, and a second at most: a flight that had to go
         lea edi, [rdi+rdi*2]    ; twice took longer than the round trip, by the client's
         cmp edi, 16             ; own timer, and a timer made of that would leave what is
         jae .r16                ; lost at the end of a response lying for seconds. (In

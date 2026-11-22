@@ -138,11 +138,10 @@ hsnew:  push rax
 ; the last byte the client sent: the client then keeps sending that byte until it has all
 ; of the answer, whichever part gets lost, and it is acknowledged when its ack says so
 ; (F_DEFER, in `tcp`). Not when we close: then there is no later.
-; (It was "none acknowledges what this packet brought". But an answer that goes out again
-; because of a duplicate ack is sent for a packet that brought nothing: its segments then
-; acknowledged everything, and if the one that filled the hole was lost again, and the
-; client's next duplicate ack too, nobody had anything left to send. 1 handshake in 8,000
-; at 3% loss with a flight of two segments.)
+; (The last byte the client sent, not what this packet brought: an answer that goes out
+; again because of a duplicate ack is sent for a packet that brought nothing, and its
+; segments would acknowledge everything; if the one that fills the hole is lost again, and
+; the client's next duplicate ack too, nobody has anything left to send.)
 tcp_send:
         pushad
         movzx ebx, byte [rbp+C_FLG]

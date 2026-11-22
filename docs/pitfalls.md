@@ -145,6 +145,8 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - "It takes an hour and a nanosecond" is no reason to leave a race: a host takes a
   processor away for milliseconds, in the middle of anything. Close it, and make the
   test hold one side still (`RACE=n`, `tools/racetest.py`).
+- rdrand's "success" proves nothing: processors were sold in 2019 whose rdrand said all
+  ones every time, and that it had succeeded. `rand` compares each draw with the last.
 
 ## Measuring
 - Where a frame's time goes can't be seen from outside. Over tap QEMU's packet path

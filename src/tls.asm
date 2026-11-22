@@ -53,10 +53,9 @@ handshake:
         ; groups (10: is x25519 among them?) and the key shares (51: group, length, key;
         ; ours is group 29 with 32 bytes). Every length is the client's: an extension
         ; counts if all of it lies inside the ClientHello, and what is looked at inside
-        ; one lies inside that extension. (The key share was once found by searching for
-        ; the four bytes 00 1d 00 20. A client's other key shares are a kilobyte of
-        ; random-looking bytes these days: once in two million handshakes they held those
-        ; four.)
+        ; one lies inside that extension. (The x25519 share is found by walking the key
+        ; shares, not by searching for its four bytes 00 1d 00 20: a client's other key
+        ; shares are a kilobyte of random-looking bytes, which can hold those four.)
         push rsi
         xor edx, edx            ; dl, bit 0: TLS 1.3 is offered, bit 1: x25519 is
         xor r11d, r11d          ; where the x25519 key share is (0: nowhere)

@@ -115,8 +115,8 @@ sendseg:
         inc edi
 .go:    push rdi                ; C_SND moves on if this is further. (Sequence numbers go
         sub edi, [rbp+C_SND]    ; round: which of two is further says the sign of their
-        dec edi                 ; difference, not a comparison. A `jle` here stopped a
-        pop rdi                 ; response for ever where it crossed 2^31.)
+        dec edi                 ; difference, not a comparison: a `jle` here would stop a
+        pop rdi                 ; response for ever where it crosses 2^31.)
         js .seg
         mov [rbp+C_SND], edi
 .seg:   call ackno

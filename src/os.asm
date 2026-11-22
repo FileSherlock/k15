@@ -13,7 +13,7 @@
 ; TLS:  1.3, TLS_AES_128_GCM_SHA256, X25519 (asked for
 ;       with a HelloRetryRequest if need be), ecdsa_secp256r1_sha256.
 ; HTTP: GET and HEAD for the files of the site the image ends with (tools/pack.py); see `record`.
-; Like k2, and unlike k1, this one is meant to be secure: a fresh X25519 key and a fresh ECDSA nonce per
+; It is meant to be secure: a fresh X25519 key and a fresh ECDSA nonce per
 ; handshake (rdrand), a real certificate chain, client records are authenticated before
 ; they are read, and no memory is both written and executed. See docs/internals.md for the
 ; shortcuts that remain.
@@ -374,7 +374,7 @@ TSLOT   equ 128
 ; this, how fast a handshake is there depends on how many bytes of code happen to lie in
 ; front (6% between two builds, measured). Bit k of the mask says that the routine may
 ; begin k bytes behind a boundary; it gets as few bytes of padding as take it to such a
-; place (35 bytes in all; it was the next boundary and some more for each: 226 bytes).
+; place (35 bytes in all; the next boundary and some more for each would be 226 bytes).
 ; `tools/jcc.py build/os.lst mask ROUTINE` says the mask, and the build says when
 ; a routine that was changed needs a new one. (Of `xdh` and `seal`, which are called
 ; once a handshake and once a record, the jumps inside loops count: ROUTINE:loops.)

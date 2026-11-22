@@ -172,15 +172,15 @@ sign:   pushad
 ; rand: ecx times 64 random bits to rdi (which moves on), from the processor's generator:
 ; every secret there is but the key in the image. (Clobbers rax; ecx = 0 after.) Each is
 ; compared with the one before it. A generator that says the same twice is stuck, and then
-; this is the machine's end: every nonce would be the same, which gives the key away. (It
-; has happened: processors were sold in 2019 whose rdrand said all ones every time, and
-; that this was a success. The first draw is compared with zero, which is what a generator
-; stuck there would say.)
+; this is the machine's end: every nonce would be the same, which gives the key away. (That
+; rdrand says it succeeded proves nothing: a faulty one says so and gives all ones every
+; time. The first draw is compared with zero, which is what a generator stuck there would
+; say.)
 rand:   rdrand rax
         jnc rand
 %ifdef WXTEST
 %if WXTEST = 8                  ; (make WXTEST=8, for tools/wxtest.sh: a generator that is
-        or rax, -1              ; stuck the way those were)
+        or rax, -1              ; stuck at all ones)
 %endif
 %endif
         cmp rax, [RLAST]
