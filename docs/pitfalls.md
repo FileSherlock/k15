@@ -6,7 +6,7 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - `pkill -f pattern` and `pgrep -f pattern` match the shell that runs them, also over
   ssh. Use `pkill -f "holdloo[p]"`, or a pid file.
 - Long shell commands with a here-document can be refused: write a script file, run that.
-- `perf` is not allowed here. Time pieces with `make bench`, or count cycles in the
+- `perf` is not allowed here unless the user allows it (`kernel.perf_event_paranoid`). Time pieces with `make bench`, or count cycles in the
   guest (`DEBUG=1`).
 - `GROUPS=x command` gives the command nothing: bash keeps that name. Hence `KEX`.
 - A script that bash is running must not be rewritten in place. Don't edit what a
@@ -171,6 +171,8 @@ One or two lines each. Add to it when something costs an hour; delete what stops
   here: the server stays up, and another implementation checks every signature and tag.
 - A connection that fails at once from here is ours: another program has the port.
   Use base ports below 32768.
+- `rdrand` costs what the processor makes it cost: 3,530 cycles on a Zen 2, 288 on a
+  Skylake server, 41 on an EPYC-Milan. `perf` puts it on the instructions after it.
 - A routine timed in a loop of its own is not the routine in a handshake: P-256's
   addition took 715 or 799 cycles by what `make bench` had timed before it, X25519 and
   a signature each cost more between the other's turns, and an add that takes 18

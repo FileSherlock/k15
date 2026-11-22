@@ -437,6 +437,32 @@ The same image with 32 bytes in front of the curve routines, which on the develo
 machine's object made a signature 5,000 cycles dearer, did the same on the server:
 13,280 - 13,500, 15,650 - 15,750, 15,440 - 15,660.
 
+## The ladder's step in another order, and as calls (2026-11-22, night)
+`dev` at e6b27c2: the 18 operations of the ladder's step in an order whose neighbours
+do not need each other, and written out as calls where `vm` ran them (347 bytes; the
+order none); MADD256 and MADDED ordered likewise (docs/internals.md, "The order of a
+program's operations"). On one cx23, this time the Intel Skylake of the table at the
+top: now, the commit before (220da14), and the image of the morning (aed63b1), in
+turn, twice, each row three times a turn. Lowest to highest of six runs:
+
+| new TLS connections a second | the morning's | 220da14 | now | now to the morning's |
+|---|---|---|---|---|
+| 64 in flight | 7,070 - 8,170 | 8,070 - 8,940 | 8,750 - 9,890 | +25% |
+| 512 | 7,970 - 8,620 | 9,280 - 10,420 | 10,010 - 11,130 | +28% |
+| 4,096 | 8,060 - 8,800 | 9,270 - 10,260 | 10,330 - 11,230 | +29% |
+
+No errors, no timeouts. (Kept connections, which should not move, went from 88,900 to
+113,000 requests a second from one turn to another, whatever the image: that row is
+the path's, not the processors'.) On the development machine X25519 and a signature
+in turn are 205,000 cycles (298,000 in the morning): our key share and the secret
+143,000, a signature 65,000. OpenSSL 3.5.5 there, through EVP: 136,000 for an X25519
+key pair, 118,000 for the shared secret, 75,000 for a signature: 329,000 for what a
+handshake needs. Its ladder is no longer the faster one: a step is 370 cycles here
+and about 410 there (118,000 less an inversion, by 255).
+`rdrand` is what a processor makes of it: 3,530 cycles for 64 bits on the development
+machine (Zen 2), 288 on this server, 41 on the generator (an EPYC-Milan). A handshake
+draws twelve: on Zen 2 that is 42,000 cycles, a fifth of its curves; elsewhere nothing.
+
 ## What this does not say
 - nginx and Caddy are web servers: any file, any header, virtual hosts, HTTP/2, logs,
   reloads, every cipher and curve a client may want, session resumption. In the night k15
