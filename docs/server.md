@@ -34,10 +34,17 @@ the key at the end of its disk); it serves over both, and is back within seconds
 reset. Every image lies a little above 1 MiB (docs/internals.md, "Memory"): GRUB on a
 BIOS machine puts it there, and so does the boot sector. What Hetzner's DHCP says: the
 address with a mask of /32, the router 172.31.1.1 (also as a classless route), a lease
-of a day, T1 12 h, T2 21 h. Not yet, anywhere: a lease renewed (half a day on such a
-machine, and nothing on the page says that it happened), `./k15 publish` and `renew`
-with a certificate authority that is not the test's own (`tools/bounty_ceremony.sh`
-ran the same commands for 15kb.org), the workflow on GitHub.
+of a day, T1 12 h, T2 21 h. With Let's Encrypt's test server (`--staging`, no
+`--email`, a name of sslip.io's for the address): `./k15 publish --first` from a new
+server to the site served under its certificate in 1 min 39 s (a certificate for 63
+days, and an image of 17,939 bytes of system with its chain), and `./k15 renew --force
+--rescue` on an image deployed with a private CA's certificate in 1 min 34 s, the
+machine showing the old key first. Not yet, anywhere: a lease renewed (half a day on
+such a machine, and nothing on the page says that it happened); a second `publish`
+without `--first` and `--if-due` against a real site (the machine is held to the
+certificate the site shows, which has to be one the world believes: the test server's
+is not, so both stop there, as they should); `renew --grub` with Let's Encrypt; the
+workflow on GitHub.
 
 ## Onto a machine that is k15's alone
 The image needs nothing on a machine's disk but itself: `disk.img`, written over the
