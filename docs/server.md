@@ -39,12 +39,14 @@ of a day, T1 12 h, T2 21 h. With Let's Encrypt's test server (`--staging`, no
 server to the site served under its certificate in 1 min 39 s (a certificate for 63
 days, and an image of 17,939 bytes of system with its chain), and `./k15 renew --force
 --rescue` on an image deployed with a private CA's certificate in 1 min 34 s, the
-machine showing the old key first. Not yet, anywhere: a lease renewed (half a day on
-such a machine, and nothing on the page says that it happened); a second `publish`
-without `--first` and `--if-due` against a real site (the machine is held to the
-certificate the site shows, which has to be one the world believes: the test server's
-is not, so both stop there, as they should); `renew --grub` with Let's Encrypt; the
-workflow on GitHub.
+machine showing the old key first. (A second `publish` stops there, as it should: the
+machine is held to the certificate the site shows, which has to be one the world
+believes.) With Let's Encrypt itself: `publish --first`, then `--if-due` (nothing to
+do, nothing touched), then `publish` again in 55 s, the machine showing the key of the
+certificate the site had shown and keeping it, then with `--days 90` a new key and
+certificate the same way; curl believes each. Not yet, anywhere: a lease renewed (half
+a day on such a machine, and nothing on the page says that it happened); `renew
+--grub` with Let's Encrypt; the workflow on GitHub.
 
 ## Onto a machine that is k15's alone
 The image needs nothing on a machine's disk but itself: `disk.img`, written over the

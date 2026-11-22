@@ -71,9 +71,9 @@ when needed:
   With NASM 3.01: whether another version makes the same bytes is not known.
 - Seen on a real machine (Hetzner, `docs/server.md`): an address by DHCP, IPv6, GRUB and
   the boot sector with the image above 1 MiB, `./k15 deploy` with `--grub` and with
-  `--rescue`, `./k15 publish --first` and `renew` with Let's Encrypt's test server.
-  **Not yet**: a DHCP lease renewed (theirs lasts a day), a second `publish` (it needs a
-  certificate the world believes), the workflow on GitHub.
+  `--rescue`, `./k15 publish` (the first, `--if-due`, the next, a new certificate) with
+  Let's Encrypt, `renew` with its test server. **Not yet**: a DHCP lease renewed
+  (theirs lasts a day), the workflow on GitHub.
 - Memory per held connection: 24 bytes on port 80, 128 bytes for TLS.
 - 15kb.org runs the bounty's image: packed from the branch `bounty`, alone on the
   server's disk (no Linux), with a Let's Encrypt certificate until 2027-02-18 whose key
