@@ -7,7 +7,7 @@ gets an A+ without post-quantum key exchange either. What letsencrypt.org has an
 k15 turns a folder of static files into a bootable x86-64 HTTPS server: 14 KB of system
 with the files behind it, in one image. There is no operating system underneath, because
 it is one: its own boot sector, long mode, a virtio-net driver, ARP, TCP, TLS 1.3 and as
-much of HTTP as a static site needs, in one assembly file.
+much of HTTP as a static site needs, in assembly that is assembled as one unit.
 
 ```bash
 ./k15 pack site/ -n example.org                   # -> build-example.org/os.bin and disk.img

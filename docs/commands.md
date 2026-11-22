@@ -45,22 +45,20 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   The key is never on a server but inside the image, and in the last 64 KiB of the disk
   of a machine that is k15's alone. Everything `./k15` makes is for its owner's eyes
   only (umask 077), and /boot/k15.bin on a server with Linux for root's.
-- `make` assembles `src/os.asm` into `build/os.bin` and `build/disk.img` (`src/boot.asm`
-  + the image; what the tests boot), with the site of `www/` in it. It assembles twice:
-  once to see where the code ends (`build/os.sizing`, which is emptied again: it is an
-  image), and then for an image that is loaded so many bytes above 1 MiB
-  (`build/delta`, a `-DDELTA=n`) that its code ends where a page does
-  (docs/internals.md, "Memory"). By hand, `nasm` wants that define, and refuses any
-  other number.
-  `make B=dir CERT=dir NAME=n IP=a.b.c.d IP6=addr SITE=folder P80=redirect HSTS=seconds
-  CACHE=seconds HEADERS='Name: value' COMPRESS=0 KNOCK=a,b` builds another image: its
-  identity, the name in a generated certificate (`SAN='a b'`: its further names), the
-  address it answers on (without `IP`: the one it is given where it boots; `IP6`: an
-  IPv6 address beside it), what it serves, what port 80 does, the headers every file
-  gets, whether files are packed compressed too, and (development only) the two ports
-  that reset it. The scripts take `B` from the environment. Only
-  the address, the names, the site and its settings are tracked: after changing
-  another setting, `make -B`.
+- `make` assembles `src/os.asm` (and the files of `src/` it includes) into `build/os.bin`
+  and `build/disk.img` (`src/boot.asm` + the image; what the tests boot), with the site of
+  `www/` in it. It assembles twice: once to see where the code ends (`build/os.sizing`,
+  which is emptied again: it is an image), and then for an image that is loaded so many
+  bytes above 1 MiB (`build/delta`, a `-DDELTA=n`) that its code ends where a page does
+  (docs/internals.md, "Memory"). By hand, `nasm` wants that define, and refuses any other
+  number. `make B=dir CERT=dir NAME=n IP=a.b.c.d IP6=addr SITE=folder P80=redirect
+  HSTS=seconds CACHE=seconds HEADERS='Name: value' COMPRESS=0 KNOCK=a,b` builds another
+  image: its identity, the name in a generated certificate (`SAN='a b'`: its further
+  names), the address it answers on (without `IP`: the one it is given where it boots;
+  `IP6`: an IPv6 address beside it), what it serves, what port 80 does, the headers every
+  file gets, whether files are packed compressed too, and (development only) the two ports
+  that reset it. The scripts take `B` from the environment. Only the address, the names,
+  the site and its settings are tracked: after changing another setting, `make -B`.
 - `python3 tools/sizes.py build/os.lst` = bytes per routine. Of the system's 14,001
   with an address of its own, about: boot, clock calibration, page tables, driver and
   the other processors 2,710; network 4,390 with the timers; requests and the forms of

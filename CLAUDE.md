@@ -1,7 +1,8 @@
 # k15: a folder of static files as a bootable, sealed HTTPS server
 
-One assembly file (`src/os.asm`) that boots an x86-64 cloud server and serves a static
-site over TLS 1.3, with the site packed behind it in the same image. `./k15 pack FOLDER`
+One assembly unit (`src/os.asm`, which includes the other files of `src/`, a subsystem
+each) that boots an x86-64 cloud server and serves a static site over TLS 1.3, with the
+site packed behind it in the same image. `./k15 pack FOLDER`
 makes the image, `./k15 run` boots it in QEMU, `./k15 publish FOLDER HOST` puts a site
 on a machine in one step (`./k15 deploy HOST`: an image packed here).
 Public at https://github.com/FileSherlock/k15. https://15kb.org/ is deployed from here.

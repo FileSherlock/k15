@@ -3,7 +3,17 @@
 Read the part you are about to change. `tools/ec.py` has the curve code's other half.
 
 ## Layout
-- `src/os.asm`: everything after the loader, and at its end the site (`incbin`). 64-bit
+- `src/os.asm` and the files it includes: everything after the loader, and at its end the
+  site (`incbin`). One unit for the assembler; the files are its subsystems, in the order
+  they lie in the image: os.asm itself (where things are, the macros, the SHA-256
+  constants, the other processors' first steps, what is only read), `start.asm` and
+  `setup.asm` (start-up), `poll.asm` (the polling loops, the rings, the card),
+  `tcp.asm`, `ip6.asm`, `send.asm` (`sm`, `geom`, `sendseg`, `sendrun`), `request.asm`
+  (`record`, `pick`, `seek`), `timer.asm`, `conn.asm` (`find`, `prf`, `ckx`), `seg.asm`
+  (`respond`, `oohold`, `hsbuf`, `tcp_send`, `tcp_seg`, `csum`), `dhcp.asm`, `tls.asm`
+  (`handshake`), `sha.asm` (`keys`, `sha256`, `hmac`, `expand`), `curves.asm`,
+  `aesgcm.asm` (`seal`). A conditional has to end in the file it begins in, so what is
+  the image's alone and not the tests' (`HOST`) is included from inside os.asm's. 64-bit
   long mode, interrupts off, a table of interrupt handlers of length nothing on every
   processor (a fault resets the machine), one polling loop per
   processor. Start-up, in 32-bit code as the loader leaves us: everything of ours below

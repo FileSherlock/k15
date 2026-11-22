@@ -53,7 +53,9 @@ HOT := shablk xdh:loops cswap comb select vm fas fmul inv seal:loops ks64 gh1 ae
 # (the image, its listing and the disk hold the private key: for their owner's eyes only)
 # The image: hand-written assembly (src/os.asm) -> flat binary, loaded at 1 MiB and a few
 # bytes (DELTA, below); and a disk image that boots it: the boot sector (src/boot.asm),
-# then the image, padded
+# then the image, padded. os.asm includes the other files of src/, a subsystem each: one
+# unit for the assembler.
+OS := $(filter-out src/boot.asm,$(wildcard src/*.asm))
 all: $(B)/disk.img
 
 $(B)/ip: FORCE
@@ -117,10 +119,10 @@ $(PACKED) &: tools/pack.py $(B)/site.conf $(GEN)
 # is an image, key and all), DELTA is what puts a page boundary there, a multiple of
 # 64, and the second time is the image. (src/os.asm, `codend`, refuses any other DELTA.)
 ASDEF := $(OURIP) $(OURIP6) $(KNOCKDEF) $(TABLEDEF) $(DEBUGDEF) $(WINDEF)
-$(B)/os.bin: src/os.asm $(GEN) $(PACKED) $(B)/ip $(B)/ip6
-	@umask 077; nasm -f bin $(ASDEF) -DSIZING -I$(B)/ -o $(B)/os.sizing src/os.asm
+$(B)/os.bin: $(OS) $(GEN) $(PACKED) $(B)/ip $(B)/ip6
+	@umask 077; nasm -f bin $(ASDEF) -DSIZING -I$(B)/ -Isrc/ -o $(B)/os.sizing src/os.asm
 	@echo "-DDELTA=$$(( (4096 - $$(tail -c 4 $(B)/os.sizing | od -An -tu4) / 64 * 64 % 4096) % 4096 ))" > $(B)/delta; : > $(B)/os.sizing
-	nasm -f bin $(ASDEF) $$(cat $(B)/delta) -I$(B)/ -o $@ -l $(B)/os.lst src/os.asm
+	nasm -f bin $(ASDEF) $$(cat $(B)/delta) -I$(B)/ -Isrc/ -o $@ -l $(B)/os.lst src/os.asm
 	@chmod go= $@ $(B)/os.lst
 	@P80=$(P80) HSTS=$(HSTS) CACHE=$(CACHE) HEADERS='$(HEADERS)' COMPRESS=$(COMPRESS) python3 tools/made.py $(B) $(ASDEF) $$(cat $(B)/delta)
 	@echo "image: $$(stat -c %s $@) bytes, of which the site: $$(stat -c %s $(B)/site.bin)"
@@ -129,8 +131,8 @@ $(B)/os.bin: src/os.asm $(GEN) $(PACKED) $(B)/ip $(B)/ip6
 # asm crypto checked against pyca/cryptography on the host (the asm calls and pushes as it
 # likes: no red zone; and it wants its buffers below 4 GiB: no PIE)
 HOSTCC := gcc -no-pie -fno-pie -O1 -mno-red-zone
-$(B)/test_asm: test/test_asm.c test/asm.h src/os.asm $(GEN)
-	nasm -f elf64 -DHOST -I$(B)/ -o $(B)/os_host.o src/os.asm
+$(B)/test_asm: test/test_asm.c test/asm.h $(OS) $(GEN)
+	nasm -f elf64 -DHOST -I$(B)/ -Isrc/ -o $(B)/os_host.o src/os.asm
 	$(HOSTCC) -o $@ test/test_asm.c $(B)/os_host.o
 
 test: $(B)/test_asm

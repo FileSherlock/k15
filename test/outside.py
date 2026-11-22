@@ -16,7 +16,7 @@ order, tags that differ in one bit), and RFC 6979's signatures.
   AES-128-GCM             aes_gcm_test.json: the vectors with a nonce of 12 bytes, a tag of
                           16, a key of 128 bits and no more than 16 bytes of associated data. `seal` makes its tag
                           over a record's header there; the host build can be given other
-                          bytes (`haad` in src/os.asm). Opened: the plaintext and the tag
+                          bytes (`haad` in src/curves.asm). Opened: the plaintext and the tag
                           must be the vector's (a vector that is to be refused: the tag we
                           would ask for is not the one it has). Sealed: the ciphertext and
                           the tag (`seal` wants a byte that says what the others are: the

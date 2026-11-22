@@ -41,7 +41,7 @@ system() {
     [[ $def =~ ^-D[A-Za-z0-9_]+(=[0-9A-Fa-fx]+)?$ ]] || { echo "repro.sh: what is '$def' in $made?" >&2; return 1; }
     defs+=("$def")
   done
-  nasm -f bin "${defs[@]}" -I"$d/b/" -o "$d/b/os.bin" src/os.asm || return 1
+  nasm -f bin "${defs[@]}" -I"$d/b/" -Isrc/ -o "$d/b/os.bin" src/os.asm || return 1
   sha256sum < "$d/b/os.bin" | cut -d' ' -f1
 }
 
