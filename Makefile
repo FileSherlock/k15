@@ -1,15 +1,11 @@
 # B: where generated files go. CERT: the server's identity (see tools/gen.py). Both can be
 # set to build a second image, e.g. `make B=build-real CERT=cert-real`.
-comma := ,
 # IP: the address the server answers on, if the image is to have one of its own. Without it
 # (the default) the image asks for its address where it boots (DHCP), and is not tied to a
 # machine. For a real server: `make B=build-hz CERT=cert-hz NAME=<name or IP in the certificate>`.
 B ?= build
 CERT ?= cert
 IP ?=
-# KNOCK=a,b (development): a TCP packet to port a, then one to port b, resets the machine
-KNOCK ?=
-KNOCKDEF := $(if $(KNOCK),-DKNOCK_A=$(word 1,$(subst $(comma), ,$(KNOCK))) -DKNOCK_B=$(word 2,$(subst $(comma), ,$(KNOCK))),)
 OURIP := $(if $(IP),-DOURIP=$(shell python3 -c 'import ipaddress; print("0x" + ipaddress.IPv4Address("$(IP)").packed[::-1].hex())'),)
 # IP6: an IPv6 address for the image as well (it is not asked for anywhere: a host says
 # which one a machine has). Without it the image has no IPv6 in it.
@@ -118,7 +114,7 @@ $(PACKED) &: tools/pack.py $(B)/site.conf $(GEN)
 # code ends (-DSIZING: the last four bytes of $(B)/os.sizing, which is then emptied: it
 # is an image, key and all), DELTA is what puts a page boundary there, a multiple of
 # 64, and the second time is the image. (src/os.asm, `codend`, refuses any other DELTA.)
-ASDEF := $(OURIP) $(OURIP6) $(KNOCKDEF) $(TABLEDEF) $(DEBUGDEF) $(WINDEF)
+ASDEF := $(OURIP) $(OURIP6) $(TABLEDEF) $(DEBUGDEF) $(WINDEF)
 $(B)/os.bin: $(OS) $(GEN) $(PACKED) $(B)/ip $(B)/ip6
 	@umask 077; nasm -f bin $(ASDEF) -DSIZING -I$(B)/ -Isrc/ -o $(B)/os.sizing src/os.asm
 	@echo "-DDELTA=$$(( (4096 - $$(tail -c 4 $(B)/os.sizing | od -An -tu4) / 64 * 64 % 4096) % 4096 ))" > $(B)/delta; : > $(B)/os.sizing

@@ -11,7 +11,7 @@ An image holds its key, so nobody else can be given it; but everything else in i
 made of things anybody can have (the source, the certificate chain the server shows, the
 site), and without the key it is the same bytes for whoever makes it: `make KEYLESS=1`
 makes that image from the certificate alone, and tools/repro.sh compares. The system
-part depends on the site only by the nine numbers of site.inc, which are in OUT/made:
+part depends on the site only by the ten numbers of site.inc, which are in OUT/made:
 so it can be made again without the site, and without the programs that compressed it.
 """
 import hashlib

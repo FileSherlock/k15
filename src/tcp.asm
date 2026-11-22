@@ -99,19 +99,6 @@ tcp:
 .bad:   count 0
 .ret:   ret
 .sums:
-%ifdef KNOCK_A                  ; development builds only (make KNOCK=a,b): a packet to port a,
-        movzx eax, word [rbx+36] ; then one to port b, resets the machine, so a test server
-        xchg al, ah             ; comes back up in whatever its disk boots by default
-        cmp eax, KNOCK_A
-        jne .kb
-        mov byte [abs KST], 1   ; (the two packets may go to different processors)
-.kb:    cmp eax, KNOCK_B
-        jne .nok
-        cmp byte [abs KST], 1
-        jne .nok
-        jmp reset
-.nok:
-%endif
         cmp word [rbx+36], 0xBB01 ; port 443: TLS
         je .port
         cmp word [rbx+36], 0x5000 ; port 80: the same without

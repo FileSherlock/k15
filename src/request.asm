@@ -4,7 +4,8 @@
 ; the client's Finished (which has other keys), anything forged, anything a second time.
 ; If it is, it counts. And if it is a request, the response it asks for becomes the one in
 ; hand (see `tcp.tx`): for GET and HEAD the one the site has for the path, or the one
-; that says there is none; for what else begins like a request, the one that says no and
+; that says there is none (or, without a Host line, the one that says no and closes the
+; connection); for what else begins like a request, the one that says no and
 ; closes the connection. CF: that can't be yet, because the client has not acknowledged
 ; all of the response before: the record is then to be taken as not arrived. Keeps all
 ; registers.
@@ -43,7 +44,20 @@ record: pushad
         mov bh, 0x80            ; (only the head)
         inc esi
         dec ecx
-.get:   add esi, 4
+.get:   push rsi                ; A request needs a Host line, and one without is told so
+        push rcx                ; and closed (RFC 9112, 3.2)
+        push rbx
+        mov edi, H_HOST
+        push 6
+        pop rdx
+        mov bh, 0
+        call seek
+        pop rbx
+        pop rcx
+        pop rsi
+        mov eax, A_400
+        jc .have
+        add esi, 4
         sub ecx, 4
         mov edi, 0x811C9DC5     ; The path, up to a space, a question mark or the end, and
         xor edx, edx            ; its hash (FNV-1a)

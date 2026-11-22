@@ -192,16 +192,10 @@ server** (`k3`, 2.28.113.14): its disk has no Linux, and it is not reset (CLAUDE
   OUT --grub --reset '...'` renews such a server's certificate (certbot on its Linux).
 - `curl --cacert build-hz/ca.pem https://HOST/` and `curl http://HOST/`
 - The reset button is `hcloud server reset NAME`: it boots Linux (GRUB's default)
-  whatever the image does, so an image that is measured needs no knock. The image never
-  answers ping. A fault resets the machine by itself (nobody handles it: `GDT`), which
-  boots Linux again; a hang does not.
-- By hand, with the reset knock (development only): `make B=build-hz CERT=cert-hz
-  NAME=HOST IP=HOST KNOCK=$(tr ' ' , < build-hz/knock)` and `B=build-hz tools/deploy.sh
-  root@HOST`. `B=build-hz tools/knock.sh HOST` resets it: a TCP packet to port a, then
-  one to port b (build-hz/knock). "Connection refused" on port 22 then means Linux is
-  booting; a timeout, that the image is still there. This is a backdoor (two port scans
-  in a row could trigger it): it is only assembled with KNOCK set and must be left out
-  of anything that gets benchmarked or kept running.
+  whatever the image does. The image never answers ping. A fault resets the machine by
+  itself (nobody handles it: `GDT`), which boots Linux again; a hang does not.
+- By hand: `make B=build-hz CERT=cert-hz NAME=HOST IP=HOST` and `B=build-hz
+  tools/deploy.sh root@HOST`.
 - For a first look at anything new, add `DEBUG=1 LIFE=8` to that `make`: the page on
   port 80 then starts with how many processors take frames (less 1) and which one
   answered, and the machine resets itself after about 8 minutes whatever happens (a

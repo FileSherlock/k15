@@ -334,6 +334,14 @@ bytes.
   where the path holds less: 6 MiB through 20 Mbit/s with a queue of 60 packets took
   23.6 s that way, 5.2 s with 64 KB and no more, and takes 4.3 s now (bench/README.md
   has seven such paths: this is better than 64 KB on six of them, 3% behind on one).
+- **Left open: pacing.** What an ack lets go goes at once, back to back, so a path
+  whose queue is shorter than that burst drops its tail, and we find what is lost one
+  segment a round trip. Spreading the segments over the round trip would lose less
+  there. It is not built: it needs a timer per connection (bytes of code, and maybe of
+  the 128 per connection), a round trip measured more than once (ours is measured at the
+  handshake), and changes in the code where a mistake shows once in thousands. Before
+  building it: `tools/bneck.sh` with a short `BQUEUE` against `bench/README.md`'s paths,
+  to see whether the bursts are what costs.
 - Lost, says: an ack that repeats, once if no more than two segments are on their way
   (more such acks can't come), else three times (swapped neighbours look the same once
   or twice); the client sending old data again; and time (below). What goes again is
@@ -700,7 +708,8 @@ removing the ones about TLS.
 - HTTP: GET and HEAD, the path compared byte for byte with what pack.py made of the file
   names (so `/a%20b.txt`, not `/a b.txt`; a query is cut off; no `..` to resolve: a path
   is in the table or it is not; so a request with a whole address for its path,
-  `GET https://name/ HTTP/1.1`, which RFC 9112, 3.2.2 has a server take, gets the 404).
+  `GET https://name/ HTTP/1.1`, which RFC 9112, 3.2.2 has a server take, gets the 404.
+  Decided: this one stays. Only a proxy is sent that form).
   Any other method gets the 405, not a 501 where it is one nobody knows. A request is
   a record that begins with its request
   line: the line in pieces over several records is not found, and of two requests in
@@ -710,16 +719,18 @@ removing the ones about TLS.
   If-None-Match (does its line hold the ETag of the form picked; "*" does not count).
   A header counts if it is in the record that has the request line; and a record that
   goes on with a header's line from its middle, a word and a space, is taken for a
-  request with that method: the 405, and the end. No Host (one site: a request
-  without one is answered, where RFC 9112, 3.2 wants a 400), no Range, no
+  request with that method: the 405, and the end. A request needs a line that begins
+  "Host:" (any letters; RFC 9112, 3.2): without one, the 400 and the end. What it says
+  is not looked at, nor whether there are two. No Range, no
   If-Modified-Since (there are no dates), no `Connection: close` (the client has the
-  Content-Length; we close first only after a 405). No Date header: there is no clock.
+  Content-Length; we close first only after a 405 or a 400). No Date header: there is no clock.
 - Two requests at once on 443: the second waits for the client's retransmission timer
   (0.2 s).
 - TCP: no SACK and no timestamps (so what is lost is found a segment a round trip, and
   a window past 64 KB opens slowly: "How TCP works here"), no pacing (what an ack lets
-  go goes at once), a round trip measured once, at the handshake, and never again (a
-  path that gets slower afterwards gets segments twice), a SYN-ACK sent again after
+  go goes at once; left open: "How TCP works here"), a round trip measured once, at
+  the handshake, and never again (a path that gets slower afterwards gets segments
+  twice), a SYN-ACK sent again after
   0.25 s whatever the round trip is (to a client more than that away it goes twice;
   the client then acknowledges twice, which looks like a loss to our flight, and that
   goes twice as well), and the old way (`tcp_send`) for the flight

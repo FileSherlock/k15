@@ -47,42 +47,24 @@ when needed:
   the hour: delete it, then `hcloud server list`), in the project for trials only:
   every command with `HCLOUD_CONTEXT=k15-dev`. Never the bounty's (the context and the
   server `k3`): below.
-- Taking 15kb.org down for tests needs the user's word each time.
-- Tests run on 1 and 2 processors. More are not tested: the network card is the limit,
-  not the processors.
-- The bounty's page and README are on the branch `bounty`, not on `main`. 15kb.org is
-  packed from that branch (`tools/bounty_ceremony.sh` refuses any other) and stays on it
-  until the deadline: nothing merged into `main`, and no pull request, reaches the server.
-- Keep this file short. When something is learned, put it in `docs/pitfalls.md` as one
-  or two lines, or fix the docs it contradicts. Delete what is no longer true.
+- Tests run on 1 and 2 processors.
 
 ## Where it stands
-- The system is 14,579 bytes. It asks for its address by DHCP; built with one (`IP=`,
-  `-i`) it has no DHCP client and is 14,065. With an IPv6 address as well (`IP6=`, `-6`:
-  it has to be told one) it is 15,299. (Between 33 and 64 of those bytes are padding
+- The system is 14,617 bytes. It asks for its address by DHCP; built with one (`IP=`,
+  `-i`) it has no DHCP client and is 14,103. With an IPv6 address as well (`IP6=`, `-6`:
+  it has to be told one) it is 15,337. (Between 33 and 64 of those bytes are padding
   in front of the hot routines, which goes by what lies before them: `HOT`.)
 - It boots from a BIOS boot sector or GRUB, uses all the RAM and up to 4 processors,
   modern virtio-net, and serves GET and HEAD by path with compressed forms, ETag and
-  304, keep-alive, and a redirect on port 80. The timer for what it sent goes by the
+  304, keep-alive, a 400 without Host, and a redirect on port 80. The timer for what it sent goes by the
   connection's round trip.
 - `./k15 publish`, `deploy` and `renew` write the raw disk from a host's rescue system
   (`--grub`: beside a Linux, for a server that is measured); `ci/publish.yml` publishes
   on a push and looks at the certificate once a day.
 - Every build says what its image is without its key (`OUT/made`); the system part can
   be made again from the source, that file and the certificates (`tools/repro.sh`).
-  With NASM 3.01: whether another version makes the same bytes is not known.
-- Seen on a real machine (Hetzner, `docs/server.md`): an address by DHCP, IPv6, GRUB and
-  the boot sector with the image above 1 MiB, `./k15 deploy` with `--grub` and with
-  `--rescue`, `./k15 publish` (the first, `--if-due`, the next, a new certificate) with
-  Let's Encrypt, `renew` with its test server, a DHCP lease renewed after half a day,
-  the workflow on GitHub by a push and by hand. **Not yet**: a run of the workflow that
-  GitHub's schedule starts (it started none in three hours), `renew --grub` with Let's
-  Encrypt.
+  With NASM 3.01.
 - Memory per held connection: 24 bytes on port 80, 128 bytes for TLS.
-- 15kb.org runs the bounty's image: packed from the branch `bounty`, alone on the
-  server's disk (no Linux), with a Let's Encrypt certificate until 2027-02-18 whose key
-  is also the key of the Bitcoin address on its page. That key is not on this machine:
-  the user has it as 24 words. SSL Labs: A.
 - On the server (2 shared vCPUs) it does 7,300 to 8,800 new TLS connections a second
   and 100,000 to 120,000 requests a second on kept connections, two to three times
   nginx; large files at 1.2 GB/s, a quarter more than nginx did. Measured with `main`'s
@@ -91,17 +73,6 @@ when needed:
   undefined, tlsfuzzer, real ClientHellos damaged at random. All pass. What tlsfuzzer's
   scripts miss in us is the shortcuts of `docs/internals.md` and nothing else; each is
   named in `tools/tlsfuzz.sh`.
-
-## Next
-- What is left of the trials on a real host, above.
-- Handshake speed, last: OpenSSL's assembly does the ladder and the signature in about
-  a fifth fewer cycles; it is the riskiest code to touch.
-
-For the user to decide:
-- What is left of the audit in github.com/FileSherlock/k15/issues/1, its 12: a 400 for
-  a request without Host, and a request with a whole address for its path. Neither is
-  about security; both are named in `docs/internals.md` ("Shortcuts that remain").
-- Later: pacing, zstd, taking out the reset knock.
 
 ## What "secure" means here
 A validating client gets server authentication, confidentiality, integrity and forward
@@ -155,8 +126,8 @@ Don't change the source or a test script while a suite runs.
   `tools/repro.sh` (seconds).
 - After anything else: `tools/suite.sh` (85 runs, twenty minutes). Also with `SMP=1`
   after touching what processors share or how the machine starts.
-- After touching boot or the polling loops: `measure.sh` with `DEBUG=1`, `KNOCK=` and
-  `LIFE=` images too (`DEBUG=1` fails at port 80's page: its page is the counters).
+- After touching boot or the polling loops: `measure.sh` with `DEBUG=1` and `LIFE=`
+  images too (`DEBUG=1` fails at port 80's page: its page is the counters).
 - After touching `start`, the page tables, `tramp`, `codend`, `src/boot.asm`,
   `tools/mkdisk.py` or how the Makefile finds `DELTA`: `tools/wxtest.sh` (half a
   minute: what must not run, with controls), and once through QEMU's own loader
@@ -173,17 +144,3 @@ Don't change the source or a test script while a suite runs.
   server made for it, never the bounty's (below).
 - A claim about the machine is checked on the machine (QEMU's monitor, a packet
   capture), not read from the docs. A new behaviour gets a test that fails without it.
-
-## Before touching the live site
-- Until 2027-02-18 nothing is deployed to 15kb.org and `k3` is not reset, put into the
-  rescue system or rebuilt: any of that needs the user's word, and the rescue system is
-  a way to the bounty's key. `./k15 publish`, `deploy` and `renew` never go near it
-  (2.28.113.14, `k3`): with `--rescue` they would wipe it.
-- The renewal timer (`15kb-renew.timer`) is disabled and stays so: it would make a new
-  key. A change before the deadline is the user's to make: `tools/bounty_ceremony.sh
-  --redeploy` from the branch `bounty`, with the 24 words.
-- `tools/monitor_bounty.py` says whether page, certificate and address are as they
-  should be.
-- Never remove `build-*` or `cert-*` folders wholesale: some hold the only copy of a
-  packed image or a key. `cert-15kb.org/bounty-server.pem` is what `--redeploy` and
-  `--revoke` need.

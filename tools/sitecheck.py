@@ -298,7 +298,7 @@ def main():
         ok &= c.response(head_only=True)[0] == nf["head"].encode("latin-1")
         c.get("/?a=1&b=2")
         ok &= same(c.response(), paths["/"])
-        c.send(b"GET /\r\n\r\n")        # (no version: the path ends at the line's end)
+        c.send(b"GET /\r\nHost: x\r\n\r\n")  # (no version: the path ends at the line's end)
         ok &= same(c.response(), paths["/"])
         if "/docs" in paths:            # a folder without its slash is sent to the one with
             c.get("/docs")
@@ -321,6 +321,31 @@ def main():
 
     for method in ("POST", "OPTIONS", "DELETE", "PROPFIND", "M-SEARCH", "get", "Head"):  # (a method is any word)
         check(f"{method} is told no, and the connection ends", lambda method=method: refused(method))
+
+    def no_host(req):
+        c = Conn()
+        c.send(req)
+        head, _ = c.response()
+        ok = head == SITE["bad_request"].encode("latin-1")
+        ok &= c.closed()
+        c.close()
+        return ok
+
+    for req in (b"GET / HTTP/1.1\r\n\r\n", b"HEAD / HTTP/1.1\r\n\r\n", b"GET /nothing HTTP/1.1\r\n\r\n",
+                b"GET / HTTP/1.1\r\nX-Host: x\r\nHostname: x\r\n\r\n"):
+        first = req.split(b"\r")[0].decode() + (" with X-Host and Hostname" if b"X-Host" in req else "")
+        check(f"{first} without a Host line gets the 400, and the connection ends", lambda req=req: no_host(req))
+
+    def host_any_case():
+        c = Conn()
+        ok = True
+        for line in (b"host: x", b"HOST: x", b"Accept: */*\r\nhOsT:x"):
+            c.send(b"GET / HTTP/1.1\r\n" + line + b"\r\n\r\n")
+            ok &= same(c.response(), paths["/"])
+        c.close()
+        return ok
+
+    check("a Host line counts in any letters and after others", host_any_case)
 
     def not_requests():
         c = Conn()
@@ -369,8 +394,8 @@ def main():
 
     def two_at_once():
         c = Conn()
-        c.tls.write(b"GET " + fl.encode() + b" HTTP/1.1\r\n\r\n")
-        c.tls.write(b"GET " + pg.encode() + b" HTTP/1.1\r\n\r\n")
+        c.tls.write(b"GET " + fl.encode() + b" HTTP/1.1\r\nHost: x\r\n\r\n")
+        c.tls.write(b"GET " + pg.encode() + b" HTTP/1.1\r\nHost: x\r\n\r\n")
         c.sock.sendall(c.out.read())
         ok = same(c.response(), paths[fl]) and same(c.response(), paths[pg])
         c.close()

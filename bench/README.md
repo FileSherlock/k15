@@ -417,7 +417,7 @@ slots, 10.8 KiB); nginx + BoringSSL about 20; nginx + OpenSSL about 5.
    `www/`, `bench/run.sh`, `bench/busy.sh`, `bench/hold.sh`, and in `build/` the server's
    `ca.pem` and `name` (from `build-hz/`); `gcc -O2 -o build/bench tools/bench.c -lssl
    -lcrypto` (tapc the same).
-2. k15: build without `KNOCK`, `tools/deploy.sh`, then on the generator `./run.sh IP`.
+2. k15: build, `tools/deploy.sh`, then on the generator `./run.sh IP`.
    `hcloud server reset NAME` brings Linux back. (A server that keeps its Linux:
    docs/server.md, "Beside a Linux". The server these numbers are from is the bounty's
    now, has no Linux, and is not to be reset.)

@@ -173,14 +173,8 @@ tcpd:   rdtsc                   ; (`tcp`, with the cycles spent on frames, and h
         ret
 %endif
 
-%ifdef KNOCK_A
-%define RESET
-%endif
 %ifdef LIFE
-%define RESET
-%endif
-%ifdef RESET
-; reset: the machine starts over (development builds only: the knock, and LIFE)
+; reset: the machine starts over (development builds only: LIFE)
 reset:  mov al, 0xFE
         out 0x64, al            ; keyboard controller: pulse the reset line
         int3                    ; (and if that does nothing: a fault, which nobody handles)

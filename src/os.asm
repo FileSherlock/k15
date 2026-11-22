@@ -103,7 +103,6 @@ MAXCPU  equ 4
 TRAMP   equ 0x8000          ; where the others start, in real mode (`tramp` is copied there)
 TXLOCK  equ 0x9F00          ; held from `txbuf` to `txgo` (not in the page of TRAMP: that one
 NCPUM   equ 0x9F04          ; is code); how many processors take frames, less 1 (a power of two, less 1)
-KST     equ 0x9F08          ; reset knock: 1 after the first port (development builds)
 TXCNT   equ 0x9F20          ; how many frames have ever been queued for sending (a qword: `txgo`)
 MYIP    equ 0x9F0C          ; Where the image has no address of its own: the one a DHCP server
 DHT     equ 0x9F10          ;   gave us (0: none yet); and what the first processor, which
@@ -639,6 +638,7 @@ H_AE:   db "*accept-encoding:"   ; header names as `seek` sees them, the line en
 H_INM:  db "*if-none-match:"
 T_BR:   db "br"
 T_GZ:   db "gzip"
+H_HOST: db "*host:"
 %ifndef OURIP
 DHHDR:  db 8, 0, 0x45, 0, 328 >> 8, 328 & 255, 0, 0, 0, 0 ; a DHCP message's frame from its type on
         db 64, 17, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255 ; (`dhsend`): IPv4, 328 bytes, UDP, to

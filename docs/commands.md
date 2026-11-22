@@ -52,21 +52,20 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   bytes above 1 MiB (`build/delta`, a `-DDELTA=n`) that its code ends where a page does
   (docs/internals.md, "Memory"). By hand, `nasm` wants that define, and refuses any other
   number. `make B=dir CERT=dir NAME=n IP=a.b.c.d IP6=addr SITE=folder P80=redirect
-  HSTS=seconds CACHE=seconds HEADERS='Name: value' COMPRESS=0 KNOCK=a,b` builds another
+  HSTS=seconds CACHE=seconds HEADERS='Name: value' COMPRESS=0` builds another
   image: its identity, the name in a generated certificate (`SAN='a b'`: its further
   names), the address it answers on (without `IP`: the one it is given where it boots;
   `IP6`: an IPv6 address beside it), what it serves, what port 80 does, the headers every
-  file gets, whether files are packed compressed too, and (development only) the two ports
-  that reset it. The scripts take `B` from the environment. Only the address, the names,
+  file gets, and whether files are packed compressed too. The scripts take `B` from the environment. Only the address, the names,
   the site and its settings are tracked: after changing another setting, `make -B`.
-- `python3 tools/sizes.py build/os.lst` = bytes per routine. Of the system's 14,065
+- `python3 tools/sizes.py build/os.lst` = bytes per routine. Of the system's 14,103
   with an address of its own, about: boot, clock calibration, page tables, driver and
   the other processors 2,710; network 4,390 with the timers; requests and the forms of
-  a file 700; TLS handshake and key schedule 1,650; SHA-256 450; curves 3,000 with
+  a file 740; TLS handshake and key schedule 1,650; SHA-256 450; curves 3,000 with
   their programs and constants; the cipher 1,000; certificate 230; among them 58 of
   padding in front of the routines a handshake spends its time in (HOT in "How the
-  curve code works"). With the DHCP client (the default) it is 14,579, and with IPv6
-  as well 15,299: 520 and 731 bytes of code more, and 52 and 41 of that padding,
+  curve code works"). With the DHCP client (the default) it is 14,617, and with IPv6
+  as well 15,337: 520 and 731 bytes of code more, and 52 and 41 of that padding,
   which goes by what happens to lie in front of those routines (between 33 and 64
   bytes). Whose segment it is costs 26 bytes, zeroing what loaders left where code
   can run 7, the ChangeCipherSpec in our flight 10, and what the audit's 4 to 7, 11
@@ -75,7 +74,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   type 4, jumps that got longer 6, and any word for a method 11 fewer than a word in
   capitals did. That nothing but code can be executed costs no padding.
 - **Is an image what this source makes?** Every build writes `OUT/made`: the commit, the
-  assembler, what the assembler was told (the defines, `DELTA` among them; the nine
+  assembler, what the assembler was told (the defines, `DELTA` among them; the ten
   numbers of site.inc; the certificate chain's hash), how the site was packed and with
   what, and three
   hashes of the image **without its key**: of the system, of the site, of both. No
@@ -106,8 +105,8 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   Python module, from libbrotlienc (every curl is linked with it) or from the command,
   and if there is none, gzip is all (pack says so). `Vary: Accept-Encoding` is on every
   form of a file that has more than one. The page for unknown paths has every header a file
-  has but Cache-Control; a folder's redirect and the 405 have the HSTS one; port 80 has
-  none (a browser may not believe it there). OUT/site.json says what each path must
+  has but Cache-Control; a folder's redirect, the 405 and the 400 have the HSTS one; port 80
+  has none (a browser may not believe it there). OUT/site.json says what each path must
   return (for the tests), OUT/page80.bin what port 80 says.
 - `tools/suite.sh [JOBS] [name...]`: everything below, a few at a time, one line each
   (85 runs, twenty minutes; the logs in `$LOGS`, which its last line names). `SMP=1` or
@@ -125,8 +124,9 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   clients that take gzip or brotli (in every spelling of Accept-Encoding the checker
   knows, "q=0" among them), clients that have a file (each form by its own ETag: alone,
   in a list, weak, in small letters; and other headers with an ETag in them),
-  unknown paths, other methods, records that are no requests, requests in pieces, of
-  3 KB, of over 4 KB, two at once, a client that closes its side, clients that go away.
+  unknown paths, other methods, requests without Host, records that are no requests,
+  requests in pieces, of 3 KB, of over 4 KB, two at once, a client that closes its side,
+  clients that go away.
   Over tap the card cuts our frames (TSO), through QEMU's own network it does not:
   `NOTSO=1` in front builds an image that never asks it to (the suite's
   `site_notso_loss3`). `SUITES=...` in front makes the checker's clients offer those

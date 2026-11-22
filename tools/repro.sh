@@ -15,7 +15,7 @@
 #       certificates its server shows (openssl s_client -showcerts). The source is this
 #       checkout (MADE says which commit it was), the assembler has to be the one MADE
 #       names. Says whether the bytes are the same; the site is not needed for it, nor
-#       the programs that compressed it: of the site the system knows nine numbers, and
+#       the programs that compressed it: of the site the system knows ten numbers, and
 #       MADE has them.
 cd "$(dirname "$0")/.." || exit 1
 bad=0
@@ -31,7 +31,7 @@ system() {
   { echo "; from $made"
     for kv in $(sed -n 's/^site.inc: //p' "$made"); do
       k=${kv%%=*} v=${kv#*=}
-      [[ $k =~ ^(SITE_LEN|PT_MASK|AT_OFF|A_404|A_405|P80_OFF|P80_LEN|ETAG_AT|ETAG_LEN)$ && $v =~ ^[0-9]+$ ]] || { echo "repro.sh: what is '$kv' in $made?" >&2; return 1; }
+      [[ $k =~ ^(SITE_LEN|PT_MASK|AT_OFF|A_404|A_405|A_400|P80_OFF|P80_LEN|ETAG_AT|ETAG_LEN)$ && $v =~ ^[0-9]+$ ]] || { echo "repro.sh: what is '$kv' in $made?" >&2; return 1; }
       if [[ $k == SITE_LEN ]]; then echo "%assign $k $v"; else echo "$k equ $v"; fi
     done; } > "$d/b/site.inc"
   : > "$d/b/site.bin"
@@ -82,6 +82,6 @@ check "the system part, made again from OUT/made and the certificates alone, is 
   "$([[ -n $got && $got == $(sed -n 's/^  the system .*: //p' "$T/one/made") ]] && echo ok)"
 sed -i 's/^site.inc: SITE_LEN=\([0-9]*\)/site.inc: SITE_LEN=\1 PT_MASK=1/; s/ PT_MASK=[0-9]*//2' "$T/one/made"
 got=$(system "$T/one/made" "$T/pub/server.pem" "$T/five")
-check "  and is not, if one of the nine numbers is another" "$([[ -n $got && $got != $(sed -n 's/^  the system .*: //p' "$T/one/made") ]] && echo ok)"
+check "  and is not, if one of the ten numbers is another" "$([[ -n $got && $got != $(sed -n 's/^  the system .*: //p' "$T/one/made") ]] && echo ok)"
 [[ $bad == 0 ]] && echo "all ok" || echo "FAILED"
 exit $bad
