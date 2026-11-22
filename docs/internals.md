@@ -66,7 +66,8 @@ Read the part you are about to change. `tools/ec.py` has the curve code's other 
 - `handshake`, `hrrmsg`, `thash` (the transcript's hash, continued, not restarted),
   `keys`, `hmac`, `expand`; `sha256`/`shablk`; `seal` with `ks64`, `aeskey`, `aes4`,
   `gh1` and four-block GHASH.
-- `xdh`, `sign`, `stock`, `binv`, `comb`, `select`, `vm`, `fas`, `fmul`, `inv`, `ecinit`:
+- `xdh`, `sign`, `stock`, `binv`, `comb`, `select`, `vm`, `fas`, `fmul`, `fsqr`, `fmul1`,
+  `inv`, `ecinit`:
   the curves, see below. `rand`: what is random (`rdrand`, each draw compared with the
   one before).
 - `tools/ec.py`: the curve code's other half: the programs, and a model of the arithmetic
@@ -630,7 +631,8 @@ model that asserts every bound.
   and masking (`select`: 32 bytes of an entry at a time, gathered in two registers;
   117 cycles for an entry of 96 bytes, where gathering in memory took 355, each
   turn waiting for the store of the one before). The shared secret, e times the client's point: the Montgomery
-  ladder, 256 steps, one conditional swap a step. Both end in a division, which they
+  ladder, 256 steps, one conditional swap a step (in registers of 16 bytes: 12
+  cycles). Both end in a division, which they
   share (`XPRE`, `inv`, `XPOST`), and in `freeze`.
 - A signature's r = x(k G): 64 additions on P-256 from a table of (j + 1) 16^i G. Jacobian
   mixed addition can't add a point to itself or to infinity, so the table never holds
@@ -641,11 +643,11 @@ model that asserts every bound.
   (`binv`, Montgomery's trick: Z of every k G, and every k). `sign` takes one r and one
   1/k and needs four multiplications. The polling loops call `stock` when they have
   nothing else to do and the stock is empty, one k G a call; `sign` does when it finds
-  none. So a signature costs 89,000 cycles under full load and next to nothing below it.
+  none. So a signature costs 70,000 cycles under full load and next to nothing below it.
 - `inv` is a^(m-2), once a handshake (X25519) and twice per 64 (the signatures). Mod
   2^255 - 19 by an addition chain (tools/ec.py, `CHAIN25519`: 254 squarings and 11
   multiplications, 12,000 cycles; it uses T0-T3), for P-256's p and n by squaring and
-  multiplying bit by bit (27,000 and 30,000).
+  multiplying bit by bit (20,000 and 29,000).
 - Our X25519 scalar is clamped and the client's u has its top bit cleared (RFC 7748), so
   every point of small order makes the shared secret all zeros, which `handshake` refuses.
 - r and s go out as DER INTEGERs of whatever length they have (`derint`); nothing is

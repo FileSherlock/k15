@@ -171,6 +171,15 @@ One or two lines each. Add to it when something costs an hour; delete what stops
   here: the server stays up, and another implementation checks every signature and tag.
 - A connection that fails at once from here is ours: another program has the port.
   Use base ports below 32768.
+- A routine timed in a loop of its own is not the routine in a handshake: P-256's
+  addition took 715 or 799 cycles by what `make bench` had timed before it, X25519 and
+  a signature each cost more between the other's turns, and an add that takes 18
+  cycles alone saved 2 where it was replaced. Time the two in turn (`make bench` has
+  the line), each version several times, in turn, on one core.
+- On AMD it matters where `vm` begins in a line of 64 bytes (its jumps, three to five
+  taken an operation): a signature is 5,000 cycles dearer in one half than in the
+  other, with nothing else changed. `HOT` knows of 32 only, so every build has its
+  luck, and the tests' object is not laid out as the image is.
 
 ## Operating
 - A tool "to be run from cron" must be a no-op on most days and say so itself.
@@ -220,3 +229,8 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - Three bits for the client's window shift: Linux says 10. Four bits.
 - Getting past 130,000 frames a second on the server: a second generator, one
   processor, no interrupts: the same ceiling each time.
+- `vm` picking its routine from a table of addresses (one call, one jump back): the
+  one call that goes five ways is guessed worse than the jumps: a signature 74,000 to
+  77,000 cycles for 66,000 to 72,000.
+- Squarings only in the X25519 programs, because P-256's addition seemed slower with
+  them: it was the timing (above). In turn with X25519 it is the same.

@@ -84,18 +84,25 @@ xdh:    pushad
         popad
         ret
 
-        HOT 0x7FFFFFFC
-; cswap: swap (X, Y) with (Z, T) if edx = 1, not if edx = 0 (clobbers rax, rcx, rdx, rdi)
-cswap:  neg rdx
+        HOT 0xFFFFFFF8
+; cswap: swap (X, Y) with (Z, T) if edx = 1, not if edx = 0 (clobbers rcx, rdx, rdi,
+; xmm0-xmm3)
+cswap:  neg edx
+        movd xmm0, edx
+        pshufd xmm0, xmm0, 0    ; all ones, or nothing
         mov edi, R_X
-        push 8
+        push 4
         pop rcx
-.s:     mov rax, [rdi]
-        xor rax, [rdi+64]
-        and rax, rdx
-        xor [rdi], rax
-        xor [rdi+64], rax
-        scasq
+.s:     movdqa xmm1, [rdi]
+        movdqa xmm2, [rdi+64]
+        movdqa xmm3, xmm1
+        pxor xmm3, xmm2         ; what the two differ in, if they are to be swapped
+        pand xmm3, xmm0
+        pxor xmm1, xmm3
+        pxor xmm2, xmm3
+        movdqa [rdi], xmm1
+        movdqa [rdi+64], xmm2
+        add rdi, 16
         loop .s
         ret
 
