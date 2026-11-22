@@ -388,6 +388,30 @@ By the project's own measure, connections that can be held per KiB of what has t
 the disk (kernel included, the rest of the system not), TLS: k15 about 350,000 (3.8 million
 slots, 10.8 KiB); nginx + BoringSSL about 20; nginx + OpenSSL about 5.
 
+## The branch dev next to main (2026-11-22)
+`dev` at aed63b1 (DHCP, IPv6, the timer by round trip, the stricter segment rules, the
+400 without Host) and `main` at c4d4032, both packed with `-i` and the same `www/` and
+certificate, put on one cx23 in turn (`./k15 deploy --grub`), `run.sh` from a ccx33:
+dev, main, dev, main, then the TLS rows three times each, main first. This cx23 was an
+AMD EPYC-Milan, not the Skylake of the table at the top: its numbers are not those.
+Lowest to highest of all runs:
+
+| | dev | main |
+|---|---|---|
+| new TLS connections a second, 64 in flight | 9,500 - 10,000 | 9,700 - 10,000 |
+| the same, 512 | 9,300 - 11,200 | 8,600 - 11,300 |
+| the same, 4,096 | 10,100 - 11,300 | 11,200 - 11,200 |
+| HTTPS requests a second, kept, 64 | 57,000 - 68,600 | 64,400 - 73,700 |
+| the same, 512 | 62,700 - 79,400 | 68,400 - 80,300 |
+| new HTTP connections a second, 512 | 31,700 - 32,700 | 30,200 - 31,400 |
+| HTTP requests a second, kept, 64 | 70,200 - 73,600 | 59,000 - 61,800 |
+| HTTP requests a second, kept, 512 | 70,700 - 73,600 | 68,800 - 71,500 |
+
+The same within the spread. The first two passes had dev 11% behind on kept HTTPS in
+both; the third, in the other order, did not: the shared vCPUs drift over half an hour,
+so two images are compared in both orders. Kept HTTP at 64 was higher for dev in both
+of its passes, which was not looked into.
+
 ## What this does not say
 - nginx and Caddy are web servers: any file, any header, virtual hosts, HTTP/2, logs,
   reloads, every cipher and curve a client may want, session resumption. In the night k15
