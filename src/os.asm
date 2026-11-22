@@ -391,6 +391,8 @@ TSLOT   equ 128
 ; what tells how busy this processor is: the turns of its polling loop that found nothing to
 ; do, in units of 4,096, and the time, in units of 2^24 cycles. Two fetches give a rate, and
 ; a processor with nothing to do gives the rate that means idle (bench/busy.sh does that).
+; With DEBUG=3 they are how often we asked for an address or to keep ours (`dhask`), and how
+; often a server's yes was taken (`dhcp`): a lease that was renewed is one more of each.
 DBG     equ BSS + 0x0F500
 %macro count 1
 %ifdef DEBUG
@@ -399,6 +401,9 @@ DBG     equ BSS + 0x0F500
 %endmacro
 %ifndef DEBUG
 %define tcpd tcp            ; (the polling loops call `tcp` through what counts its cycles)
+%endif
+%ifndef DHMAX
+%define DHMAX 1 << 20       ; (make DHMAX=n, for a trial: no lease counts as longer than n s)
 %endif
 ; WXGATE label (make WXTEST=6 or 7, for tools/wxtest.sh): what a table of interrupt handlers
 ; at address 0 would have for an invalid instruction, at 16 times its number: a gate to
@@ -3338,12 +3343,17 @@ respond:
         mov edx, [DBG+28]
         div dword [DBG+32]
         mov [DBG+4], eax
-%if DEBUG > 1                   ; (make DEBUG=2: how busy, in place of counters 3 and 5)
+%if DEBUG == 2                  ; (make DEBUG=2: how busy, in place of counters 3 and 5)
         mov eax, [DBG+36]
         shr eax, 12
         mov [DBG+12], eax
         rdtsc
         shrd eax, edx, 24
+        mov [DBG+20], eax
+%elif DEBUG == 3                ; (make DEBUG=3: what was asked of DHCP, and its yeses)
+        mov eax, [DBG+40]
+        mov [DBG+12], eax
+        mov eax, [DBG+44]
         mov [DBG+20], eax
 %endif
         dec edi                 ; (the page ends with a line end)
@@ -3709,6 +3719,7 @@ dhask:  mov ebp, MYIP
         push 1
         pop rcx
         call rand
+        count 10
         mov eax, [rbp]          ; What is asked for: our address, to keep it; or any (an
         mov [rbp+DHA-MYIP], eax ; offer will say which)
         push 1                  ; DISCOVER,
@@ -3857,11 +3868,12 @@ dhcp:   test ax, ax
         jmp dhsend
 .yes:   cmp eax, [rbp+DHA-MYIP]
         jne .ret
+        count 11
         jmp short .set
 .no:    xor ecx, ecx            ; (no address, eax = 0; and anew in a second)
 .set:   mov [rbp], eax
         bswap ecx               ; (seconds: 1,024 ticks are half of one)
-        mov eax, 1 << 20
+        mov eax, DHMAX
         cmp ecx, eax
         cmova ecx, eax
         shl ecx, 10

@@ -216,8 +216,12 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   reordering was found on the server and how the cost of a frame was taken apart. With
   `DEBUG=2` the fourth and sixth are instead the turns the polling loop made with nothing
   to do (in units of 4,096) and the time (in units of 2^24 cycles): how busy a processor
-  is (`bench/busy.sh`). Not for images that are measured or kept running (and rawc, tapc
-  and measure.sh's check of port 80 don't know its page).
+  is (`bench/busy.sh`). With `DEBUG=3` they are, on the first processor, how often it
+  asked DHCP for an address or to keep its own, and how often a yes was taken: a lease
+  renewed is one more of each. `DHMAX=n` beside it (a trial) lets no lease count as longer
+  than n seconds, so that is seen after n/2 and not after half a day. Not for images that
+  are measured or kept running (and rawc, tapc and measure.sh's check of port 80 don't
+  know its page).
 - `python3 tools/jcc.py build/os.lst [ROUTINE...]` lists the jumps that cross or end on
   a 32-byte boundary (make runs it for the routines of `HOT` in the Makefile and says so
   if there are any); `... mask ROUTINE` says where a routine may begin to have none, as

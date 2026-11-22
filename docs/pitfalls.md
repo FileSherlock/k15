@@ -33,6 +33,9 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 
 ## QEMU and the tests
 - QEMU keeps the image open: rebuilding under a running VM changes nothing.
+- make does not see that a variable changed: `DEBUG=3 DHMAX=120`, then `DEBUG=3` into
+  the same folder, leaves the first image there (its `made` says which it is). Another
+  variable, another `B=` or `-o`.
 - slirp is slow and serial: one connection in 20 waits a second when they come faster
   than 2 ms apart, and it walks every socket. Load tests go over tap.
 - Every guest processor polls: `top` shows 100% whatever the load.

@@ -24,9 +24,11 @@ IDLE ?=
 TSHARE ?=
 TABLEDEF := $(if $(CAP),-DCAP=$(CAP),) $(if $(IDLE),-DIDLE=$(IDLE),) $(if $(TSHARE),-DTSHARE=$(TSHARE),)
 # DEBUG=1 (development): count dropped and resent packets, shown in the page on port 80
-# (DEBUG=2: and how busy each processor is, see bench/busy.sh)
+# (DEBUG=2: and how busy each processor is, see bench/busy.sh; DEBUG=3: and what was
+# asked of DHCP and answered with a yes)
+# DHMAX=n (a trial): a DHCP lease counts as n seconds at most, so it is renewed after n/2
 # LIFE=n (development): the machine is reset after about n minutes (at 2.1 GHz), come what may
-DEBUGDEF := $(if $(DEBUG),-DDEBUG=$(DEBUG),) $(if $(LIFE),-DLIFE=$(LIFE),)
+DEBUGDEF := $(if $(DEBUG),-DDEBUG=$(DEBUG),) $(if $(LIFE),-DLIFE=$(LIFE),) $(if $(DHMAX),-DDHMAX=$(DHMAX),)
 # SITE: the folder of files that is served (tools/pack.py makes them part of the image).
 # P80=redirect: port 80 sends everybody to https://NAME/ (default: it serves the page at /)
 # HSTS=seconds, CACHE=seconds, HEADERS='Name: value': headers for every file (tools/pack.py)
