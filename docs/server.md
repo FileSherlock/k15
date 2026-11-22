@@ -162,8 +162,16 @@ runner, lives on the machine's disk, and is fetched from there by the next run.
   (enabling the workflow through the API); that this resets those 60 days is what
   others' tools for it say, not something tried here. 45 days, not 30, so that a run
   that did something comes before the 60 are over.
-- Not run on GitHub yet: what it does is `k15 publish`, which `tools/hosttest.sh`
-  runs; the file itself has only been read by a YAML parser.
+- Run on GitHub, in a private repository made for it, against a Hetzner server and
+  Let's Encrypt: the push that brings the workflow fails, as it should (nothing vouches
+  for the machine yet, and it is left alone); by hand with "first", 2 min 8 s to the
+  site under a new certificate; a push that changes the page, 1 min 34 s, the machine
+  showing its key. The step that asks to stay on, run by hand in a copy that allows
+  that, is let through with the workflow's own token. **Not seen: a run that the
+  schedule starts.** With the copy's schedule at every ten and then every five minutes
+  GitHub started none in three hours (the first commits there had an author GitHub
+  knows nobody by; a later one that it does know changed nothing in 90 minutes). What
+  such a run does beyond the others is `--if-due`, seen on a real machine by hand.
 
 ## Beside a Linux (`--grub`)
 For a server that keeps its Linux: one that is measured, where a reset brings Linux and
