@@ -15,8 +15,9 @@ R_ONE   equ REGS + 12*32
 R_A24   equ REGS + 13*32
 R_D     equ REGS + 14*32
 R_C     equ REGS + 15*32
+%define fadd19 fas.a19        ; add and subtract mod 2^255 - 19, without `fas` asking which
+%define fsub19 fas.s19
 
-        HOT 0x18001FFC
 ; xdh: our X25519 key share for the secret E (clamped as in RFC 7748: a multiple of 8, so
 ; every point of small order makes R_X = 0) to rdi (which moves on 32 bytes), and R_X = the
 ; secret we share with the client whose key share is at rsi.
@@ -50,8 +51,10 @@ xdh:    pushad
         call vm
         xor edx, edx            ; The ladder, from the top bit down. The two points change
         mov ecx, 255            ; places when a bit differs from the one before it.
-.l:     test cl, 63
+.l:     JUMPH 5                 ; (every jump of this loop is kept off the 32-byte boundaries
+        test cl, 63             ; where it stands, by JUMPH: the routine may begin anywhere)
         jnz .step
+        JUMPH 5
         call bdrain             ; (four times on the way: see `drain`)
 .step:  xor eax, eax
         bt [E], ecx
@@ -59,11 +62,12 @@ xdh:    pushad
         push rax
         push rcx
         xor edx, eax
+        JUMPH 5
         call cswap
-        mov esi, X_STEP25519
-        call vm
+%include "step.inc"             ; (the step: tools/ec.py's STEP25519, as calls)
         pop rcx
         pop rdx
+        JUMPH 8
         dec ecx
         jns .l
         call cswap
@@ -443,7 +447,7 @@ vm:     mov edi, [rsi]
 .end:   add rsi, 4
         ret
 
-        HOT 0xA07E003F
+        HOT 0x0001F7CF
 ; fas: the four limbs at rdi = those at rsi + those at rbx if ecx = 0, minus them if ecx = 1,
 ; in the field at rbp: weakly reduced, as its operands are. (Clobbers rax, rcx, rdx, rsi,
 ; r8-r15.) If the sum left [0, 2^256) (a carry adding, a borrow subtracting), M is taken
@@ -453,14 +457,14 @@ vm:     mov edi, [rsi]
 ; 2^256 - M is 38, the same comes shorter: the carry or borrow is 38 to add or take off,
 ; and what that carries or borrows is 38 once more (the number is then below 38 or within
 ; 38 of 2^256: only its lowest limb changes).
-fas:    mov r8, [rsi]
-        mov r9, [rsi+8]
-        mov r10, [rsi+16]
-        mov r11, [rsi+24]
-        cmp qword [rbp+F_INV], 0
+fas:    cmp qword [rbp+F_INV], 0
         jne .any
         test ecx, ecx
         jnz .s19
+.a19:   mov r8, [rsi]           ; (`fadd19`, as the ladder's step calls it)
+        mov r9, [rsi+8]
+        mov r10, [rsi+16]
+        mov r11, [rsi+24]
         add r8, [rbx]
         adc r9, [rbx+8]
         adc r10, [rbx+16]
@@ -475,7 +479,11 @@ fas:    mov r8, [rsi]
         and eax, 38
         add r8, rax
         jmp .put
-.s19:   sub r8, [rbx]
+.s19:   mov r8, [rsi]           ; (`fsub19`)
+        mov r9, [rsi+8]
+        mov r10, [rsi+16]
+        mov r11, [rsi+24]
+        sub r8, [rbx]
         sbb r9, [rbx+8]
         sbb r10, [rbx+16]
         sbb r11, [rbx+24]
@@ -493,7 +501,11 @@ fas:    mov r8, [rsi]
         mov [rdi+16], r10
         mov [rdi+24], r11
         ret
-.any:   mov rdx, rbp            ; (2^256 - M, to add)
+.any:   mov r8, [rsi]
+        mov r9, [rsi+8]
+        mov r10, [rsi+16]
+        mov r11, [rsi+24]
+        mov rdx, rbp            ; (2^256 - M, to add)
         test ecx, ecx
         jnz .sub
         add r8, [rbx]
@@ -957,7 +969,7 @@ echost: pushad                  ; (for the tests: C wants its registers back)
         popad
         ret
 ; (for test/bench.c: one operation, or one program, in the field number ecx)
-        global select, cswap, hfmul, hfsqr, hfmul1, hfas, hfsub, hvm, hinv, F25519, HK, HKSET, POOLN, hstock, HAAD, HAADN
+        global select, cswap, hstep, hfmul, hfsqr, hfmul1, hfas, hfsub, hvm, hinv, F25519, HK, HKSET, POOLN, hstock, HAAD, HAADN
 HK      equ BSS + 0x18000       ; (nonces for the signatures after the next `stock`: see there)
 HKSET   equ HK + NPOOL * 32
 HAAD    equ HKSET + 16          ; (16 bytes to make a tag over in place of a record's header,
@@ -986,6 +998,11 @@ hfield: imul ebp, ecx, FSIZE
 hfmul:  pushad
         call hfield
         call fmul
+        popad
+        ret
+hstep:  pushad                  ; (the ladder's step alone, for test/bench.c)
+        mov ebp, F25519
+%include "step.inc"
         popad
         ret
 hfsqr:  pushad

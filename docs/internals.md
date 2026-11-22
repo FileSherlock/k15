@@ -624,8 +624,21 @@ model that asserts every bound.
   boot to four dwords (three addresses and the operation: add, subtract, multiply,
   multiply by one limb, square; ec.py makes a squaring of every register times
   itself). Unpacking them took a ladder step from 717 cycles to 529: the decoding
-  had cost more than the additions. It takes 482 since the additions, the squarings
-  and the product with a24 have their own code (Ryzen 7 3800X, `make bench`).
+  had cost more than the additions.
+- The ladder's step is not run by `vm`: tools/gen.py writes ec.py's STEP25519 out as
+  calls, each with its registers' addresses (`step.inc`, in `xdh`'s loop; `fas`'s add
+  and subtract for 2^255 - 19 are called as they are, `fadd19` and `fsub19`), and
+  JUMPH keeps each call off the 32-byte boundaries where it stands. 370 cycles a step
+  (Ryzen 7 3800X, `make bench`); `vm` runs the same 18 operations in 430.
+- **The order of a program's operations is what it costs.** A multiplication is 21
+  products of limbs (16, and 5 to fold), a squaring 15, and a processor has one
+  multiplier: they come one a cycle, then a tail of carries. So an operation is as
+  long as its products are many, hardly overlaps with the next (which waits in a
+  scheduler of some 60 places), and one that needs the result of the one before it
+  waits that tail out. The step was 450 cycles with its formulas written down one
+  after the other and is 370 with neighbours that do not need each other (DA, CB,
+  AA, BB, then the sums); MADD256 and MADDED are ordered the same way. Shorter chains
+  of carries in a squaring (adcx/adox throughout) change nothing: that was tried.
 - Our key share, e times the base point: 64 additions on edwards25519 from a table of
   j 16^i B (16 entries a nibble, 98 KiB, made at boot), each entry found by reading all 16
   and masking (`select`: 32 bytes of an entry at a time, gathered in two registers;

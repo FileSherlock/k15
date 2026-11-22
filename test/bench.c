@@ -38,7 +38,7 @@ int main(void){
     }
     /* the pieces: one multiplication, one addition, one ladder step, one inversion */
     static const char *const fn[] = {"2^255-19", "P-256 p", "P-256 n"};
-    extern u8 X_STEP25519[], X_MADDED[], X_MADD256[];
+    extern u8 X_MADDED[], X_MADD256[];
     for (int f = 0; f < 3; f++) {
         char t[64];
         u8 *a = REGS + 7 * 32, *b = REGS + 8 * 32;
@@ -51,7 +51,7 @@ int main(void){
         sprintf(t, "inversion, %s", fn[f]);
         TIME(t, 2000, { u8 *x = a; int c = f; __asm__ volatile("call hinv" : "+S"(x), "+c"(c) : : SCRATCH); });
     }
-    TIME("ladder step (10 mul, 8 add)", 100000, { u8 *x = X_STEP25519; int c = 0; __asm__ volatile("call hvm" : "+S"(x), "+c"(c) : : SCRATCH); });
+    TIME("ladder step (10 mul, 8 add)", 100000, __asm__ volatile("call hstep" ::: SCRATCH));
     TIME("edwards madd (7 mul, 7 add)", 100000, { u8 *x = X_MADDED; int c = 0; __asm__ volatile("call hvm" : "+S"(x), "+c"(c) : : SCRATCH); });
     TIME("P-256 madd (11 mul, 7 add)", 100000, { u8 *x = X_MADD256; int c = 1; __asm__ volatile("call hvm" : "+S"(x), "+c"(c) : : SCRATCH); });
     return 0;

@@ -27,8 +27,8 @@ day. [docs/server.md](docs/server.md) has the hosts, and what was tried where.
 
 What you get, and what you don't:
 
-- **Small.** The system is 15,162 bytes (14,648 if it is given its address instead of
-  asking for it; 15,882 with IPv6). The image is that plus your files, each stored
+- **Small.** The system is 15,509 bytes (14,995 if it is given its address instead of
+  asking for it; 16,229 with IPv6). The image is that plus your files, each stored
   as the response it is sent as (and, where that makes it shorter, once more compressed
   with gzip and with brotli, for clients that take that).
 - **Nothing to break into.** No kernel, no shell, no file system, no user accounts, no

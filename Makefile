@@ -82,7 +82,7 @@ endif
 # no server.key): the same bytes as the one that has the key, but for the key's 32. For
 # comparing (tools/repro.sh; $(B)/made says what an image is without its key): it cannot sign.
 KEYLESS ?=
-GEN := $(B)/gen.inc $(B)/ec.inc $(B)/regs.inc $(B)/conf.inc
+GEN := $(B)/gen.inc $(B)/ec.inc $(B)/step.inc $(B)/regs.inc $(B)/conf.inc
 ID := $(if $(KEYLESS),,$(CERT)/server.key) $(CERT)/server.pem
 $(ID) &:
 	@mkdir -p $(B)

@@ -47,9 +47,9 @@ when needed:
 - Tests run on 1 and 2 processors.
 
 ## Where it stands
-- The system is 15,162 bytes. It asks for its address by DHCP; built with one (`IP=`,
-  `-i`) it has no DHCP client and is 14,648. With an IPv6 address as well (`IP6=`, `-6`:
-  it has to be told one) it is 15,882. (Between 44 and 61 of those bytes are padding
+- The system is 15,509 bytes. It asks for its address by DHCP; built with one (`IP=`,
+  `-i`) it has no DHCP client and is 14,995. With an IPv6 address as well (`IP6=`, `-6`:
+  it has to be told one) it is 16,229. (Between 60 and 77 of those bytes are padding
   in front of the hot routines, which goes by what lies before them: `HOT`.)
 - It boots from a BIOS boot sector or GRUB, uses all the RAM and up to 4 processors,
   modern virtio-net, and serves GET and HEAD by path with compressed forms, ETag and

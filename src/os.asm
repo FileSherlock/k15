@@ -386,6 +386,12 @@ TSLOT   equ 128
 %endrep
         times %%pad nop
 %endmacro
+; JUMPH n, in front of a jump of n bytes where no routine begins (the ladder's step is
+; calls one after another): the nop that keep it from crossing such a boundary, or
+; ending on one.
+%macro JUMPH 1
+        times (((($ - $$) & 31) + %1) / 32) * (32 - (($ - $$) & 31)) nop
+%endmacro
 ; Development builds (make DEBUG=1) count things in DBG and show six counters, four hex
 ; digits each, in place of the end of the page on port 80: `count n` adds one to counter n.
 ; 0: frames with a bad length or checksum, 1: cycles per frame handled (an average, made when

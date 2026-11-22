@@ -234,5 +234,8 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - `vm` picking its routine from a table of addresses (one call, one jump back): the
   one call that goes five ways is guessed worse than the jumps: a signature 74,000 to
   77,000 cycles for 66,000 to 72,000.
+- A squaring with two chains of carries throughout, as OpenSSL has it: the same
+  cycles, 75 bytes more. What an operation waits for is the one multiplier, and then
+  the operation before it (docs/internals.md, "The order of a program's operations").
 - Squarings only in the X25519 programs, because P-256's addition seemed slower with
   them: it was the timing (above). In turn with X25519 it is the same.

@@ -106,17 +106,17 @@ STEP25519 = asm("""
     T3 = Z - T          # D
     T3 = T3 * T0        # DA
     T2 = T2 * T1        # CB
-    Z = T3 + T2
-    Z = Z * Z           # X3
-    T = T3 - T2
-    T = T * T
-    T = T * E0          # Z3
     T0 = T0 * T0        # AA
     T1 = T1 * T1        # BB
+    Z = T3 + T2
+    T = T3 - T2
     X = T0 * T1         # X2
     T1 = T0 - T1        # E
+    Z = Z * Z           # X3
+    T = T * T
     Y = A24 1* T1
     Y = Y + T0
+    T = T * E0          # Z3
     Y = Y * T1          # Z2
 """)
 # edwards25519, extended coordinates (X : Y : Z : T), x = X/Z, y = Y/Z, T = XY/Z. A table
@@ -130,11 +130,11 @@ INITED = asm("""
 """)
 MADDED = asm("""
     T0 = Y - X
-    T0 = T0 * E1        # A
     T1 = Y + X
+    T3 = Z + Z          # D
+    T0 = T0 * E1        # A
     T1 = T1 * E0        # B
     T2 = T * E2         # C
-    T3 = Z + Z          # D
     X = T1 - T0         # E
     Y = T1 + T0         # H
     T0 = T3 - T2        # F
@@ -214,23 +214,23 @@ INIT256 = asm("""
 """)
 MADD256 = asm("""
     T0 = Z * Z
-    T1 = T0 * Z
-    T0 = T0 * E0        # U2
-    T1 = T1 * E1        # S2
-    T0 = T0 - X         # H
+    T1 = Z * E1
+    T2 = T0 * E0        # U2
+    T1 = T1 * T0        # S2
+    T0 = T2 - X         # H
     T1 = T1 - Y         # r
     Z = Z * T0
     T2 = T0 * T0        # H^2
-    T3 = T2 * T0        # H^3
+    T3 = T1 * T1        # r^2
+    T0 = T2 * T0        # H^3
     T2 = T2 * X         # X H^2
-    X = T1 * T1
-    X = X - T3
+    X = T3 - T0
     X = X - T2
     X = X - T2
     T2 = T2 - X
     T2 = T2 * T1
-    T3 = T3 * Y
-    Y = T2 - T3
+    T0 = T0 * Y         # Y H^3
+    Y = T2 - T0
 """)
 DBL256 = asm("""
     T0 = Z * Z          # delta
@@ -280,10 +280,26 @@ SIGN = asm("""
     Y = T0 * ONE
 """)
 
-PROGRAMS = {"INIT25519": INIT25519, "STEP25519": STEP25519, "INITED": INITED, "MADDED": MADDED,
+# (STEP25519 is not among them: the image has it as calls, see straight())
+PROGRAMS = {"INIT25519": INIT25519, "INITED": INITED, "MADDED": MADDED,
             "KEYED": KEYED, "XPRE": XPRE, "XPOST": XPOST, "TOPRE": TOPRE, "INIT256": INIT256,
             "MADD256": MADD256, "DBL256": DBL256, "TOAFF": TOAFF, "FIN256": FIN256, "SIGN": SIGN,
             "INV25519": INV25519}
+
+
+def straight(prog):
+    """A program for 2^255 - 19 as the instructions that do what `vm` would with it: for
+    every operation its registers' addresses and a call. The ladder's step is in the image
+    that way (tools/gen.py: step.inc): it runs 255 times a handshake, and fetching and
+    telling apart its 18 operations cost a seventh of them."""
+    out = []
+    for i in range(0, len(prog) - 1, 2):
+        b, a, dst, op = prog[i] & 15, prog[i] >> 4, prog[i + 1] & 15, prog[i + 1] >> 4
+        out += [f"        mov edi, REGS + {32 * dst}", f"        mov esi, REGS + {32 * a}"]
+        if op != SQR:
+            out.append(f"        mov ebx, REGS + {32 * b}")
+        out.append("        JUMPH 5\n        call " + ("fadd19", "fsub19", "fmul", "fmul1", "fsqr")[op - 1])
+    return "\n".join(out) + "\n"
 
 
 class Field:

@@ -58,14 +58,14 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   `IP6`: an IPv6 address beside it), what it serves, what port 80 does, the headers every
   file gets, and whether files are packed compressed too. The scripts take `B` from the environment. Only the address, the names,
   the site and its settings are tracked: after changing another setting, `make -B`.
-- `python3 tools/sizes.py build/os.lst` = bytes per routine. Of the system's 14,648
+- `python3 tools/sizes.py build/os.lst` = bytes per routine. Of the system's 14,995
   with an address of its own, about: boot, clock calibration, page tables, driver and
   the other processors 2,710; network 4,390 with the timers; requests and the forms of
-  a file 740; TLS handshake and key schedule 1,650; SHA-256 450; curves 3,500 with
-  their programs and constants; the cipher 1,000; certificate 230; among them 61 of
+  a file 740; TLS handshake and key schedule 1,650; SHA-256 450; curves 3,850 with
+  their programs and constants; the cipher 1,000; certificate 230; among them 77 of
   padding in front of the routines a handshake spends its time in (HOT in "How the
-  curve code works"). With the DHCP client (the default) it is 15,162, and with IPv6
-  as well 15,882: 520 and 731 bytes of code more, and 55 and 44 of that padding,
+  curve code works"). With the DHCP client (the default) it is 15,509, and with IPv6
+  as well 16,229: 520 and 731 bytes of code more, and 71 and 60 of that padding,
   which goes by what happens to lie in front of those routines. Whose segment it is costs 26 bytes, zeroing what loaders left where code
   can run 7, the ChangeCipherSpec in our flight 10, and what the audit's 4 to 7, 11
   and 13 asked for 55: a ClientHello's type, length and compression methods 36, the
@@ -76,7 +76,9 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   key exchange got to be faster 352: an add and subtract of its own for 2^255 - 19
   96, a squaring 170, a multiplication by a number of one limb 55, and the two as
   operations of `vm` 24, with the padding they moved, and 32 for the ladder's swap in
-  registers of 16 bytes. For the signature 64: a round
+  registers of 16 bytes, and 347 for the ladder's step as calls: its 18 operations
+  with their addresses 342 where the program for `vm` was 37, and 29 for an add and
+  a subtract that are called as they are. For the signature 64: a round
   of Montgomery's reduction for P-256's p that has one product of limbs for five,
   50. A table entry looked up in registers costs nothing. That nothing but code
   can be executed costs no padding.
