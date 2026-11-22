@@ -24,6 +24,8 @@ int main(void){
     TIME("x25519: our share and the secret", 2000, { u8 *p = pub; const u8 *q = u; ASMCALL(xdh, "+D"(p), "+S"(q)); });
     TIME("ecdsa: sign (64 nonces at a time)", 6400, { const u8 *q = z; ASMCALL(sign, "+S"(q)); });
     TIME("ecdsa: one more nonce, or 64 /", 6500, __asm__ volatile("call hstock" ::: SCRATCH));
+    /* (what full load is: each of the two alone is cheaper than between the other's turns) */
+    TIME("the two in turn, as a handshake", 1280, { u8 *p = pub; const u8 *q = u; ASMCALL(xdh, "+D"(p), "+S"(q)); q = z; ASMCALL(sign, "+S"(q)); });
     TIME("sha256 of 64 bytes (2 blocks)", 20000, { u8 *o = h, *mm = m; unsigned n = 64; ASMCALL(sha256, "+D"(o), "+S"(mm), "+c"(n)); });
     TIME("sha256 of 3000 bytes", 2000, { u8 *o = h, *mm = m; unsigned n = 3000; ASMCALL(sha256, "+D"(o), "+S"(mm), "+c"(n)); });
     /* a record: of a small page, and a full one of a file (a segment of 1,440 bytes) */
@@ -42,6 +44,8 @@ int main(void){
         u8 *a = REGS + 7 * 32, *b = REGS + 8 * 32;
         sprintf(t, "multiplication, %s", fn[f]);
         TIME(t, 200000, { u8 *d = a, *x = a, *y = b; int c = f; __asm__ volatile("call hfmul" : "+D"(d), "+S"(x), "+b"(y), "+c"(c) : : SCRATCH); });
+        sprintf(t, "squaring, %s", fn[f]);
+        TIME(t, 200000, { u8 *d = a, *x = a; int c = f; __asm__ volatile("call hfsqr" : "+D"(d), "+S"(x), "+c"(c) : : SCRATCH); });
         sprintf(t, "addition, %s", fn[f]);
         TIME(t, 200000, { u8 *d = a, *x = a, *y = b; int c = f; __asm__ volatile("call hfas" : "+D"(d), "+S"(x), "+b"(y), "+c"(c) : : SCRATCH); });
         sprintf(t, "inversion, %s", fn[f]);

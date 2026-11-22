@@ -609,7 +609,9 @@ model that asserts every bound.
   reduced"); nothing is ever compared with a modulus. `fmul`: the 512-bit product (mulx
   with two carry chains, adcx/adox, a row per limb), then for 2^255 - 19 what is above
   2^256 folded back times 38, for the two Montgomery fields (p and n of P-256) four
-  rounds of Montgomery reduction and a subtraction by carry. `fsqr` makes the product
+  rounds of Montgomery reduction and a subtraction by carry (a round for p, where
+  -1/M is 1 and M's limbs are ones, half ones, nothing and one to multiply by, is
+  a shift and one product of limbs; for n it is five). `fsqr` makes the product
   of a number with itself from ten products of limbs, not sixteen (six once and
   doubled, four squares), `fmul1` the product with a number of one limb from four;
   both go on into `fmul`'s reduction. `fas`: add or subtract, then
@@ -625,7 +627,9 @@ model that asserts every bound.
   and the product with a24 have their own code (Ryzen 7 3800X, `make bench`).
 - Our key share, e times the base point: 64 additions on edwards25519 from a table of
   j 16^i B (16 entries a nibble, 98 KiB, made at boot), each entry found by reading all 16
-  and masking (`select`). The shared secret, e times the client's point: the Montgomery
+  and masking (`select`: 32 bytes of an entry at a time, gathered in two registers;
+  117 cycles for an entry of 96 bytes, where gathering in memory took 355, each
+  turn waiting for the store of the one before). The shared secret, e times the client's point: the Montgomery
   ladder, 256 steps, one conditional swap a step. Both end in a division, which they
   share (`XPRE`, `inv`, `XPOST`), and in `freeze`.
 - A signature's r = x(k G): 64 additions on P-256 from a table of (j + 1) 16^i G. Jacobian

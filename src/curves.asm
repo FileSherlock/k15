@@ -366,37 +366,43 @@ comb:   xor eax, eax
         jb .w
         ret
 
-        HOT 0xFFE1F8FF
-; select: entry number edx of the 16 entries (ecx bytes each, a multiple of 16) at rsi to the
+        HOT 0xE1FEE7FF
+; select: entry number edx of the 16 entries (ecx bytes each, a multiple of 32) at rsi to the
 ; registers from E0 on. All 16 are read, and what is kept is picked with masks: which one it
-; was shows neither in time nor in what the cache holds. rsi moves on past the 16; clobbers
-; rax, rdx, rdi, xmm0-xmm4.
+; was shows neither in time nor in what the cache holds. 32 bytes of an entry at a time,
+; gathered in two registers over the 16 (through memory, each of them waits for the store
+; before: 355 cycles where this takes 110). rsi moves on past the 16; clobbers rax, rdx,
+; rdi, r8, xmm0-xmm6.
 select: mov edi, REGS
-        push rcx
-        xor eax, eax
-        rep stosb
-        pop rcx
-        mov edi, REGS
         movd xmm0, edx
         pshufd xmm0, xmm0, 0    ; the number wanted
-        pxor xmm1, xmm1         ; the number of the entry at hand
         pcmpeqd xmm2, xmm2
         psrld xmm2, 31          ; 1
+        xor eax, eax            ; where in an entry
+.u:     pxor xmm1, xmm1         ; the number of the entry at hand
+        pxor xmm5, xmm5
+        pxor xmm6, xmm6
+        lea r8, [rsi+rax]
         mov dl, 16
 .e:     movdqa xmm3, xmm1
         pcmpeqd xmm3, xmm0      ; all ones for the one wanted
-        xor eax, eax
-.c:     movdqa xmm4, [rsi]
+        movdqa xmm4, [r8]
         pand xmm4, xmm3
-        por xmm4, [rdi+rax]
-        movdqa [rdi+rax], xmm4
-        add rsi, 16
-        add eax, 16
-        cmp eax, ecx
-        jb .c
+        por xmm5, xmm4
+        pand xmm3, [r8+16]
+        por xmm6, xmm3
         paddd xmm1, xmm2
+        add r8, rcx
         dec dl
         jnz .e
+        movdqa [rdi+rax], xmm5
+        movdqa [rdi+rax+16], xmm6
+        add eax, 32
+        cmp eax, ecx
+        jb .u
+        mov eax, ecx
+        shl eax, 4
+        add rsi, rax
         ret
 
         HOT 0x03000000
@@ -542,7 +548,7 @@ fas:    mov r8, [rsi]
         adox %5, rcx
         adc %5, 0
 %endmacro
-        HOT 0xCF07FE0F
+        HOT 0xFF00000F
 fmul:   mov r13, rsi
         mov rsi, rbx
         mov rdx, [r13]          ; the product, eight limbs, a row for each limb of the one
@@ -596,9 +602,11 @@ fmul:   mov r13, rsi
         xor r14d, r14d          ; (the carry out of the top)
         mov r15b, 4
 .r:     mov rdx, r8
+        cmp qword [rbp+F_INV], 1
+        je .p
         imul rdx, [rbp+F_INV]
         ROW r8, r9, r10, r11, r12
-        mov r8, r9
+.t:     mov r8, r9
         mov r9, r10
         mov r10, r11
         pop r11
@@ -627,6 +635,16 @@ fmul:   mov r13, rsi
         mov [rdi+16], r10
         mov [rdi+24], r11
         ret
+.p:     mov rax, r8             ; p of P-256, where -1/M is 1 and M is 2^64 - 1, 2^32 - 1, 0
+        shl rax, 32             ; and a limb to multiply by: the multiple is the lowest limb's,
+        mov rcx, r8             ; and with the limb it cancels it comes to that limb times
+        shr rcx, 32             ; 2^32 from the second limb on and times M's last from the
+        add r9, rax             ; fourth on
+        adc r10, rcx
+        mulx r12, rax, [rsi+24]
+        adc r11, rax
+        adc r12, 0
+        jmp .t
 
         HOT 0x83FFFFFF
 ; fsqr: the four limbs at rdi = those at rsi, squared, in the field at rbp: what `fmul`
@@ -932,7 +950,7 @@ echost: pushad                  ; (for the tests: C wants its registers back)
         popad
         ret
 ; (for test/bench.c: one operation, or one program, in the field number ecx)
-        global hfmul, hfsqr, hfmul1, hfas, hfsub, hvm, hinv, F25519, HK, HKSET, POOLN, hstock, HAAD, HAADN
+        global select, cswap, hfmul, hfsqr, hfmul1, hfas, hfsub, hvm, hinv, F25519, HK, HKSET, POOLN, hstock, HAAD, HAADN
 HK      equ BSS + 0x18000       ; (nonces for the signatures after the next `stock`: see there)
 HKSET   equ HK + NPOOL * 32
 HAAD    equ HKSET + 16          ; (16 bytes to make a tag over in place of a record's header,
