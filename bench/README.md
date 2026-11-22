@@ -412,6 +412,31 @@ both; the third, in the other order, did not: the shared vCPUs drift over half a
 so two images are compared in both orders. Kept HTTP at 64 was higher for dev in both
 of its passes, which was not looked into.
 
+## The curve code made faster (2026-11-22, evening)
+`dev` at aed63b1 and at 220da14, between them only the curve code: the inversion mod
+2^255 - 19 by an addition chain, add and subtract for that field by the carry, a
+squaring, the product with one limb, a round of Montgomery's reduction for P-256's p
+from one product, a table entry gathered in registers, the ladder's swap in registers
+of 16 bytes (545 bytes in all; docs/commands.md has what each costs). Both packed with
+`-i`, on one cx23 (this one an AMD EPYC-Rome) from a ccx33: before, after, after,
+before, after once more, each row three times a turn. Lowest to highest:
+
+| new TLS connections a second | before | after | |
+|---|---|---|---|
+| 64 in flight | 12,340 - 12,620 | 13,040 - 13,600 | +7.5% |
+| 512 | 13,920 - 14,300 | 15,550 - 15,800 | +11% |
+| 4,096 | 14,370 - 14,610 | 15,410 - 15,530 | +7% |
+| HTTPS requests a second, kept, 512 (what should not move) | 111,500 - 112,400 | 112,200 - 113,900 | |
+
+No errors, no timeouts. On the development machine (Ryzen 7 3800X, `make bench`, the
+two in turn as a handshake has them) X25519 and a signature together went from 298,000
+cycles to 240,000: our key share and the secret from 206,000 to 171,000, a signature
+whose nonce is made on the spot from 91,000 to 67,000 to 70,000 (OpenSSL 3.5.5 there:
+70,400, and 114,000 for one X25519 multiplication).
+The same image with 32 bytes in front of the curve routines, which on the development
+machine's object made a signature 5,000 cycles dearer, did the same on the server:
+13,280 - 13,500, 15,650 - 15,750, 15,440 - 15,660.
+
 ## What this does not say
 - nginx and Caddy are web servers: any file, any header, virtual hosts, HTTP/2, logs,
   reloads, every cipher and curve a client may want, session resumption. In the night k15

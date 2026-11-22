@@ -178,8 +178,10 @@ One or two lines each. Add to it when something costs an hour; delete what stops
   the line), each version several times, in turn, on one core.
 - On AMD it matters where `vm` begins in a line of 64 bytes (its jumps, three to five
   taken an operation): a signature is 5,000 cycles dearer in one half than in the
-  other, with nothing else changed. `HOT` knows of 32 only, so every build has its
-  luck, and the tests' object is not laid out as the image is.
+  other, with nothing else changed, in the tests' object on the development machine.
+  On a server (an EPYC-Rome) the image with 32 bytes in front of the curve routines
+  did the same connections a second as without: what `make bench` says of a few
+  thousand cycles is asked again of an image under load.
 
 ## Operating
 - A tool "to be run from cron" must be a no-op on most days and say so itself.

@@ -65,8 +65,9 @@ when needed:
 - On the server (2 shared vCPUs) it does 7,300 to 8,800 new TLS connections a second
   and 100,000 to 120,000 requests a second on kept connections, two to three times
   nginx; large files at 1.2 GB/s, a quarter more than nginx did. Measured with `main`'s
-  system; this branch's does the same within the spread of runs, on one server, side by
-  side with `main`'s: `bench/README.md`.
+  system. This branch's did the same on one server, side by side with it, and does 7
+  to 11% more new TLS connections a second since its curve code was made faster
+  (X25519 and a signature 240,000 cycles from 298,000): `bench/README.md`.
 - Tested from outside as well: Wycheproof's vectors, Valgrind with the secrets
   undefined, tlsfuzzer, real ClientHellos damaged at random. All pass. What tlsfuzzer's
   scripts miss in us is the shortcuts of `docs/internals.md` and nothing else; each is
