@@ -399,7 +399,7 @@ select: mov edi, REGS
         jnz .e
         ret
 
-        HOT 0x40F70000
+        HOT 0x03000000
 ; vm: run the program at rsi in the field at rbp. Returns rsi = after the program; clobbers
 ; all else but rbp. In the image a program is 2 bytes per operation (a << 4 | b, op << 4 |
 ; dst; a zero byte ends it: tools/ec.py); what runs is what boot made of that (`ecinit`,
@@ -409,32 +409,78 @@ vm:     mov edi, [rsi]
         test edi, edi
         jz .end
         mov ebx, [rsi+8]
-        mov ecx, [rsi+12]       ; 0 add, 1 subtract, 2 multiply
-        push rsi
+        mov ecx, [rsi+12]       ; 0 add, 1 subtract, 2 multiply, 3 multiply (a has one
+        push rsi                ; limb), 4 square
         mov esi, [rsi+4]
         cmp ecx, 2
         je .mul
+        ja .more
         call fas
         jmp .next
 .mul:   call fmul
 .next:  pop rsi
         add rsi, 16
         jmp vm
+.more:  cmp ecx, 4
+        je .sqr
+        call fmul1
+        jmp .next
+.sqr:   call fsqr
+        jmp .next
 .end:   add rsi, 4
         ret
 
-        HOT 0xF9FFC3FE
+        HOT 0xA07E003F
 ; fas: the four limbs at rdi = those at rsi + those at rbx if ecx = 0, minus them if ecx = 1,
 ; in the field at rbp: weakly reduced, as its operands are. (Clobbers rax, rcx, rdx, rsi,
 ; r8-r15.) If the sum left [0, 2^256) (a carry adding, a borrow subtracting), M is taken
 ; off, which is adding 2^256 - M, or put back; and once more if that was not enough,
 ; which shows in the carry of that correction (ec.py: it can take two). Both corrected
-; values are made whatever the case, and one of the three is kept.
+; values are made whatever the case, and one of the three is kept. For 2^255 - 19, where
+; 2^256 - M is 38, the same comes shorter: the carry or borrow is 38 to add or take off,
+; and what that carries or borrows is 38 once more (the number is then below 38 or within
+; 38 of 2^256: only its lowest limb changes).
 fas:    mov r8, [rsi]
         mov r9, [rsi+8]
         mov r10, [rsi+16]
         mov r11, [rsi+24]
-        mov rdx, rbp            ; (2^256 - M, to add)
+        cmp qword [rbp+F_INV], 0
+        jne .any
+        test ecx, ecx
+        jnz .s19
+        add r8, [rbx]
+        adc r9, [rbx+8]
+        adc r10, [rbx+16]
+        adc r11, [rbx+24]
+        sbb eax, eax
+        and eax, 38
+        add r8, rax
+        adc r9, 0
+        adc r10, 0
+        adc r11, 0
+        sbb eax, eax
+        and eax, 38
+        add r8, rax
+        jmp .put
+.s19:   sub r8, [rbx]
+        sbb r9, [rbx+8]
+        sbb r10, [rbx+16]
+        sbb r11, [rbx+24]
+        sbb eax, eax
+        and eax, 38
+        sub r8, rax
+        sbb r9, 0
+        sbb r10, 0
+        sbb r11, 0
+        sbb eax, eax
+        and eax, 38
+        sub r8, rax
+.put:   mov [rdi], r8
+        mov [rdi+8], r9
+        mov [rdi+16], r10
+        mov [rdi+24], r11
+        ret
+.any:   mov rdx, rbp            ; (2^256 - M, to add)
         test ecx, ecx
         jnz .sub
         add r8, [rbx]
@@ -473,11 +519,7 @@ fas:    mov r8, [rsi]
         cmovnz r9, r13
         cmovnz r10, r14
         cmovnz r11, r15
-        mov [rdi], r8
-        mov [rdi+8], r9
-        mov [rdi+16], r10
-        mov [rdi+24], r11
-        ret
+        jmp .put
 
 ; fmul: the four limbs at rdi = those at rsi times those at rbx in the field at rbp: mod
 ; 2^255 - 19, or divided by 2^256 mod M for the Montgomery fields; below 2^256 either way.
@@ -518,7 +560,7 @@ fmul:   mov r13, rsi
         ROW r10, r11, r12, r14, r15
         mov rdx, [r13+24]
         ROW r11, r12, r14, r15, r13
-        mov rdx, [rbp+F_INV]
+.red:   mov rdx, [rbp+F_INV]    ; (`fsqr` and `fmul1` come here with their eight limbs)
         test rdx, rdx
         jnz .mont
         mov dl, 38              ; 2^255 - 19: what is above 2^256 counts 38 times,
@@ -586,7 +628,71 @@ fmul:   mov r13, rsi
         mov [rdi+24], r11
         ret
 
-        HOT 0x61000070
+        HOT 0x83FFFFFF
+; fsqr: the four limbs at rdi = those at rsi, squared, in the field at rbp: what `fmul`
+; makes of a number and itself (and clobbers what it does), with ten products for sixteen:
+; the six of two different limbs once, doubled, and the four squares added.
+fsqr:   mov rdx, [rsi]
+        mulx r10, r9, [rsi+8]   ; a0 a1, a0 a2, a0 a3: r9 r10 r11 r12
+        mulx r11, rax, [rsi+16]
+        add r10, rax
+        mulx r12, rax, [rsi+24]
+        adc r11, rax
+        adc r12, 0
+        mov rdx, [rsi+8]
+        mulx rcx, rax, [rsi+16] ; a1 a2 from r11 on, a1 a3 from r12 on (r14 above)
+        add r11, rax
+        adc r12, rcx
+        mulx r14, rax, [rsi+24]
+        adc r14, 0
+        add r12, rax
+        adc r14, 0
+        mov rdx, [rsi+16]
+        mulx r15, rax, [rsi+24] ; a2 a3 from r14 on (r15 above): below 2^448 in all,
+        add r14, rax
+        adc r15, 0
+        xor r13d, r13d          ; twice,
+        add r9, r9
+        adc r10, r10
+        adc r11, r11
+        adc r12, r12
+        adc r14, r14
+        adc r15, r15
+        adc r13, r13
+        mov rdx, [rsi]          ; and the squares, two limbs each from r8 on
+        mulx rcx, r8, rdx
+        add r9, rcx
+        mov rdx, [rsi+8]
+        mulx rcx, rax, rdx
+        adc r10, rax
+        adc r11, rcx
+        mov rdx, [rsi+16]
+        mulx rcx, rax, rdx
+        adc r12, rax
+        adc r14, rcx
+        mov rdx, [rsi+24]
+        mulx rcx, rax, rdx
+        adc r15, rax
+        adc r13, rcx
+        jmp fmul.red
+
+        HOT 0xFFFF07FF
+; fmul1: as `fmul`, for a number at rsi that has one limb: the first of its four rows.
+fmul1:  mov rdx, [rsi]
+        mulx r9, r8, [rbx]
+        mulx r10, rax, [rbx+8]
+        add r9, rax
+        mulx r11, rax, [rbx+16]
+        adc r10, rax
+        mulx r12, rax, [rbx+24]
+        adc r11, rax
+        adc r12, 0
+        xor r14d, r14d
+        xor r15d, r15d
+        xor r13d, r13d
+        jmp fmul.red
+
+        HOT 0x60000790
 ; inv: T1 = (the four limbs at rsi) ^ (m - 2) in the field at rbp: the inverse, or for a
 ; Montgomery field R^2 / it of a raw number, 1 / it of a stored one. Clobbers T0 (and for
 ; 2^255 - 19 T2 and T3) and all registers but rbp. (The exponent is no secret.) Mod 2^255
@@ -605,7 +711,7 @@ inv:    mov edi, R_T0
         mov edi, R_T0
         mov esi, edi
         mov ebx, edi
-        call fmul               ; T0 = T0^2
+        call fsqr               ; T0 = T0^2
         pop rcx
         bt [rbp+F_EXP], ecx
         jnc .s
@@ -628,10 +734,7 @@ inv:    mov edi, R_T0
         mov esi, [rsi+4]
         jrcxz .m
 .sq:    push rcx
-        push rbx
-        mov ebx, esi
-        call fmul               ; dst = a^2, then dst = dst^2 so often,
-        pop rbx
+        call fsqr               ; dst = a^2, then dst = dst^2 so often,
         pop rcx
         mov esi, edi
         loop .sq
@@ -829,7 +932,7 @@ echost: pushad                  ; (for the tests: C wants its registers back)
         popad
         ret
 ; (for test/bench.c: one operation, or one program, in the field number ecx)
-        global hfmul, hfas, hfsub, hvm, hinv, F25519, HK, HKSET, POOLN, hstock, HAAD, HAADN
+        global hfmul, hfsqr, hfmul1, hfas, hfsub, hvm, hinv, F25519, HK, HKSET, POOLN, hstock, HAAD, HAADN
 HK      equ BSS + 0x18000       ; (nonces for the signatures after the next `stock`: see there)
 HKSET   equ HK + NPOOL * 32
 HAAD    equ HKSET + 16          ; (16 bytes to make a tag over in place of a record's header,
@@ -858,6 +961,16 @@ hfield: imul ebp, ecx, FSIZE
 hfmul:  pushad
         call hfield
         call fmul
+        popad
+        ret
+hfsqr:  pushad
+        call hfield
+        call fsqr
+        popad
+        ret
+hfmul1: pushad
+        call hfield
+        call fmul1
         popad
         ret
 hfas:   pushad

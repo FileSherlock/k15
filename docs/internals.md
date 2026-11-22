@@ -602,20 +602,27 @@ The old way, and what both share:
   FIN.
 
 ## How the curve code works
-Built for bytes per cycle: one multiplication, one add/subtract, a register machine, and
-the curve formulas as data. `tools/ec.py` is the reference: it holds the programs and a
+Built for bytes per cycle: one multiplication (and two shorter ways to the same product),
+one add/subtract, a register machine, and the curve formulas as data. `tools/ec.py` is the reference: it holds the programs and a
 model that asserts every bound.
 - Numbers: four limbs of 64 bits, below 2^256, standing for their residue ("weakly
   reduced"); nothing is ever compared with a modulus. `fmul`: the 512-bit product (mulx
   with two carry chains, adcx/adox, a row per limb), then for 2^255 - 19 what is above
   2^256 folded back times 38, for the two Montgomery fields (p and n of P-256) four
-  rounds of Montgomery reduction and a subtraction by carry. `fas`: add or subtract, then
+  rounds of Montgomery reduction and a subtraction by carry. `fsqr` makes the product
+  of a number with itself from ten products of limbs, not sixteen (six once and
+  doubled, four squares), `fmul1` the product with a number of one limb from four;
+  both go on into `fmul`'s reduction. `fas`: add or subtract, then
   M taken off or put back, once or twice: both corrected values are computed whatever
-  the case and one of three is kept (cmov). A field is 104 bytes that `ecinit` builds:
+  the case and one of three is kept (cmov); for 2^255 - 19, where that is 38 to add
+  or take off, by the carry alone. A field is 104 bytes that `ecinit` builds:
   2^256 - M, M, -1/M mod 2^64 (0 says "fold"), the exponent that inverts.
 - `vm` runs programs for 16 registers: in the image 2 bytes an operation, unpacked at
-  boot to four dwords (three addresses and the operation). Unpacking them took a ladder
-  step from 717 cycles to 529: the decoding had cost more than the additions.
+  boot to four dwords (three addresses and the operation: add, subtract, multiply,
+  multiply by one limb, square; ec.py makes a squaring of every register times
+  itself). Unpacking them took a ladder step from 717 cycles to 529: the decoding
+  had cost more than the additions. It takes 482 since the additions, the squarings
+  and the product with a24 have their own code (Ryzen 7 3800X, `make bench`).
 - Our key share, e times the base point: 64 additions on edwards25519 from a table of
   j 16^i B (16 entries a nibble, 98 KiB, made at boot), each entry found by reading all 16
   and masking (`select`). The shared secret, e times the client's point: the Montgomery

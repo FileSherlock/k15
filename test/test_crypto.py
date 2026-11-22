@@ -58,6 +58,15 @@ for f, field in enumerate((curve.F25519, curve.FP256, curve.FN256)):
             fbad += 1
             if fbad < 5:
                 print("FAIL", f"f{f}_inv_{j}", hex(x))
+        if got.get(f"f{f}_sqr_{j}") != mach.mul(x, x).to_bytes(32, "little"):
+            fbad += 1
+            if fbad < 5:
+                print("FAIL", f"f{f}_sqr_{j}", hex(x))
+        for k, y in enumerate(vals):
+            if got.get(f"f{f}_mul1_{j}_{k}") != mach.mul(x % curve.W, y).to_bytes(32, "little"):
+                fbad += 1
+                if fbad < 5:
+                    print("FAIL", f"f{f}_mul1_{j}_{k}", hex(x), hex(y))
     for j, x in enumerate(vals):
         for k, y in enumerate(vals):
             for name, fn in (("as", mach.add), ("sub", mach.sub), ("mul", mach.mul)):
@@ -66,7 +75,7 @@ for f, field in enumerate((curve.F25519, curve.FP256, curve.FN256)):
                     if fbad < 5:
                         print("FAIL", f"f{f}_{name}_{j}_{k}", hex(x), hex(y))
 bad += fbad
-print(("ok  " if not fbad else "FAIL"), "field arithmetic as the model has it (3 fields, 22 x 22 numbers, 3 operations; inversion of the 22)")
+print(("ok  " if not fbad else "FAIL"), "field arithmetic as the model has it (3 fields, 22 x 22 numbers, 3 operations and the product with one limb; square and inverse of the 22)")
 
 # X25519: our scalar is clamped as in RFC 7748, so both our share and the secret match
 # OpenSSL's, and points of small order (u = 0 and u = 1) give an all-zero secret

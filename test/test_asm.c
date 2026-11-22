@@ -173,6 +173,24 @@ int main(int argc, char **argv)
                 for (int b = 0; b < 32; b++) printf("%02x", REGS[R_T1 + b]);
                 printf("\n");
             }
+            for (j = 0; j < n; j++) { /* its square, */
+                u8 *d = (u8 *)r, *x = (u8 *)v[j];
+                int c = f;
+                __asm__ volatile("call hfsqr" : "+D"(d), "+S"(x), "+c"(c) : : SCRATCH);
+                printf("f%d_sqr_%d ", f, j);
+                for (int b = 0; b < 32; b++) printf("%02x", ((u8 *)r)[b]);
+                printf("\n");
+            }
+            for (j = 0; j < n; j++) /* and its lowest limb times each */
+                for (k = 0; k < n; k++) {
+                    u64 one[4] = {v[j][0], 0, 0, 0};
+                    u8 *d = (u8 *)r, *x = (u8 *)one, *y = (u8 *)v[k];
+                    int c = f;
+                    __asm__ volatile("call hfmul1" : "+D"(d), "+S"(x), "+b"(y), "+c"(c) : : SCRATCH);
+                    printf("f%d_mul1_%d_%d ", f, j, k);
+                    for (int b = 0; b < 32; b++) printf("%02x", ((u8 *)r)[b]);
+                    printf("\n");
+                }
             for (j = 0; j < n; j++)
                 for (k = 0; k < n; k++) {
                     static const char *const op[] = {"hfas", "hfsub", "hfmul"};

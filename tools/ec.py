@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """The elliptic-curve side of the image, as data plus a bit-exact Python model of it.
 
-The asm has one 256 x 256 -> 512 bit multiplication (four limbs of 64 bits, mulx/adcx/adox),
+The asm has one 256 x 256 -> 512 bit multiplication (four limbs of 64 bits, mulx/adcx/adox;
+and the same product made shorter where a factor has one limb or the two are one number),
 two ways to reduce its result (2^255 - 19 by folding, the other moduli Montgomery's way),
-one add/subtract, and a tiny register machine on top: 16 registers of four limbs, three
-operations. The curve formulas are programs for that machine, assembled here (2 bytes per
+one add/subtract, and a tiny register machine on top: 16 registers of four limbs, five
+operations (add, subtract, and the three multiplications). The curve formulas are programs for that machine, assembled here (2 bytes per
 operation) and included in the image by gen.py. This file also runs them in Python, so
 `python3 tools/ec.py` checks the formulas, the constants and the bounds below against
 pyca/cryptography.
@@ -69,19 +70,22 @@ KOFF = (1 << 255) + ((1 << 256) - 1) // 15
 # P-256 after that. E0 comes first because register 0 must not be squared (see asm()).
 REGS = "E0 E1 E2 X Y Z T T0 T1 T2 T3 ZERO ONE A24 D C".split()
 REG = {n: i for i, n in enumerate(REGS)}
-ADD, SUB, MUL = 1, 2, 3
+ADD, SUB, MUL, MUL1, SQR = 1, 2, 3, 4, 5
 
 
 def asm(text):
     """'DST = A op B' lines -> bytes: a << 4 | b, then op << 4 | dst; a zero byte ends the
-    program (no operation has register 0 as both operands)."""
+    program (no operation has register 0 as both operands). '1*' is a multiplication whose
+    A has one limb (the asm then leaves out the other three rows); a register times itself
+    becomes a squaring (six products fewer). Both give what '*' gives."""
     out = bytearray()
     for line in text.strip().splitlines():
         line = line.split("#")[0].strip()
         if not line:
             continue
         dst, _, a, op, b = line.split()
-        out += bytes([REG[a] << 4 | REG[b], {"+": ADD, "-": SUB, "*": MUL}[op] << 4 | REG[dst]])
+        op = {"+": ADD, "-": SUB, "*": MUL, "1*": MUL1}[op]
+        out += bytes([REG[a] << 4 | REG[b], (SQR if op == MUL and a == b else op) << 4 | REG[dst]])
     assert all(out[::2])
     return bytes(out) + b"\0"
 
@@ -111,7 +115,7 @@ STEP25519 = asm("""
     T1 = T1 * T1        # BB
     X = T0 * T1         # X2
     T1 = T0 - T1        # E
-    Y = A24 * T1
+    Y = A24 1* T1
     Y = Y + T0
     Y = Y * T1          # Z2
 """)
@@ -348,7 +352,8 @@ class Machine:
         r = self.r
         for i in range(0, len(prog) - 1, 2):
             b, a, dst, op = prog[i] & 15, prog[i] >> 4, prog[i + 1] & 15, prog[i + 1] >> 4
-            r[dst] = (self.add, self.sub, self.mul)[op - 1](r[a], r[b])
+            assert (op != MUL1 or r[a] < W) and (op != SQR or a == b)
+            r[dst] = (self.add, self.sub, self.mul, self.mul, self.mul)[op - 1](r[a], r[b])
 
     def inv(self, x):
         """T1 = x^(m-2): mod 2^255 - 19 by CHAIN25519, else by right-to-left square and
