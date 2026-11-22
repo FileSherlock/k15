@@ -408,9 +408,12 @@ together in a handshake buffer, up to 4 KB; one that says it is longer gets a re
 record counts if its tag is right for the client's next sequence number (`C_ST`); then
 it is decrypted, and if it holds application data that begins with `GET ` or `HEAD `,
 the path (up to a space, `?` or the line's end) is looked up in the site's table: the
-response for it, or the one that says 404. What begins with another word in capitals
-and a space gets the 405 and the end of the connection; anything else that is authentic
-(an alert, a header line in a record of its own) counts and gets nothing. After 2^32 - 2
+response for it, or the one that says 404. What begins with another word and a space
+(a method is any word, in whatever letters: bytes above a space, with no colon among
+them) gets the 405 and the end of the connection; anything else that is authentic (an
+alert, a header line in a record of its own) counts and gets nothing, but for one whose
+inside is zeros and no content type behind them: that is the connection's end (RFC
+8446, 5.4). After 2^32 - 2
 records from the client (`STLIFE` in tests), or once our key has sealed 2^24 (`KEYLIFE`),
 the connection is closed so neither counter wraps.
 
@@ -474,12 +477,18 @@ The old way, and what both share:
   we wait for a ClientHello, a record that is not a handshake record is passed over.
 - Our flight is three records: the ServerHello, a ChangeCipherSpec (`14 03 03 00 01 01`:
   "Shortcuts that remain" says where it stands), and one sealed record with the rest.
-- A client we can't serve gets seven bytes and our FIN: a fatal alert, "protocol version"
-  if TLS 1.3 is not among the versions it offers (extension 43; a client of TLS 1.2 has
-  none), "handshake failure" if our cipher suite is not among its, if x25519 is
-  not among its groups (extension 10: then there is nothing to ask for), or if it sent no
-  x25519 share after being asked, and "illegal parameter" if its x25519 share makes the
-  shared secret all zeros (a point of small order). The alert is its connection's flight
+- A client we can't serve gets seven bytes and our FIN: a fatal alert, "unexpected
+  message" if its first handshake message is not a ClientHello (type 1), "protocol
+  version" if TLS 1.3 is not among the versions it offers (extension 43; a client of
+  TLS 1.2 has none), "decode error" if its session id has more than 32 bytes or the
+  message is not as long as it says (its three bytes of length and what the record
+  holds are the same thing), "illegal parameter" if its compression methods are not
+  the one that is none (`01 00`), "handshake failure" if our cipher suite is not among
+  its, if x25519 is not among its groups (extension 10: then there is nothing to ask
+  for), or if it sent no x25519 share after being asked, and "illegal parameter" if its
+  x25519 share makes the shared secret all zeros (a point of small order). They are
+  asked in that order, after the walk, which needs none of them to stay inside the
+  ClientHello. The alert is its connection's flight
   (kept, sent again if lost), and the connection is closed from our side (`handshake` sets
   F_CLOSED, `tcp.fin` sends the FIN): a ServerHello with a suite the client had not
   offered is what scanners call intolerance, and costs a handshake's work for every
@@ -668,7 +677,8 @@ removing the ones about TLS.
   client must have).
 - The client's Finished is not checked as such: it carries handshake keys, fails the tag
   check like any forgery, and is passed over. The first request proves the same thing.
-- A bad record is passed over, not answered with an alert. No close_notify, no KeyUpdate
+- A bad record is passed over, not answered with an alert (one of the client's with no
+  content type in it gets our FIN, and no alert either). No close_notify, no KeyUpdate
   (a client that changes its keys is not understood after that; a connection of ours
   ends before its key has sealed too much), no session tickets.
 - Our ChangeCipherSpec (for what stands in between and takes the connection for TLS
@@ -679,24 +689,31 @@ removing the ones about TLS.
 - A client record of more than 4 KB (a request with that many headers and cookies) ends
   the connection.
 - A ClientHello is one record. One that comes in two (TLS allows it; no browser does
-  it) is taken for a short one, which has no TLS 1.3 in it: "protocol version". (Decided:
-  this one stays.)
+  it) is taken for a short one, which has no TLS 1.3 in it: "protocol version"; or, if
+  its versions are in the first record, for one that is not as long as it says: "decode
+  error". (Decided: this one stays.)
 - What a client says it can verify (signature_algorithms) is not looked at, nor its
-  legacy_version, nor whether its second ClientHello is its first with a key share. A
+  legacy_version (our ServerHello says 03 03 whatever it is), nor whether its second
+  ClientHello is its first with a key share. A
   malformed x25519 share is no share: it is asked for one (a HelloRetryRequest), where
   a server is to refuse.
 - HTTP: GET and HEAD, the path compared byte for byte with what pack.py made of the file
   names (so `/a%20b.txt`, not `/a b.txt`; a query is cut off; no `..` to resolve: a path
-  is in the table or it is not). A request is a record that begins with its request
+  is in the table or it is not; so a request with a whole address for its path,
+  `GET https://name/ HTTP/1.1`, which RFC 9112, 3.2.2 has a server take, gets the 404).
+  Any other method gets the 405, not a 501 where it is one nobody knows. A request is
+  a record that begins with its request
   line: the line in pieces over several records is not found, and of two requests in
   one record the second is not seen. Of the request's headers two are read, and only
   for a file that has other forms: Accept-Encoding (does its line hold "br" or "gzip",
   and not followed by ";q=0": other weights are not weighed, "*" means nothing) and
   If-None-Match (does its line hold the ETag of the form picked; "*" does not count).
-  A header counts if it is in the record that has the request line. No Host (one
-  site), no Range, no If-Modified-Since (there are no dates), no `Connection: close`
-  (the client has the Content-Length; we close first only after a 405). No Date
-  header: there is no clock.
+  A header counts if it is in the record that has the request line; and a record that
+  goes on with a header's line from its middle, a word and a space, is taken for a
+  request with that method: the 405, and the end. No Host (one site: a request
+  without one is answered, where RFC 9112, 3.2 wants a 400), no Range, no
+  If-Modified-Since (there are no dates), no `Connection: close` (the client has the
+  Content-Length; we close first only after a 405). No Date header: there is no clock.
 - Two requests at once on 443: the second waits for the client's retransmission timer
   (0.2 s).
 - TCP: no SACK and no timestamps (so what is lost is found a segment a round trip, and
@@ -707,7 +724,9 @@ removing the ones about TLS.
   the client then acknowledges twice, which looks like a loss to our flight, and that
   goes twice as well), and the old way (`tcp_send`) for the flight
   and port 80 (capped at 4 KiB unacknowledged on port 80). Our own window is 64 KB,
-  unscaled. Of whose segment it is: one from up to 64 KB before what we expect still
+  unscaled. A client that takes less than 216 bytes in a segment (its SYN's MSS) is
+  refused: 216 is the smallest we cut to, and nobody is sent more than they said.
+  Of whose segment it is: one from up to 64 KB before what we expect still
   has its ack looked at (RFC 9293 drops what is wholly old; a client that sends old
   data again is how we learn that our answer was lost); an old ack is taken with its
   data if it is less than 2^19 bytes old, whatever window the client has offered (RFC

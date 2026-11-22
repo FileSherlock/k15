@@ -33,6 +33,9 @@ part in it), on port 80:
   the connection but our segments, which is what a RST is mostly from.
 On port 443: bytes with such an ack are not put where the ClientHello goes, which then
 gets its flight.
+And before any of that: a SYN that says its client takes less than 216 bytes in a segment,
+which is the smallest we cut ours to, is refused (a RST): nobody is sent more at a time
+than they said (RFC 9293, 3.7.1).
 
 And what it is for: a real client (this machine's TCP, Python's TLS) fetches the page;
 then segments are sent in its name, with data and with FINs, where its sequence numbers
@@ -97,14 +100,15 @@ class Raw:
     """A connection made of frames of our own, from an address nobody has."""
     ports = iter(range(52000, 53000))
 
-    def __init__(self, s, mac, port):
+    def __init__(self, s, mac, port, mss=1460):
         self.s, self.port, self.sport = s, port, next(Raw.ports)
         self.eth = b"\xff" * 6 + mac + b"\x08\x00"
         self.src = socket.inet_aton("10.64.0.2")
         self.seq = 1000 * self.sport
-        self.send(0x02, 0, opts=b"\x02\x04\x05\xb4")
+        self.send(0x02, 0, opts=b"\x02\x04" + struct.pack(">H", mss))
         self.seq += 1
-        syn = [g for g in self.got(1.0, first=True) if g[0] & 0x12 == 0x12]
+        self.first = self.got(1.0, first=True)          # (what the SYN got)
+        syn = [g for g in self.first if g[0] & 0x12 == 0x12]
         self.iss = syn[0][1] if syn else None
         if syn:
             self.send(0x10, self.iss + 1)       # (the ack that makes the connection)
@@ -176,6 +180,12 @@ def show(g):
 
 def framewise(s, mac):
     req = b"GET / HTTP/1.1\r\nHost: " + NAME.encode() + b"\r\n\r\n"
+    for port in (80, 443):
+        got = [Raw(s, mac, port, mss) for mss in (215, 88, 1, 0, 216)]
+        check(f"port {port}: a SYN whose client takes less in a segment than our smallest (215, 88, 1, 0 bytes) is refused, with a RST for its number",
+              all(len(c.first) == 1 and c.first[0][0] == 0x14 and c.first[0][2] == c.seq and not c.first[0][3] for c in got[:4]),
+              "; ".join(show(c.first) for c in got[:4]))
+        check("  and one that takes 216 is answered", got[4].iss is not None, show(got[4].first))
     for what, by in (("for what we never sent (by one byte)", 1), ("for what we never sent (by 2^28)", 1 << 28),
                      ("older than anything can be (by 2^19)", -FAR), ("older than anything can be (by 2^31 - 1)", -(1 << 31) + 1)):
         c = Raw(s, mac, 80)

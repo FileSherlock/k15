@@ -28,7 +28,7 @@ record: pushad
         jne .no
         mov esi, VB             ; It is the client's. Behind what it says comes the byte that
 .pad:   dec ecx                 ; says what that is, and after it there may be zeros
-        js .count
+        js .last                ; (zeros and no such byte: nobody's record. RFC 8446, 5.4)
         cmp byte [rsi+rcx], 0
         je .pad
         cmp byte [rsi+rcx], 23
@@ -82,16 +82,13 @@ record: pushad
         call pick
         jmp .have
 .other: xor edx, edx            ; Not a request we answer. One that begins like a request
-.word:  mov al, [rsi+rdx]       ; (a word in capitals, a space) is told so
-        inc edx
+.word:  mov al, [rsi+rdx]       ; (a method, which is any word, and a space: RFC 9110, 9.1)
+        inc edx                 ; is told so. A header's line is none: its word ends with
+        cmp al, ':'             ; a colon. (What the record says ends before a byte 23,
+        je .count               ; so this ends there at the latest.)
         cmp al, ' '
-        je .said
-        sub al, 'A'
-        cmp al, 25
-        ja .count
-        cmp dl, 8
-        jb .word
-        jmp .count
+        ja .word
+        jb .count
 .said:  dec edx
         jz .count
         mov eax, A_405

@@ -6,12 +6,17 @@
   2. a ClientHello without an x25519 key share gets no working session, and one with bytes
      that look like the start of one in another extension is served all the same; a
      client that can't be served (no TLS 1.3, not our cipher suite, no x25519, no
-     share for it after being asked, a share of small order, or a session id of more
-     than 32 bytes) gets a fatal alert that
-     says why, and the end of the connection: nothing that only looks like an answer
+     share for it after being asked, a share of small order, a session id of more
+     than 32 bytes, a first message that is no ClientHello or not as long as it says,
+     compression methods other than the one that is none) gets a fatal alert that
+     says why, and the end of the connection: nothing that only looks like an answer;
+     and a ServerHello's version is 03 03 whatever the client's legacy_version is
   3. junk instead of a ClientHello, an oversized "ClientHello", and a real one cut short
      anywhere or with any of its lengths gone wrong, do no harm
   4. after all of that a normal client is still served
+  6. what is not GET or HEAD but begins like a request, whatever its letters, gets the
+     405 and the end of the connection; a record whose inside is zeros to its last byte
+     (no content type) is the connection's end
   5. plain HTTP on port 80 (127.0.0.1:$HPORT): a request in pieces gets one response, two
      or 200 in one segment get them all, bytes without an empty line get none
 
@@ -22,7 +27,12 @@ import os
 import socket
 import ssl
 import sys
+import tempfile
 import time
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDFExpand
 
 from tlsclient import B as BUILD, HRR, BioClient, context, hello_record
 
@@ -316,8 +326,48 @@ def main():
                   flight[:5] == bytes([22, 3, 3, 0, 122]) and flight[5:9] == bytes([2, 0, 0, 118])
                   and flight[127:133] == bytes([20, 3, 3, 0, 1, 1])
                   and flight[133] == 23 and int.from_bytes(flight[136:138], "big") == len(flight) - 138)
-    good &= check("junk in a handshake record is told \"protocol version\"",
-                  said(record(os.urandom(300))) == PROTOCOL_VERSION)
+    good &= check("junk in a handshake record that begins like a ClientHello (01) is told \"protocol version\"",
+                  said(record(b"\x01" + os.urandom(299))) == PROTOCOL_VERSION)
+    # What a ClientHello has to be besides (RFC 8446, 4 and 4.1.2; until 2026-11-22 each of
+    # these got our flight): the first message, type 1; as long as its three bytes say,
+    # which is what the record holds; and with one way of compressing, none.
+    UNEXPECTED_MESSAGE = bytes.fromhex("1503030002020a")
+    good &= check("a first message that is not a ClientHello (a ClientHello with type 2, 0 or 255) is told \"unexpected message\"",
+                  all(said(record(bytes([t]) + hello[1:])) == UNEXPECTED_MESSAGE for t in (2, 0, 255)))
+
+    def says(n):
+        return hello[:1] + (len(hello) - 4 + n).to_bytes(3, "big") + hello[4:]
+
+    good &= check("a ClientHello that says it is a byte longer than it is, or a byte shorter, or 64 KiB longer, or has a byte "
+                  "behind it in its record, is told \"decode error\"",
+                  all(said(record(body)) == DECODE_ERROR for body in (says(1), says(-1), says(1 << 16), hello + b"\0")))
+    cm = 38 + 1 + hello[38]
+    cm += 2 + int.from_bytes(hello[cm:cm + 2], "big")
+    assert hello[cm:cm + 2] == b"\x01\x00", "one compression method, none"
+
+    def compressing(methods):
+        body = hello[:cm] + bytes([len(methods)]) + methods + hello[cm + 2:]
+        return record(body[:1] + (len(body) - 4).to_bytes(3, "big") + body[4:])
+
+    good &= check("compression methods that are not the one that is none (01; 00 01; 01 00; none at all) are told \"illegal parameter\"",
+                  all(said(compressing(m)) == ILLEGAL_PARAMETER for m in (b"\x01", b"\x00\x01", b"\x01\x00", b"")))
+    # (a ServerHello's legacy_version is 03 03, RFC 8446, 4.1.3: ours was the client's)
+    def version_back(first):
+        s = socket.create_connection((HOST, PORT), timeout=5)
+        got = b""
+        try:
+            s.sendall(first)
+            while len(got) < 11:
+                got += s.recv(4096) or b"x" * 11
+        except OSError:
+            pass
+        s.close()
+        return got[:3] + got[5:6] + got[9:11]
+
+    old1 = record(hello[:4] + b"\x03\x01" + hello[6:])
+    old2 = shareless[:9] + b"\x02\x00" + shareless[11:]
+    good &= check("a ClientHello whose legacy_version is 03 01 gets a ServerHello that says 03 03, and so does one that is asked again",
+                  version_back(old1) == bytes.fromhex("160303020303") and version_back(old2) == bytes.fromhex("160303020303"))
     good &= check("and a normal client is served after them", served())
 
     # 3. junk and oversized hellos
@@ -354,6 +404,84 @@ def main():
         time.sleep(0.002)   # (QEMU takes connections one at a time: faster than this, one in 20 waits a second)
     good &= check(f"still serving after {len(variants)} ClientHellos cut short or with a length gone wrong", served())
     good &= check("and the one they were made from is served", served())
+
+    # 6. What begins like a request and is none we answer: a method is any word (RFC 9110,
+    # 9.1; until 2026-11-22 only one of up to seven capitals was told no, and "get /" waited
+    # for ever). What does not begin like one is passed over, and the next request served.
+    def answer(request):
+        c = Client(context())
+        c.sock.settimeout(2)
+        buf = b""
+        try:
+            c.handshake()
+            c.pump(lambda: c.tls.write(request))
+            while True:
+                buf += c.pump(lambda: c.tls.read(4096))
+        except ConnectionError:
+            buf += b"[closed]"
+        except (OSError, ssl.SSLError) as e:
+            buf += b"[%r]" % e
+        c.close()
+        return buf
+
+    for line in (b"POST / HTTP/1.1", b"get / HTTP/1.1", b"Get / HTTP/1.1", b"PROPFIND / HTTP/1.1", b"M-SEARCH * HTTP/1.1",
+                 b"x / HTTP/1.1", b"VERSION-CONTROL /a HTTP/1.1", b"head / HTTP/1.1"):
+        got = answer(line + b"\r\nHost: x\r\n\r\n")
+        good &= check(f"\"{line.decode()}\" gets the 405 and the connection's end",
+                      got.startswith(b"HTTP/1.1 405 ") and got.endswith(b"\r\n\r\n[closed]"))
+    c = Client(context())
+    c.handshake()
+    for none in (b"Host: x\r\n", b"\r\n", b" / HTTP/1.1\r\n", b"Accept: a b c\r\n\r\n", b"word\r\nand more", b"word", b"\x00GET / "):
+        c.pump(lambda: c.tls.write(none))
+    good &= check("a header's line in a record of its own, an empty line, a word with no space behind it are passed over: "
+                  "the request after them is served", c.fetch())
+    c.close()
+
+    # 6b. A record under the client's key whose inside is zeros and nothing else has no
+    # content type: nobody's record, and the connection's end (RFC 8446, 5.4; until
+    # 2026-11-22 it counted like an alert). Python's TLS makes no such record: it is
+    # sealed here, with the key OpenSSL writes out. Zeros behind a request are padding.
+    def sealed(secret, number, inside):
+        def label(name, n):
+            info = n.to_bytes(2, "big") + bytes([6 + len(name)]) + b"tls13 " + name + b"\0"
+            return HKDFExpand(hashes.SHA256(), n, info).derive(secret)
+        iv = (int.from_bytes(label(b"iv", 12), "big") ^ number).to_bytes(12, "big")
+        head = bytes([23, 3, 3]) + (len(inside) + 16).to_bytes(2, "big")
+        return head + AESGCM(label(b"key", 16)).encrypt(iv, inside, head)
+
+    def keyed():
+        """A connection that has fetched the page once, and its client's key (which has sealed one record)."""
+        log = tempfile.NamedTemporaryFile()
+        ctx = context()
+        ctx.keylog_filename = log.name
+        c = Client(ctx)
+        c.sock.settimeout(2)
+        c.handshake()
+        c.fetch()
+        secret = next(bytes.fromhex(line.split()[2]) for line in open(log.name) if line.startswith("CLIENT_TRAFFIC_SECRET_0 "))
+        return c, secret
+
+    def after(records):
+        """What comes back for these records, as far as the client's TLS reads it."""
+        buf = b""
+        try:
+            c.sock.sendall(records)
+            while True:
+                buf += c.pump(lambda: c.tls.read(4096))
+        except ConnectionError:
+            buf += b"[closed]"
+        except (OSError, ssl.SSLError):
+            buf += b"[nothing more]"
+        c.close()
+        return buf
+
+    c, secret = keyed()
+    good &= check("a request sealed here, with zeros behind its content type, is answered (so the next check's record is one of the client's)",
+                  after(sealed(secret, 1, REQ + b"\x17" + bytes(40))).endswith(EXPECT + b"[nothing more]"))
+    for what, inside in (("one zero", bytes(1)), ("300 zeros", bytes(300))):
+        c, secret = keyed()
+        good &= check(f"a record of the client's whose inside is {what} and no content type is the connection's end",
+                      after(sealed(secret, 1, inside) + sealed(secret, 2, REQ + b"\x17")) == b"[closed]")
 
     # 5. port 80
     def plain(pieces, want):

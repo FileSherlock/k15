@@ -195,6 +195,8 @@ tcp:
         jne .onx
         movzx edx, word [rsi+1]
         xchg dl, dh
+        cmp edx, 216            ; (One that takes less than our smallest segment is told
+        jb .deny                ; no: it is not sent more than it said. RFC 9293, 3.7.1)
 .ows:   cmp al, 3               ; (window scale: a shift, of which 14 is the most there is)
         jne .onx
         cmp edi, 2

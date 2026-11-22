@@ -59,18 +59,21 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   file gets, whether files are packed compressed too, and (development only) the two ports
   that reset it. The scripts take `B` from the environment. Only the address, the names,
   the site and its settings are tracked: after changing another setting, `make -B`.
-- `python3 tools/sizes.py build/os.lst` = bytes per routine. Of the system's 14,001
+- `python3 tools/sizes.py build/os.lst` = bytes per routine. Of the system's 14,065
   with an address of its own, about: boot, clock calibration, page tables, driver and
   the other processors 2,710; network 4,390 with the timers; requests and the forms of
-  a file 700; TLS handshake and key schedule 1,600; SHA-256 450; curves 3,000 with
-  their programs and constants; the cipher 1,000; certificate 230; among them 49 of
+  a file 700; TLS handshake and key schedule 1,650; SHA-256 450; curves 3,000 with
+  their programs and constants; the cipher 1,000; certificate 230; among them 58 of
   padding in front of the routines a handshake spends its time in (HOT in "How the
-  curve code works"). With the DHCP client (the default) it is 14,515, and with IPv6
-  as well 15,267: 520 and 731 bytes of code more, and 43 and 64 of that padding,
+  curve code works"). With the DHCP client (the default) it is 14,579, and with IPv6
+  as well 15,299: 520 and 731 bytes of code more, and 52 and 41 of that padding,
   which goes by what happens to lie in front of those routines (between 33 and 64
   bytes). Whose segment it is costs 26 bytes, zeroing what loaders left where code
-  can run 7, and the ChangeCipherSpec in our flight 10 (which the padding took, but for
-  the last of those three); that nothing but code can be executed costs no padding.
+  can run 7, the ChangeCipherSpec in our flight 10, and what the audit's 4 to 7, 11
+  and 13 asked for 55: a ClientHello's type, length and compression methods 36, the
+  ServerHello's own version 12, a small MSS refused 8, a record without a content
+  type 4, jumps that got longer 6, and any word for a method 11 fewer than a word in
+  capitals did. That nothing but code can be executed costs no padding.
 - **Is an image what this source makes?** Every build writes `OUT/made`: the commit, the
   assembler, what the assembler was told (the defines, `DELTA` among them; the nine
   numbers of site.inc; the certificate chain's hash), how the site was packed and with
@@ -171,8 +174,10 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   whose key share is for P-256, port 80, an unknown path, HEAD, and a check that curl
   refuses without our CA) and runs `tools/abuse.py` (forged, replayed, truncated records
   and bad ClientHellos, also in place of the second one after a HelloRetryRequest, must
-  be ignored and leave real connections working; requests in pieces and pipelined on
-  port 80). Ten seconds with KVM. Through slirp the guest's 443 is 127.0.0.1:`PORT`
+  be ignored and leave real connections working; what a ClientHello has to be, and
+  the alert for each thing it is not; any method but GET and HEAD, in whatever
+  letters, gets the 405; a record of zeros with no content type ends its connection;
+  requests in pieces and pipelined on port 80). Ten seconds with KVM. Through slirp the guest's 443 is 127.0.0.1:`PORT`
   (8443) and its 80 is `HPORT` (PORT + 1000). It reads `NAME`, `SITE`, `P80`, `HSTS`
   from the environment like make, and checks what the image was built to do.
 - `./browsers.sh` checks Firefox and Chrome with our CA as a trusted root in throwaway
@@ -292,7 +297,8 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   there.
   `unshare -Urn ./tap.sh python3 tools/acktest.py` (seconds; the suite's `ack`):
   segments in a client's name that are not the client's. Frame by frame on ports 80
-  and 443: a request, a FIN or bytes whose ack is for what we never sent, or older
+  and 443: a SYN whose client takes less than 216 bytes in a segment gets a RST, one
+  that takes 216 its answer; a request, a FIN or bytes whose ack is for what we never sent, or older
   than anything can be, get a bare ack and nothing of them is taken, also after a SYN
   has come again for the connection; one whose ack is merely old is answered; a
   client that comes again from the same port, with sequence numbers far from its old
@@ -302,7 +308,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   have said and at no other (a byte before, a byte behind; and, while a long answer's
   segments hold the client's last byte back, not where the client's own numbers are).
   And a real client's connection, into which 21 such segments are sent, fetches the
-  page again. (Against the image before these rules 15 of its 29 checks fail; without
+  page again. (Against the image before these rules 15 of those 29 checks fail; without
   the sequence number's check 3, without the ack's 10, with a RST taken at the next
   number we expect 2; and each of the two clients that come again gets nowhere if its
   way to a new connection is cut.)

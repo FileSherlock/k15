@@ -68,6 +68,7 @@ handshake:
         lea edi, [rdi+rcx+2]
         cmp edi, ebx
         jae .seen
+        mov r9d, edi            ; (the compression methods: see `.seen`)
         movzx ecx, byte [rdi]   ; compression methods, and the extensions' length
         lea edi, [rdi+rcx+3]
 .ext:   lea esi, [rdi+4]
@@ -116,12 +117,24 @@ handshake:
         ; failure"), or one whose share makes the shared secret all zeros ("illegal
         ; parameter", RFC 8446, 7.4.2). It gets nothing that only looks like an answer.
 .seen:  pop rsi
+        mov al, 10              ; ("unexpected message": the first is a ClientHello, type 1,
+        cmp byte [rsi], 1       ; RFC 8446, 4)
+        jne .alert
         mov al, 70
         test dl, 1
         jz .alert
         mov al, 50              ; ("decode error": a session id is 32 bytes at most, RFC 8446,
         cmp byte [rsi+38], 32   ; 4.1.2. Our ServerHello has the client's, and with a longer
-        ja .alert               ; one its lengths would not fit their one byte)
+        ja .alert               ; one its lengths would not fit their one byte;
+        mov edi, [rsi]          ; and the message is as long as it says, which is what the
+        bswap edi               ; record holds: 01, and in three bytes its length without
+        lea ecx, [rbx+0x00FFFFFC] ; these four)
+        sub ecx, r10d
+        cmp ecx, edi
+        jne .alert
+        mov al, 47              ; ("illegal parameter": of compression methods there is one,
+        cmp word [r9], 1        ; none: 01 00, RFC 8446, 4.1.2. TLS 1.3 is among the client's
+        jne .alert              ; versions, so it has extensions, and r9 is where these are)
         mov al, 40
         cmp dword [SUITE], 0
         jl .alert
@@ -178,6 +191,7 @@ handshake:
         mov edi, ebx
         lea ecx, [rdx+39]
         rep movsb               ; ServerHello: as the ClientHello up to its session id,
+        mov word [rbx+4], 0x0303 ; but with the version a ServerHello has (RFC 8446, 4.1.3),
         lea edi, [rbx+6]
         mov cl, 4
         call rand               ; but with a random of our own, ...
@@ -358,6 +372,7 @@ hrrmsg: push rsi
         shl edx, 24
         mov dl, 2
         mov [rax], edx          ; type 2, length
+        mov word [rax+4], 0x0303 ; (its version: not the client's)
         push rdi
         lea edi, [rax+6]
         mov esi, L_HRR

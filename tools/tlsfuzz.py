@@ -21,9 +21,11 @@ as they are, with those four things said here instead:
     EncryptedExtensions, and one has to have come by then.
   - Where a server is to answer with an alert and close, we pass over what we can't
     use and say nothing. So an alert or a close that is waited for may also be QUIET
-    seconds (0.3) of silence. Anything else that comes instead still fails, and an alert
-    that does come must be the one the script wants. The last line says how often
-    an alert was waited for and how often one came.
+    seconds (0.3) of silence; and an alert may be the connection's end with nothing
+    said (a record of the client's with no content type in it: our FIN). Anything else
+    that comes instead still fails, and an alert that does come must be the one the
+    script wants. The last line says how often an alert was waited for, how often one
+    came, and how often the connection's end came in its place.
 
     tools/tlsfuzz.py test-tls13-conversation -h 10.0.2.15 -p 443
 
@@ -45,7 +47,7 @@ import tlsfuzzer.expect as expect  # noqa: E402
 
 QUIET = float(os.environ.get("QUIET", "0.3"))
 WAIT = float(os.environ.get("WAIT", "1.5"))     # (for anything else; tlsfuzzer waits 5 s)
-count = {"waited": 0, "came": 0}
+count = {"waited": 0, "came": 0, "closed": 0}
 
 
 class Groups(object):
@@ -74,11 +76,12 @@ class AfterOne(expect.ExpectEncryptedExtensions):
         return super(AfterOne, self).process(state, msg)
 
 
-class AlertOrSilence(expect.ExpectNoMessage):
-    """The alert the script wants, or nothing for QUIET seconds."""
+class AlertOrSilence(expect.ExpectClose, expect.ExpectNoMessage):
+    """The alert the script wants, or nothing for QUIET seconds, or the connection's end
+    (the runner then comes here with no message, as to an ExpectClose)."""
 
     def __init__(self, level=None, description=None):
-        super(AlertOrSilence, self).__init__(QUIET)
+        super(AlertOrSilence, self).__init__()
         self.alert = Alert(level, description)
         self.content_type = self.alert.content_type
         self.level, self.description = level, description
@@ -96,6 +99,9 @@ class AlertOrSilence(expect.ExpectNoMessage):
         return self.alert.is_match(msg)
 
     def process(self, state, msg):
+        if msg is None:
+            count["closed"] += 1
+            return None
         count["came"] += 1
         return self.alert.process(state, msg)
 
@@ -223,7 +229,8 @@ if os.environ.get("ALLOW") is not None and total:
     code = 1 if other else 0
     for f in other[:20]:
         print("NOT EXPECTED TO FAIL: %s" % f)
-print("%s: %s conversations, %d failed%s; an alert was waited for %d times and came %d times"
+print("%s: %s conversations, %d failed%s; an alert was waited for %d times and came %d times%s"
       % (name.replace("_", "-"), total.group(1) if total else "no", len(failed),
-         " as expected" if failed and not code else "", count["waited"], count["came"]))
+         " as expected" if failed and not code else "", count["waited"], count["came"],
+         ", the connection's end %d times" % count["closed"] if count["closed"] else ""))
 sys.exit(code)

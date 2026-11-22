@@ -57,9 +57,9 @@ when needed:
   or two lines, or fix the docs it contradicts. Delete what is no longer true.
 
 ## Where it stands
-- The system is 14,515 bytes. It asks for its address by DHCP; built with one (`IP=`,
-  `-i`) it has no DHCP client and is 14,001. With an IPv6 address as well (`IP6=`, `-6`:
-  it has to be told one) it is 15,267. (Between 33 and 64 of those bytes are padding
+- The system is 14,579 bytes. It asks for its address by DHCP; built with one (`IP=`,
+  `-i`) it has no DHCP client and is 14,065. With an IPv6 address as well (`IP6=`, `-6`:
+  it has to be told one) it is 15,299. (Between 33 and 64 of those bytes are padding
   in front of the hot routines, which goes by what lies before them: `HOT`.)
 - It boots from a BIOS boot sector or GRUB, uses all the RAM and up to 4 processors,
   modern virtio-net, and serves GET and HEAD by path with compressed forms, ETag and
@@ -98,8 +98,9 @@ when needed:
   a fifth fewer cycles; it is the riskiest code to touch.
 
 For the user to decide:
-- What is left of the audit in github.com/FileSherlock/k15/issues/1: its 4 to 7 and 11
-  to 13.
+- What is left of the audit in github.com/FileSherlock/k15/issues/1, its 12: a 400 for
+  a request without Host, and a request with a whole address for its path. Neither is
+  about security; both are named in `docs/internals.md` ("Shortcuts that remain").
 - Later: pacing, zstd, taking out the reset knock.
 
 ## What "secure" means here

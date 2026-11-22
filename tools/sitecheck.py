@@ -319,12 +319,12 @@ def main():
         c.close()
         return ok
 
-    for method in ("POST", "OPTIONS", "DELETE"):
+    for method in ("POST", "OPTIONS", "DELETE", "PROPFIND", "M-SEARCH", "get", "Head"):  # (a method is any word)
         check(f"{method} is told no, and the connection ends", lambda method=method: refused(method))
 
     def not_requests():
         c = Conn()
-        for junk in (b"\r\n", b"Host: x\r\n\r\n", b"get / HTTP/1.1\r\n\r\n", b" GET / HTTP/1.1\r\n\r\n", b"\x00" * 40, b"G"):
+        for junk in (b"\r\n", b"Host: x\r\n\r\n", b"get/\r\n\r\n", b" GET / HTTP/1.1\r\n\r\n", b"\x00" * 40, b"G"):
             c.send(junk)
         c.get("/")
         ok = same(c.response(), paths["/"])
