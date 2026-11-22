@@ -74,8 +74,10 @@ when needed:
 - Seen on a real machine (Hetzner, `docs/server.md`): an address by DHCP, IPv6, GRUB and
   the boot sector with the image above 1 MiB, `./k15 deploy` with `--grub` and with
   `--rescue`, `./k15 publish` (the first, `--if-due`, the next, a new certificate) with
-  Let's Encrypt, `renew` with its test server. **Not yet**: a DHCP lease renewed
-  (theirs lasts a day), the workflow on GitHub.
+  Let's Encrypt, `renew` with its test server, a DHCP lease renewed after half a day,
+  the workflow on GitHub by a push and by hand. **Not yet**: a run of the workflow that
+  GitHub's schedule starts (it started none in three hours), `renew --grub` with Let's
+  Encrypt.
 - Memory per held connection: 24 bytes on port 80, 128 bytes for TLS.
 - 15kb.org runs the bounty's image: packed from the branch `bounty`, alone on the
   server's disk (no Linux), with a Let's Encrypt certificate until 2027-02-18 whose key
