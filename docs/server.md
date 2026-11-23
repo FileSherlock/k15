@@ -160,9 +160,12 @@ without its key, the same bytes if gzip and brotli are the versions `made` names
 says what to tell it: seven variables, two secrets). A push to `main` runs `./k15
 publish`; once a day it runs with `--if-due --days 45`, which looks at the certificate
 the site shows and does nothing else until that has 45 days left; by hand it can be
-run with "first" for a machine's first image. So renewal needs no machine of the
-user's, and the site's key is in no repository and no secret: it is made on the
-runner, lives on the machine's disk, and is fetched from there by the next run.
+run with "first" for a machine's first image. The site's key is in no repository and
+no secret: it is made on the runner, lives on the machine's disk, and is fetched from
+there by the next run. Renewal would need no machine of the user's, if GitHub started
+the daily run: it has not been seen to (below), so until a run that says "schedule"
+shows under Actions, a push, a run by hand or a cron job of one's own with `./k15
+publish --if-due` has to come within the certificate's last 45 days.
 - Who can publish: whoever can push to that branch, and whoever has the two secrets
   (the host's token and the ssh key for its rescue system). The token can do whatever
   its owner can in its project: a project for that machine alone.
@@ -176,11 +179,23 @@ runner, lives on the machine's disk, and is fetched from there by the next run.
   for the machine yet, and it is left alone); by hand with "first", 2 min 8 s to the
   site under a new certificate; a push that changes the page, 1 min 34 s, the machine
   showing its key. The step that asks to stay on, run by hand in a copy that allows
-  that, is let through with the workflow's own token. **Not seen: a run that the
-  schedule starts.** With the copy's schedule at every ten and then every five minutes
-  GitHub started none in three hours (the first commits there had an author GitHub
-  knows nobody by; a later one that it does know changed nothing in 90 minutes). What
-  such a run does beyond the others is `--if-due`, seen on a real machine by hand.
+  that, is let through with the workflow's own token.
+- **Not seen: a run that the schedule starts.** Tried twice in private repositories of
+  a free account two months old. First with the schedule at every ten and then every
+  five minutes: none in three hours (the first commits there had an author GitHub
+  knows nobody by; a later one that it does know changed nothing in 90 minutes). Then
+  on 2026-11-23 in a new repository, every commit the account's own: at every ten
+  minutes none in 49 minutes, then at minutes 7, 22, 37 and 52, away from the hour
+  (a commit that changes the cron line is what GitHub's pages say sets a schedule
+  going), none in 110 minutes more, seven of its times gone by. All that while the
+  workflow was `active` on the default branch, Actions allowed everything, the account
+  could be seen without a login, and both pushes ran within seconds (the second one
+  published in 1 min 34 s and kept the certificate). GitHub's pages name no wait for a
+  new schedule and no rule for private repositories or free accounts: only that
+  scheduled runs are late or dropped under load. Not looked at: the account's billing
+  page (the token used could not read it), a public repository, an older account. So
+  the cause has no name, and the schedule is not to be counted on. What such a run
+  does beyond the others is `--if-due`, seen on a real machine by hand.
 
 ## Beside a Linux (`--grub`)
 For a server that keeps its Linux: one that is measured, where a reset brings Linux and

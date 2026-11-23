@@ -57,7 +57,7 @@ when needed:
   connection's round trip.
 - `./k15 publish`, `deploy` and `renew` write the raw disk from a host's rescue system
   (`--grub`: beside a Linux, for a server that is measured); `ci/publish.yml` publishes
-  on a push and looks at the certificate once a day.
+  on a push; its daily look at the certificate has never been seen to start on GitHub.
 - Every build says what its image is without its key (`OUT/made`); the system part can
   be made again from the source, that file and the certificates (`tools/repro.sh`).
   With NASM 3.01.

@@ -1,5 +1,9 @@
-# A push publishes the site, and once a day the certificate is looked at: this is
-# .github/workflows/publish.yml of the repository that holds the site (copy it there).
+# A push publishes the site: this is .github/workflows/publish.yml of the repository
+# that holds the site (copy it there). Once a day the certificate is to be looked at as
+# well, but do not count on that: in two private repositories made to try it GitHub
+# started no run from a schedule in hours, while every push ran at once. Look whether
+# yours does (Actions > publish: a run that says "schedule"); if not, a push, a run by
+# hand or `k15 publish --if-due` from a cron job of your own every month does it.
 # It runs `k15 publish` (k15's README says what that does): the machine, which is k15's
 # alone, goes into its rescue system, says who it is from its own disk, gets the site
 # packed with its key and certificate (a new pair from Let's Encrypt when the old one
