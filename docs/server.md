@@ -44,7 +44,9 @@ days, and an image of 17,939 bytes of system with its chain), and `./k15 renew -
 --rescue` on an image deployed with a private CA's certificate in 1 min 34 s, the
 machine showing the old key first. (A second `publish` stops there, as it should: the
 machine is held to the certificate the site shows, which has to be one the world
-believes.) With Let's Encrypt itself: `publish --first`, then `--if-due` (nothing to
+believes. With `--first` and without `--staging` it goes on, and puts Let's Encrypt's
+own in the place of the test server's: 1 min 27 s; the `publish` after that keeps it,
+58 s.) With Let's Encrypt itself: `publish --first`, then `--if-due` (nothing to
 do, nothing touched), then `publish` again in 55 s, the machine showing the key of the
 certificate the site had shown and keeping it, then with `--days 90` a new key and
 certificate the same way; curl believes each. A lease renewed: an image that counts
