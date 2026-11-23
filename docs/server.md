@@ -31,7 +31,10 @@ that asks for its address, with an IPv6 address as well, started by GRUB beside 
 Linux (`./k15 deploy --grub`) and from the raw disk (`./k15 deploy --rescue`: with
 `--first` 54 s from the command to a verified fetch; then without, the machine showing
 the key at the end of its disk); it serves over both, and is back within seconds of a
-reset. Every image lies a little above 1 MiB (docs/internals.md, "Memory"): GRUB on a
+reset. An image with a Content-Security-Policy among its headers (`--header`, quotes
+and all) and the machine's IPv6 address as its second name, from the rescue system in
+58 s: the header as it was given over both addresses, the last fetch at
+`https://[address]/`. Every image lies a little above 1 MiB (docs/internals.md, "Memory"): GRUB on a
 BIOS machine puts it there, and so does the boot sector. What Hetzner's DHCP says: the
 address with a mask of /32, the router 172.31.1.1 (also as a classless route), a lease
 of a day, T1 12 h, T2 21 h. With Let's Encrypt's test server (`--staging`, no
