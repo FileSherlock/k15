@@ -21,11 +21,11 @@ when needed:
 
 ## Decided with the user
 - This checkout (/home/jaguarm/code/k15) is the branch `dev`: the project is developed
-  further here, and stays minimalistic. The features of "Next" are added, each in the
-  smallest form that does its job, and nothing beside them. `main` is the small system.
+  further here, and stays minimalistic. What is added is added in the smallest form
+  that does its job, and nothing beside it. `main` is the small system.
 - **Security can never be lowered, only raised.** Everything behind TLS is in scope:
   anything a packet can make it do. Port 80 says one public thing to everyone.
-- Bytes: on this branch a feature of the list is not stopped by what it costs, but it is
+- Bytes: on this branch a feature is not stopped by what it costs, but it is
   built to cost few, and what it costs is said ("Where it stands", `docs/commands.md`).
   When the branch goes back to `main` the measure is connections per byte of image: a
   feature has to pay for its bytes.
@@ -49,7 +49,7 @@ when needed:
 ## Where it stands
 - The system is 15,509 bytes. It asks for its address by DHCP; built with one (`IP=`,
   `-i`) it has no DHCP client and is 14,995. With an IPv6 address as well (`IP6=`, `-6`:
-  it has to be told one) it is 16,229. (Between 60 and 77 of those bytes are padding
+  it has to be told one) it is 16,229. (Between 74 and 91 of those bytes are padding
   in front of the hot routines, which goes by what lies before them: `HOT`.)
 - It boots from a BIOS boot sector or GRUB, uses all the RAM and up to 4 processors,
   modern virtio-net, and serves GET and HEAD by path with compressed forms, ETag and
@@ -120,8 +120,8 @@ Don't change the source or a test script while a suite runs.
   `unshare -Urn tools/dhcptest.sh` (a minute), a few times, and once with `real`.
 - After touching `tcp6`, `nd`, `prf6`, `find`, `tcp_seg` or `drain`: `B=build-site6
   unshare -Urn ./tap.sh python3 tools/v6test.py`, and the suite's `*6*` runs.
-- After touching `k15`: `tools/k15test.sh` and `unshare -Urn tools/hosttest.sh` (a
-  minute: a machine that is made up; what a host does is not seen there).
+- After touching `k15`: `tools/k15test.sh` and `unshare -Urn tools/hosttest.sh` (two and a half
+  minutes: a machine that is made up; what a host does is not seen there).
 - After touching `tools/gen.py`, `tools/pack.py`, `tools/made.py` or the Makefile:
   `tools/repro.sh` (seconds).
 - After anything else: `tools/suite.sh` (85 runs, twenty minutes). Also with `SMP=1`

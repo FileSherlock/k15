@@ -23,6 +23,11 @@ One or two lines each. Add to it when something costs an hour; delete what stops
   ssh said now, and leaves the server alone.)
 - WSL exports the machine's name as NAME to every shell: make does not take a NAME from
   the environment that is the host's name (not tried on WSL).
+- `'$(VAR)'` in a recipe is not a quoted value: a `'` in the value ends the quotes, and
+  nothing fails. `--header` lost a Content-Security-Policy's `'self'` that way, and
+  the build was a success. What is somebody's text goes to a recipe in the environment
+  (`export`, `"$$VAR"`), and from `k15` to make in the environment too: there make
+  leaves a `$` alone, on its command line it does not.
 
 ## nasm
 - A non-local label ends the scope of `.local` labels. Read the first error.

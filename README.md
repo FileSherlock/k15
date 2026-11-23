@@ -1,6 +1,6 @@
 # k15
 
-k15 turns a folder of static files into a bootable x86-64 HTTPS server: 14 KB of system
+k15 turns a folder of static files into a bootable x86-64 HTTPS server: 15 KB of system
 with the files behind it, in one image. There is no operating system underneath, because
 it is one: its own boot sector, long mode, a virtio-net driver, ARP, TCP, TLS 1.3 and as
 much of HTTP as a static site needs, in assembly that is assembled as one unit.
@@ -55,7 +55,9 @@ What you get, and what you don't:
 - **Fast at what a site is made of.** On a cloud server with two shared virtual
   processors (a Hetzner cx23): 7,500 to 9,000 new TLS 1.3 connections a second,
   depending on the hour, each with a full handshake: twice what nginx with BoringSSL
-  did there in the same night and four times nginx with OpenSSL; 105,000 to 125,000
+  did there in the same night and four times nginx with OpenSSL (the curve code has
+  been made faster since: 10,000 to 11,100 on such a server, where the image before
+  it did 8,000 to 8,600 in the same hours); 105,000 to 125,000
   small pages a second on connections that stay, against nginx's 34,000; files of 14 KB
   at 30,000 to 35,000 a second, against 24,000 to 27,000. [bench/README.md](bench/README.md)
   has the comparison, how it was made, and what it does not say.
@@ -96,7 +98,7 @@ tools/outside.sh fetch   # what the next three need, into ext/ (Wycheproof, Valg
 make outside         # the crypto against Wycheproof's vectors and RFC 6979's
 make ct              # the crypto under Valgrind: no jump and no address is made of a secret
 unshare -Urn tools/tlsfuzz.sh   # tlsfuzzer against the image
-tools/suite.sh       # all 84 regression runs: loss, reordering, scale, browsers, a site of 80 files
+tools/suite.sh       # all 85 regression runs: loss, reordering, scale, browsers, a site of 80 files
 tools/sitetest.sh    # that site alone: every path, every kind of client
 unshare -Urn ./tap.sh ./taprunc.sh 2000 1024 4   # 8,000 connections from 4 source IPs
 gcc -O2 -o build/rawc tools/rawc.c

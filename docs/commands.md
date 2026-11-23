@@ -22,7 +22,8 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
     [--staging]`: all of it in one step, with nothing kept here. The machine goes into
     its rescue system, shows the key of the certificate the site was serving, hands
     over key and certificate from the end of its disk (a new pair from Let's Encrypt if
-    there is none, or it ends within N days (30), or lacks a name), SITE is packed,
+    there is none, or it ends within N days (30), lacks a name, or is one nobody
+    believes: a private CA's, the test server's), SITE is packed,
     written over the disk and started. `--if-due`: nothing at all while the site is up
     with a certificate good for more than N days, so a workflow may run it daily
     (`ci/publish.yml`). `--first`: a machine that has nothing to show yet.
@@ -40,8 +41,8 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
     system (or of the server's Linux), OUT is packed again as OUT/pack.conf says, and
     started. If no certificate comes, the image as it was is started again. `--force`
     for the first one (the private CA's lasts until 2049); `--staging` for Let's
-    Encrypt's test server (nobody trusts its certificate, so "did not answer" is then
-    the expected last line).
+    Encrypt's test server (nobody trusts its certificate, so the fetch at the end is
+    then one that does not check it, and says so).
   The key is never on a server but inside the image, and in the last 64 KiB of the disk
   of a machine that is k15's alone. Everything `./k15` makes is for its owner's eyes
   only (umask 077), and /boot/k15.bin on a server with Linux for root's.
@@ -56,16 +57,19 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   image: its identity, the name in a generated certificate (`SAN='a b'`: its further
   names), the address it answers on (without `IP`: the one it is given where it boots;
   `IP6`: an IPv6 address beside it), what it serves, what port 80 does, the headers every
-  file gets, and whether files are packed compressed too. The scripts take `B` from the environment. Only the address, the names,
+  file gets, and whether files are packed compressed too (those five reach the packer
+  through the environment, so a header keeps its quotes; in a `HEADERS=` on make's
+  command line a `$` is make's, as anywhere there: `./k15 pack --header` has none of
+  that). The scripts take `B` from the environment. Only the address, the names,
   the site and its settings are tracked: after changing another setting, `make -B`.
 - `python3 tools/sizes.py build/os.lst` = bytes per routine. Of the system's 14,995
   with an address of its own, about: boot, clock calibration, page tables, driver and
   the other processors 2,710; network 4,390 with the timers; requests and the forms of
   a file 740; TLS handshake and key schedule 1,650; SHA-256 450; curves 3,850 with
-  their programs and constants; the cipher 1,000; certificate 230; among them 77 of
+  their programs and constants; the cipher 1,000; certificate 230; among them 91 of
   padding in front of the routines a handshake spends its time in (HOT in "How the
   curve code works"). With the DHCP client (the default) it is 15,509, and with IPv6
-  as well 16,229: 520 and 731 bytes of code more, and 71 and 60 of that padding,
+  as well 16,229: 520 and 731 bytes of code more, and 85 and 74 of that padding,
   which goes by what happens to lie in front of those routines. Whose segment it is costs 26 bytes, zeroing what loaders left where code
   can run 7, the ChangeCipherSpec in our flight 10, and what the audit's 4 to 7, 11
   and 13 asked for 55: a ClientHello's type, length and compression methods 36, the
@@ -357,12 +361,12 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   a minute; the suite's `rtt`): over a round trip of 300 ms, with nothing lost, no
   segment of a response may go twice (a page of one segment on a connection that
   stays, a file of 200 KB). A timer of a quarter second for everybody sends 26 twice.
-- `unshare -Urn tools/hosttest.sh` (a minute; the suite's `host`): `./k15 publish`,
+- `unshare -Urn tools/hosttest.sh` (two and a half minutes; the suite's `host`): `./k15 publish`,
   `deploy` and `renew` against a machine that is made up: its disk a file, its rescue
   system this shell with `lsblk`, `blockdev`, `blkdiscard`, `reboot`, `apt-get` and
   `certbot` replaced (the last by a certificate authority of the test's own), ssh a
   script (`K15_SSH`), and "start from the disk" a QEMU on that file whose ports are
-  127.0.0.1's in an otherwise empty network. 24 checks, from "a machine with a Linux
+  127.0.0.1's in an otherwise empty network. 28 checks, from "a machine with a Linux
   on its disk is not written to" to "a machine whose key file has the site's public
   half and another secret is sent nothing"; `V=1` in front shows what the tool says.
 - `SMP=3 MON=/tmp/k15mon unshare -Urn ./tap.sh python3 tools/cputest.py` (the suite's

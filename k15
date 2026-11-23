@@ -33,12 +33,13 @@
 #       reset NAME'); it is run unless the machine is there already. Who the machine is
 #       it says itself: its key and certificate lie at the end of its disk, where the
 #       last publish put them. If there is none, or the certificate ends within N days
-#       (30) or lacks a name, a new key is made here and Let's Encrypt is asked for a
-#       certificate for it (certbot answers the challenge on port 80 of the rescue
-#       system; the names must point at the machine). Then SITE is packed, the image
-#       written over the whole disk, and the machine started from it: --boot is what does
-#       that where saying "reboot" in the rescue system does not. A minute or two without
-#       a server. --disk names the disk if the machine has several.
+#       (30), lacks a name or is one nobody believes (a private CA's, the test server's),
+#       a new key is made here and Let's Encrypt is asked for a certificate for it
+#       (certbot answers the challenge on port 80 of the rescue system; the names must
+#       point at the machine). Then SITE is packed, the image written over the whole
+#       disk, and the machine started from it: --boot is what does that where saying
+#       "reboot" in the rescue system does not. A minute or two without a server.
+#       --disk names the disk if the machine has several.
 #       Before anything is sent to it, the machine has to show that it is itself: with
 #       the key on its disk it must be able to sign for the certificate the site showed
 #       a moment earlier. If the site shows none, the machine is not touched; if what
@@ -91,7 +92,9 @@ abs() {
   printf '%s\n' "$p"
 }
 isip() { [[ $1 =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ || $1 == *:* ]]; }
-at() { if [[ $1 == *:* ]]; then echo "[$1]"; else echo "$1"; fi; }    # (an IPv6 address, where a port follows it)
+at() { if [[ $1 == *:* ]]; then echo "[$1]"; else echo "$1"; fi; }    # (an IPv6 address, where a port follows it, or in a URL)
+# (--email: it becomes part of a command on the far side, so nothing in it that a shell reads)
+mailok() { [[ $1 =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]] || die "an address like '$1'?"; }
 
 # lacks CERT NAME...: of these names, the ones the certificate CERT is not good for
 lacks() {
@@ -120,8 +123,11 @@ proves() {
 trusted() { openssl verify -untrusted "$1" "$1" >/dev/null 2>&1; }
 
 # build SITE NAME IP CERT OUT P80 HSTS CACHE HEADERS SANS COMPRESS IP6: make the image, and note how
+# (how the site is packed goes to make in the environment, which make hands on as it is:
+# a header may have quotes and dollar signs in it, and they are the header's)
 build() {
-  make -s B="$5" SITE="$1" CERT="$4" NAME="$2" SAN="${10}" IP="$3" IP6="${12:-}" P80="$6" HSTS="$7" CACHE="$8" HEADERS="$9" COMPRESS="${11:-1}" >/dev/null || return 1
+  P80="$6" HSTS="$7" CACHE="$8" HEADERS="$9" COMPRESS="${11:-1}" \
+    make -s B="$5" SITE="$1" CERT="$4" NAME="$2" SAN="${10}" IP="$3" IP6="${12:-}" >/dev/null || return 1
   printf 'site=%q\nname=%q\nip=%q\ncert=%q\np80=%q\nhsts=%q\ncache=%q\nheaders=%q\nsans=%q\ncompress=%q\nip6=%q\n' \
     "$1" "$2" "$3" "$4" "$6" "$7" "$8" "$9" "${10}" "${11:-1}" "${12:-}" > "$5/pack.conf"
   chmod -R go= "$5" "$4"
@@ -203,14 +209,17 @@ run() {
 # (verified against CA, if that is said; "nobody": not verified), and say under which of
 # its other names it does too
 up() {
-  local host=$1 name=$2 ca=() sans=${4:-} i n
+  local host=$1 name ca=() sans=${4:-} how="a verified fetch" i n
+  name=$(at "$2")
   [[ -n ${3:-} ]] && ca=(--cacert "$3")
-  [[ ${3:-} == nobody ]] && ca=(--insecure)     # (--staging: its certificates are for trying this out, and believed by nobody)
+  # (--staging: its certificates are for trying this out, and believed by nobody)
+  [[ ${3:-} == nobody ]] && ca=(--insecure) how="a fetch that does not check the certificate"
   for i in $(seq 1 60); do
     sleep 2
     if curl -s --max-time 4 "${ca[@]}" --connect-to "$name:443:$(at "$host"):443" -o /dev/null "https://$name/"; then
-      echo "k15 is up: https://$name/ (a verified fetch from $host)"
+      echo "k15 is up: https://$name/ ($how from $host)"
       for n in $sans; do
+        n=$(at "$n")
         if curl -s --max-time 4 "${ca[@]}" --connect-to "$n:443:$(at "$host"):443" -o /dev/null "https://$n/"; then
           echo "          https://$n/ too"
         else
@@ -262,9 +271,13 @@ rescue() {
   RSH=("${K15_SSH:-ssh}" "${SSHO[@]}" -o UserKnownHostsFile="$WORK/known_hosts" "root@$host")
   DISKDEV=$(probe "$want") || rc=$?
   for i in $(seq 0 100); do
+    # (what the far side calls its disks goes into commands for it, and onto this screen)
+    [[ $rc == 0 && ! $DISKDEV =~ ^[A-Za-z0-9/._-]+$ ]] && rc=6
+    DISKDEV=${DISKDEV//[^A-Za-z0-9\/._ -]/?}
     case $rc in
       0) echo "$host is in its rescue system; its disk is $DISKDEV"; return 0;;
-      3|5) ((i == 0)) || boot     # (we took it there: it is started as it was)
+      3|5|6) ((i == 0)) || boot     # (we took it there: it is started as it was)
+           [[ $rc == 6 ]] && die "$host says its disk is called '$DISKDEV', which no disk is"
            [[ $rc == 3 && -n $DISKDEV ]] && die "$host has several disks ($DISKDEV): say which is to be k15's with --disk"
            [[ $rc == 3 ]] && die "the rescue system of $host does not say which disks it has (no lsblk there): say which is to be k15's with --disk"
            die "$host has no disk $want";;
@@ -411,7 +424,7 @@ publish() {
     case $1 in
       --rescue) rescuecmd=$2; shift 2;; --boot) bootcmd=$2 BOOT=$2; shift 2;; --disk) disk=$2; shift 2;;
       --first) first=1; shift;; --if-due) ifdue=1; shift;; --days) days=$2; shift 2;;
-      --email) email=$2; shift 2;; --staging) staging=--staging; shift;;
+      --email) mailok "$2"; email=$2; shift 2;; --staging) staging=--staging; shift;;
       *) die "publish: what is '$1'?";;
     esac
   done
@@ -444,10 +457,12 @@ publish() {
   san=$(keynew "$WORK/new" "$name" $sans) || die "no request for a certificate could be made for: $name $sans"
   rescue "$host" "$rescuecmd" "$disk"
   itself "$host" "$first" "$cert" "$WORK/live.pem"
-  # A new certificate, if the machine has none, or one that ends soon or lacks a name
+  # A new certificate, if the machine has none, or one that ends soon or lacks a name, or
+  # one that nobody believes: a private CA's or the test server's, which an earlier image
+  # left on the disk (--first lets such a machine in; with --staging that is what is asked for)
   # shellcheck disable=SC2086
   if [[ ! -s $cert/server.pem ]] || ! openssl x509 -checkend $((days * 86400)) -noout -in "$cert/server.pem" >/dev/null ||
-     [[ -n $(lacks "$cert/server.pem" "$name" $sans) ]]; then
+     [[ -n $(lacks "$cert/server.pem" "$name" $sans) ]] || { [[ -z $staging ]] && ! trusted "$cert/server.pem"; }; then
     echo "asking Let's Encrypt for a certificate for $san, with a new key"
     if ! certnew "$WORK/new/csr.pem" "$WORK/new/server.pem" "$email" "$staging" ||
        ! came "$WORK/new/server.key" "$WORK/new/server.pem" "$staging"; then
@@ -496,23 +511,27 @@ linux() {
   echo "Linux is up on $host, and held"
 }
 
-# start HOST OUT PERSIST: the image goes to /boot/k15.bin (for root's eyes only: it holds
-# the key), GRUB gets its entry, and the server boots into it. PERSIST: 1 (Linux starts k15
-# whenever it comes up), 0 (it does not), keep (as it is there now)
+# start HOST OUT PERSIST [nobody]: the image goes to /boot/k15.bin (for root's eyes only: it
+# holds the key), GRUB gets its entry, and the server boots into it. PERSIST: 1 (Linux
+# starts k15 whenever it comes up), 0 (it does not), keep (as it is there now). nobody:
+# its certificate is the test server's, and the fetch at the end is not a verified one.
+# (GRUB names a file by its place in its file system: where /boot is one of its own, the
+# image is /k15.bin there.)
 start() {
   local host=$1 out=$2 persist=$3
   "${RSH[@]}" 'umask 077 && rm -f /boot/k15.bin.new && cat > /boot/k15.bin.new && chmod 600 /boot/k15.bin.new && mv /boot/k15.bin.new /boot/k15.bin' < "$out/os.bin"
   "${RSH[@]}" "PERSIST=$persist bash -s" <<'EOF'
 set -e
 if ! grep -q 'menuentry "k15"' /etc/grub.d/40_custom; then
-  UUID=$(findmnt -no UUID /boot 2>/dev/null || findmnt -no UUID /)
+  DIR=/boot
+  UUID=$(findmnt -no UUID /boot 2>/dev/null) && DIR= || UUID=$(findmnt -no UUID /)
   cat >> /etc/grub.d/40_custom <<END
 menuentry "k15" --id k15 {
     insmod part_gpt
     insmod ext2
     insmod multiboot
     search --no-floppy --fs-uuid --set=root $UUID
-    multiboot /boot/k15.bin
+    multiboot $DIR/k15.bin
 }
 END
   update-grub 2>&1 | tail -1
@@ -543,7 +562,7 @@ nohup sh -c "sleep 1; systemctl reboot" >/dev/null 2>&1 &
 EOF
   local sans=
   if [[ -f $out/pack.conf ]]; then sans=$(source "$out/pack.conf" && echo "${sans:-}"); fi
-  up "$host" "$(cat "$out/name")" "$([[ -s $out/ca.pem ]] && echo "$out/ca.pem")" "$sans" ||
+  up "$host" "$(cat "$out/name")" "${4:-$([[ -s $out/ca.pem ]] && echo "$out/ca.pem")}" "$sans" ||
     die "the server did not answer https://$(cat "$out/name")/ within two minutes. A reset brings Linux back."
 }
 
@@ -597,7 +616,7 @@ renew() {
     case $1 in
       --grub) grub=1; shift;; --reset) grub=1 reset=$2; shift 2;;
       --rescue) rescuecmd=$2; shift 2;; --boot) bootcmd=$2 BOOT=$2; shift 2;; --disk) disk=$2; shift 2;; --first) first=1; shift;;
-      --email) email=$2; shift 2;; --staging) staging=--staging; shift;;
+      --email) mailok "$2"; email=$2; shift 2;; --staging) staging=--staging; shift;;
       --force) force=1; shift;; --days) days=$2; shift 2;; --dry-run) dry=1; shift;;
       -*) die "renew: what is '$1'?";;
       *) out=$1; shift;;
@@ -634,7 +653,7 @@ renew() {
   # again: the image as it was is started again (no certificate came, or it could not be packed)
   if [[ -n $grub ]]; then
     linux "$host" "$reset"
-    again() { start "$host" "$out" keep; }
+    again() { start "$host" "$out" keep ${staging:+nobody}; }
   else
     rescue "$host" "$rescuecmd" "$disk"
     itself "$host" "$first" "$WORK/was" "$cert/server.pem"   # (it has the key we hold for it: the old one)
@@ -662,7 +681,7 @@ renew() {
     exit 1
   fi
   if [[ -n $grub ]]; then
-    start "$host" "$out" keep
+    start "$host" "$out" keep ${staging:+nobody}
   else
     write "$host" "$out" "$cert"
     up "$host" "$(cat "$out/name")" "${staging:+nobody}" "$sans" || die "the server did not answer https://$name/ within two minutes"

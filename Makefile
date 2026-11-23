@@ -35,6 +35,9 @@ HSTS ?=
 CACHE ?= 600
 HEADERS ?=
 COMPRESS ?= 1
+# (they reach tools/pack.py and tools/made.py by way of the environment, as they are: a
+# header's quotes are a header's, and no shell reads them)
+export P80 HSTS CACHE HEADERS COMPRESS
 # WIN=n: so many segments of a response may be on their way to a client at once
 # NOTSO=1 (tests): a segment a frame, also where the card would cut frames into segments
 # BIGSH=n (tests): each processor has 2^n buffers for the frames the card cuts up (default 3)
@@ -46,7 +49,9 @@ WINDEF := $(if $(WIN),-DWIN=$(WIN),) $(if $(WXTEST),-DWXTEST=$(WXTEST),) $(if $(
 # boundary (tools/jcc.py; of `xdh` and `seal` the jumps inside loops)
 HOT := shablk xdh:loops cswap comb select vm fas fmul fsqr fmul1 inv seal:loops ks64 gh1 aeskey aes4
 
-# (the image, its listing and the disk hold the private key: for their owner's eyes only)
+# (the image, its listing and the disk hold the private key, and so does the tests' object
+# and what is linked with it: for their owner's eyes only from the moment they are made
+# (umask 077), and if they were there before (chmod))
 # The image: hand-written assembly (src/os.asm) -> flat binary, loaded at 1 MiB and a few
 # bytes (DELTA, below); and a disk image that boots it: the boot sector (src/boot.asm),
 # then the image, padded. os.asm includes the other files of src/, a subsystem each: one
@@ -64,7 +69,7 @@ FORCE:
 
 $(B)/disk.img: src/boot.asm $(B)/os.bin tools/mkdisk.py
 	nasm -f bin -o $(B)/boot.bin src/boot.asm
-	python3 tools/mkdisk.py $(B)/boot.bin $(B)/os.bin $@
+	umask 077; python3 tools/mkdisk.py $(B)/boot.bin $(B)/os.bin $@
 	@chmod go= $@
 
 # cert/ is made on the first build (a private CA and a leaf) or holds a real certificate.
@@ -100,13 +105,12 @@ $(GEN) &: tools/gen.py tools/ec.py $(ID) $(B)/names.conf
 # It is made again when $(B)/site.conf changes, which lists the settings and the files
 # (names, sizes, times: file names are not for make to read).
 PACKED := $(B)/site.inc $(B)/site.bin
-PACKSET := $(SITE) $(P80) $(HSTS) $(CACHE) $(HEADERS) $(COMPRESS)
 $(B)/site.conf: FORCE
 	@mkdir -p $(B)
-	@{ echo '$(PACKSET)'; find $(SITE) -type f -printf '%p %s %T@\n' | sort; } > $@.$$$$; \
+	@{ printf '%s\n' '$(SITE)' "$$P80" "$$HSTS" "$$CACHE" "$$HEADERS" "$$COMPRESS"; find $(SITE) -type f -printf '%p %s %T@\n' | sort; } > $@.$$$$; \
 	 if cmp -s $@.$$$$ $@; then rm $@.$$$$; else mv $@.$$$$ $@; fi
 $(PACKED) &: tools/pack.py $(B)/site.conf $(GEN)
-	P80=$(P80) HSTS=$(HSTS) CACHE=$(CACHE) HEADERS='$(HEADERS)' COMPRESS=$(COMPRESS) python3 tools/pack.py $(SITE) $(B)
+	python3 tools/pack.py $(SITE) $(B)
 
 # It is assembled twice. Memory is barred from execution a page at a time, so the image's
 # code has to end where a page ends, and nothing is padded for that: the image is loaded
@@ -118,9 +122,9 @@ ASDEF := $(OURIP) $(OURIP6) $(TABLEDEF) $(DEBUGDEF) $(WINDEF)
 $(B)/os.bin: $(OS) $(GEN) $(PACKED) $(B)/ip $(B)/ip6
 	@umask 077; nasm -f bin $(ASDEF) -DSIZING -I$(B)/ -Isrc/ -o $(B)/os.sizing src/os.asm
 	@echo "-DDELTA=$$(( (4096 - $$(tail -c 4 $(B)/os.sizing | od -An -tu4) / 64 * 64 % 4096) % 4096 ))" > $(B)/delta; : > $(B)/os.sizing
-	nasm -f bin $(ASDEF) $$(cat $(B)/delta) -I$(B)/ -Isrc/ -o $@ -l $(B)/os.lst src/os.asm
+	umask 077; nasm -f bin $(ASDEF) $$(cat $(B)/delta) -I$(B)/ -Isrc/ -o $@ -l $(B)/os.lst src/os.asm
 	@chmod go= $@ $(B)/os.lst
-	@P80=$(P80) HSTS=$(HSTS) CACHE=$(CACHE) HEADERS='$(HEADERS)' COMPRESS=$(COMPRESS) python3 tools/made.py $(B) $(ASDEF) $$(cat $(B)/delta)
+	@python3 tools/made.py $(B) $(ASDEF) $$(cat $(B)/delta)
 	@echo "image: $$(stat -c %s $@) bytes, of which the site: $$(stat -c %s $(B)/site.bin)"
 	@python3 tools/jcc.py $(B)/os.lst $(HOT) || echo "(these jumps lie on 32-byte boundaries: see HOT in src/os.asm)"
 
@@ -128,8 +132,9 @@ $(B)/os.bin: $(OS) $(GEN) $(PACKED) $(B)/ip $(B)/ip6
 # likes: no red zone; and it wants its buffers below 4 GiB: no PIE)
 HOSTCC := gcc -no-pie -fno-pie -O1 -mno-red-zone
 $(B)/test_asm: test/test_asm.c test/asm.h $(OS) $(GEN)
-	nasm -f elf64 -DHOST -I$(B)/ -Isrc/ -o $(B)/os_host.o src/os.asm
-	$(HOSTCC) -o $@ test/test_asm.c $(B)/os_host.o
+	umask 077; nasm -f elf64 -DHOST -I$(B)/ -Isrc/ -o $(B)/os_host.o src/os.asm
+	umask 077; $(HOSTCC) -o $@ test/test_asm.c $(B)/os_host.o
+	@chmod go= $@ $(B)/os_host.o
 
 test: $(B)/test_asm
 	python3 tools/ec.py
@@ -144,7 +149,8 @@ VG := VALGRIND_LIB=$(EXT)/valgrind/usr/libexec/valgrind $(EXT)/valgrind/usr/bin/
 outside: $(B)/test_asm
 	CERT=$(CERT) python3 -I test/outside.py $(B)/test_asm $(EXT)/wycheproof/testvectors_v1
 $(B)/ct: test/ct.c test/asm.h $(B)/test_asm
-	$(HOSTCC) -I$(EXT)/valgrind/usr/include -o $@ test/ct.c $(B)/os_host.o
+	umask 077; $(HOSTCC) -I$(EXT)/valgrind/usr/include -o $@ test/ct.c $(B)/os_host.o
+	@chmod go= $@
 ct: $(B)/ct
 	$(VG) $(B)/ct
 	@for n in 1 2 3 4 5 6; do if $(VG) $(B)/ct $$n >/dev/null 2>&1; then echo "FAIL: control $$n went unnoticed"; exit 1; fi; done
@@ -152,7 +158,8 @@ ct: $(B)/ct
 
 # what the curve and hash code cost natively (the same object the tests use, timed on this host)
 bench: $(B)/test_asm test/bench.c
-	$(HOSTCC) -o $(B)/bench_asm test/bench.c $(B)/os_host.o
+	umask 077; $(HOSTCC) -o $(B)/bench_asm test/bench.c $(B)/os_host.o
+	@chmod go= $(B)/bench_asm
 	$(B)/bench_asm
 
 .PHONY: all test outside ct bench FORCE

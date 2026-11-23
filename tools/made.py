@@ -17,6 +17,7 @@ so it can be made again without the site, and without the programs that compress
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
 import zlib
@@ -48,6 +49,7 @@ def said(*cmd):
 
 
 def brotli():
+    """The encoder tools/pack.py takes (brotli_encoder there: the same three, in its order)."""
     try:
         import brotli
         return "the Python module " + getattr(brotli, "__version__", "?")
@@ -56,9 +58,11 @@ def brotli():
     import ctypes
     import ctypes.util
     lib = ctypes.util.find_library("brotlienc")
-    if lib:
+    if lib and ctypes.util.find_library("brotlidec"):
         v = ctypes.CDLL(lib).BrotliEncoderVersion()
         return f"libbrotlienc {v >> 24}.{(v >> 12) & 0xFFF}.{v & 0xFFF}"
+    if shutil.which("brotli"):
+        return "the command, " + (said("brotli", "--version") or "?")
     return "none"
 
 

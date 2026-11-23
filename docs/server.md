@@ -50,7 +50,8 @@ once for twelve hours, and twice at the next look, ten minutes later (due 12 h 0
 after the first yes), serving all the while; with the lease cut to two minutes
 (`DHMAX=120`) every question, one a minute, got its yes. So Hetzner's server answers a
 REQUEST that is sent to everybody. Not yet, anywhere: `renew --grub` with Let's
-Encrypt. The workflow on GitHub: "A push publishes", below.
+Encrypt (with `--staging` its last fetch no longer checks the certificate, as
+`--rescue`'s never did: read, not run). The workflow on GitHub: "A push publishes", below.
 
 ## Onto a machine that is k15's alone
 The image needs nothing on a machine's disk but itself: `disk.img`, written over the
@@ -83,9 +84,12 @@ What happens, in this order (`k15`: `live`, `rescue`, `itself`, `write`, `up`):
    then the route to it is all that vouches for it, as for any first ssh to a new
    server.
 3. `publish` takes key and certificate from there (it keeps nothing here), and gets a
-   new pair if the certificate ends within `--days` (30) or lacks a name: a new key
-   made here, and certbot on the rescue system answering Let's Encrypt on port 80 for
-   the request (installed there with apt if it is not there). What comes back has to
+   new pair if the certificate ends within `--days` (30), lacks a name, or is one
+   this machine does not believe (a private CA's or the test server's, which an
+   earlier image left there and `--first` let in; with `--staging` such a one is
+   kept): a new key made here, and certbot on the rescue system answering Let's
+   Encrypt on port 80 for the request (installed there with apt if it is not there).
+   What comes back has to
    be a certificate for that key that this machine believes, or it is as if none had
    come. `deploy` and `renew` have theirs in the folders `k15 pack` made.
 4. The disk is discarded (or its first 128 MiB zeroed), the image written, the key and
@@ -181,7 +185,9 @@ ssh back in 25 s. HOST is its address, NAME what the host calls it.
   --grub --reset 'hcloud server reset NAME'`: if Linux does not answer ssh (k15 is
   running), the server is reset; then the image is copied to /boot/k15.bin and the
   server reboots into it ONCE through a GRUB entry ("k15" in /etc/grub.d/40_custom,
-  loaded with `multiboot`), and the command waits for a verified fetch. Linux stays
+  loaded with `multiboot`; where /boot is a file system of its own the entry says
+  /k15.bin on that one, which no server here has had: not seen to boot), and the
+  command waits for a verified fetch. Linux stays
   installed and is what any later reset boots. Up 4 s after the reboot (all 4 GiB are
   zeroed, and the curve tables take 25 ms).
 - With `--persist`, Linux gets a unit (`k15-chain.service`) that starts k15 a minute after

@@ -27,7 +27,9 @@ if [[ -e $CERT/ca.pem ]] || ! openssl x509 -checkend $((40 * 86400)) -noout -in 
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout $CERT/server.key -out $CERT/server.pem \
     -days 60 -subj /CN=k15cli.test -addext subjectAltName=DNS:also.k15cli.test,DNS:k15cli.test 2>/dev/null || { echo "FAIL openssl"; exit 1; }
 fi
-./k15 pack $OUT/www -n k15cli.test --san also.k15cli.test -c $CERT -o $OUT --hsts 300 --header 'X-Test: yes' > $OUT/pack.out 2>&1 || { echo "FAIL k15 pack"; exit 1; }
+# (a header as a Content-Security-Policy has them: with quotes, and here with what a shell or make would read)
+KEPT="X-Kept: default-src 'self'; \$(exit 1) \$5 \`exit 1\` \"q\""
+./k15 pack $OUT/www -n k15cli.test --san also.k15cli.test -c $CERT -o $OUT --hsts 300 --header 'X-Test: yes' --header "$KEPT" > $OUT/pack.out 2>&1 || { echo "FAIL k15 pack"; exit 1; }
 grep -q "of system" $OUT/pack.out || { echo "FAIL k15 pack said: $(cat $OUT/pack.out)"; exit 1; }
 ./k15 run $OUT -p $PORT > $OUT/run.out 2>&1 &
 PID=$!
@@ -42,6 +44,7 @@ check() { if [[ $2 == ok ]]; then echo "ok   $1"; else echo "FAIL $1"; bad=1; fi
 H=$("${CURL[@]}" -D - -o $OUT/big.got "https://k15cli.test:$PORT/big.bin" | tr -d '\r')
 check "the large file comes back as it is" "$(cmp -s $OUT/big.got $OUT/www/big.bin && echo ok)"
 check "with the headers asked for" "$([[ $H == *"Strict-Transport-Security: max-age=300"* && $H == *"X-Test: yes"* ]] && echo ok)"
+check "  one of them with quotes and dollar signs in it, which are as they were given" "$([[ $H == *$'\n'"$KEPT"$'\n'* ]] && echo ok)"
 H=$("${CURL[@]}" -D - -o /dev/null "https://k15cli.test:$PORT/nothing/here" | tr -d '\r')
 check "an unknown path too, but for the one about caching" "$([[ $H == "HTTP/1.1 404 "*"Strict-Transport-Security: max-age=300"* && $H == *"X-Test: yes"* &&
   $H == *"X-Content-Type-Options: nosniff"* && $H != *"Cache-Control"* ]] && echo ok)"
@@ -79,6 +82,8 @@ check "with less left than it is told to keep, it would ask for one, for both na
   "$([[ $R == *"would ask Let's Encrypt for a certificate for DNS:k15cli.test,DNS:also.k15cli.test "*"CN=k15cli.test"* ]] && echo ok)"
 R=$(./k15 renew 192.0.2.1 $OUT --force --dry-run 2>&1)
 check "and with --force" "$([[ $R == *"would ask Let's Encrypt"* ]] && echo ok)"
+R=$(./k15 renew 192.0.2.1 $OUT --force --dry-run --email 'me@k15cli.test;id' 2>&1)
+check "an address for Let's Encrypt with something in it that a shell reads is refused" "$([[ $? != 0 && $R == *"an address like"* ]] && echo ok)"
 check "none of that took time, touched the key or left anything behind" \
   "$([[ $(( $(date +%s) - T0 )) -le 3 && $(sha256sum < $CERT/server.key) == "$K0" && -z $(ls -A $CERT | grep -v -E '^server\.(key|pem)$') ]] && echo ok)"
 # A name the certificate lacks: pack says so, renew says so and does nothing (cron may

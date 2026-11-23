@@ -2,7 +2,7 @@
 # The tool's way onto a machine that is k15's alone (k15 publish, k15 deploy, k15 renew),
 # as far as it goes without a host:
 #
-#   unshare -Urn tools/hosttest.sh        (two minutes)
+#   unshare -Urn tools/hosttest.sh        (two and a half minutes)
 #
 # The machine is made up. Its disk is a file; its rescue system is this shell, with the
 # few commands that would touch a real machine replaced (lsblk, blockdev, blkdiscard,
@@ -25,6 +25,9 @@
 # pasted in (the last two have the right fingerprint, and nothing else). If no
 # certificate comes, the machine is started as it was. k15 deploy and k15 renew do the
 # same for an image packed here, and hold the machine to the key they have for it.
+# A certificate on the machine's disk that nobody believes (a private CA's) is not kept
+# by k15 publish, unless with --staging; and a rescue system that calls its disk what
+# no disk is called gets no command with that name in it.
 cd "$(dirname "$0")/.." || exit 1
 ip link set lo up 2>/dev/null || { echo "FAIL: run it as: unshare -Urn tools/hosttest.sh"; exit 1; }
 M=$(mktemp -d /tmp/k15-host.XXXXXX)
@@ -65,7 +68,8 @@ EOF
 cat > "$M/bin/lsblk" <<EOF
 #!/usr/bin/env bash
 case "\$*" in
-  "-dnpo NAME,TYPE,RM") echo "$M/disk disk 0"; [[ -f "$M/two" ]] && echo "$M/disk2 disk 0";;
+  "-dnpo NAME,TYPE,RM") if [[ -f "$M/odd" ]]; then echo "$M/di;k disk 0"; else echo "$M/disk disk 0"; fi
+                        [[ -f "$M/two" ]] && echo "$M/disk2 disk 0";;
   "-nro MOUNTPOINT $M/disk") [[ \$(cat "$M/state") == linux ]] && echo /;;
   *) echo "lsblk \$*?" >&2; exit 1;;
 esac
@@ -198,6 +202,13 @@ check "a machine with two disks: which is to be k15's has to be said (and it is 
 k15 publish "$M/site" 127.0.0.1 -n $N --rescue "$M/rescue" --disk "$M/disk"
 check "  and with --disk it is that one" "$([[ $RC == 0 && $(page $N) == "<p>three</p>" && $(sha256sum < "$M/disk2") == $(head -c 64M /dev/zero | sha256sum) ]] && echo ok)"
 rm "$M/two"
+# (what the far side says its disk is called becomes part of commands for it)
+touch "$M/odd" "$M/di;k"
+k15 publish "$M/site" 127.0.0.1 -n $N --rescue "$M/rescue"
+came "<p>three</p>"
+check "a rescue system that calls its disk what no disk is called is sent nothing (and the machine started as it was)" \
+  "$([[ $RC != 0 && $(page $N) == "<p>three</p>" ]] && said "which no disk is" && echo ok)"
+rm "$M/odd"
 
 # An image packed here, with a private CA of its own: k15 deploy, and k15 renew
 D=k15dep.test
@@ -219,6 +230,21 @@ check "k15 renew: a new key and a certificate from the authority, packed as befo
   "$([[ $RC == 0 && $(page $D) == "<p>four</p>" && ! -e $M/c/ca.pem && -f $M/c/old/server.key ]] && echo ok)"
 k15 renew 127.0.0.1 "$M/o" --rescue "$M/rescue"
 check "  and nothing while that one has long to go" "$([[ $RC == 0 ]] && said "nothing to do" && kill -0 "$(cat "$M/qemu.pid")" && echo ok)"
+
+# A machine whose disk holds a certificate that nobody believes: an image packed here
+# with a private CA's, good until 2049 (and for a name that is an IPv6 address as well).
+# k15 publish keeps that only where no better is asked for (--staging).
+unset SSL_CERT_FILE CURL_CA_BUNDLE
+k15 pack "$M/site" -n $N --san ::1 -c "$M/c2" -o "$M/o2" && k15 deploy 127.0.0.1 "$M/o2" --rescue "$M/rescue" --first
+check "k15 deploy: a name that is an IPv6 address is fetched as one" "$([[ $RC == 0 ]] && said "https://\[::1\]/ too" && echo ok)"
+export SSL_CERT_FILE=$M/ca.pem CURL_CA_BUNDLE=$M/ca.pem
+n=$(cat "$M/certbots")
+k15 publish "$M/site" 127.0.0.1 -n $N --rescue "$M/rescue" --first --staging
+check "k15 publish --first --staging keeps a certificate that nobody believes, and says that it did not check it" \
+  "$([[ $RC == 0 && $(cat "$M/certbots") == "$n" ]] && ! page $N >/dev/null && said "does not check the certificate" && echo ok)"
+k15 publish "$M/site" 127.0.0.1 -n $N --rescue "$M/rescue" --first
+check "  and without --staging gets one that is believed, with a new key" \
+  "$([[ $RC == 0 && $(cat "$M/certbots") == $((n + 1)) && $(page $N) == "<p>four</p>" ]] && echo ok)"
 
 [[ $bad == 0 ]] && echo "all ok" || { echo "FAILED (the tool's last words:)"; sed 's/^/    /' "$M/out"; }
 exit $bad
