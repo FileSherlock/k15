@@ -15,22 +15,22 @@
 ; So the first 64 bytes of such a frame still say who the client is and how to reach it,
 ; which is what the timers keep of a frame (`tarm`, `tnote`).
 tcp6:   cmp word [rbx+12], 0xDD86
-        jne tcp.ret
+        jne tcp.ret0
         mov al, [rbx+14]
         and al, 0xF0
         cmp al, 0x60
-        jne tcp.ret
+        jne tcp.ret0
         movzx ecx, word [rbx+18]
         xchg cl, ch             ; so many bytes behind the header
         lea eax, [rcx+54]
         cmp eax, [RXLEN]
-        ja tcp.bad
+        ja .bad
         mov ebp, [rbx+20]       ; what follows the header, and how many routers it may still pass
         mov eax, ebp
         cmp al, 6
         je .sum
         cmp al, 58
-        jne tcp.ret
+        jne .ret
 .sum:   shl eax, 8              ; The checksum, TCP's or ICMPv6's, covers the addresses,
         mov [rbx+20], ax        ; the length, what follows the header, and that: all from
         mov [rbx+rcx+54], bl    ; the length on, once the two bytes behind it say 0 and
@@ -40,15 +40,15 @@ tcp6:   cmp word [rbx+12], 0xDD86
         call csum
         pop rcx
         test ax, ax
-        jnz tcp.bad
+        jnz .bad
         mov eax, ebp
         cmp al, 58
         je nd
         cmp ecx, 20             ; (TCP's header at least: what is taken for ports must be some)
-        jb tcp.bad
+        jb .bad
         lea esi, [rbx+38]
         call our6
-        jne tcp.ret
+        jne .ret
         movdqu xmm0, [rbx+22]
         movq [rbx+14], xmm0
         pextrd [rbx+22], xmm0, 2
@@ -61,6 +61,8 @@ tcp6:   cmp word [rbx+12], 0xDD86
         pop rcx
         sub dword [RXLEN], 20
         jmp tcp.sums
+.bad:   count 0                 ; (`tcp.bad` and `tcp.ret`, where what is here reaches them: but for
+.ret:   ret                     ; the first two of `tcp6`, to which the `ret` at the end of `tcp` is near)
 
 ; nd: an ICMPv6 message (whole, its checksum right: `tcp6`; ecx = its length, bp = what
 ; followed the header and how many routers the frame may still pass). If it is a neighbour
@@ -70,17 +72,17 @@ tcp6:   cmp word [rbx+12], 0xDD86
 ; at our card's. That is all of ICMPv6 here: no echo, and nothing that tells us about a
 ; router, since a frame of ours goes to where the one it answers came from.
 nd:     cmp bp, 0xFF3A
-        jne tcp.ret
+        jne tcp6.ret
         cmp word [rbx+54], 135
-        jne tcp.ret
+        jne tcp6.ret
         cmp ecx, 24
-        jb tcp.ret
+        jb tcp6.ret
         lea esi, [rbx+62]
         call our6
-        jne tcp.ret
+        jne tcp6.ret
         mov rax, [rbx+22]
         or rax, [rbx+30]
-        jz tcp.ret
+        jz tcp6.ret
         call txbuf
         mov edi, ebx
         call ethhdr

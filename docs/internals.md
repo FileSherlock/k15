@@ -695,7 +695,7 @@ model that asserts every bound.
   depends on every byte in front, so two builds differed by 6% in handshakes a second
   there, and by nothing here (Zen 2). The mask says at which of the 32 places behind a
   boundary the routine may begin, and it gets only the padding that takes it to the
-  next of them: 74 to 91 bytes in all, by what lies in front (when it was 35, "the next
+  next of them: 78 to 96 bytes in all, by what lies in front (when it was 35, "the next
   boundary, and n bytes more" for each was 226).
   `tools/jcc.py` finds such jumps (make says so if one of these routines has one) and,
   with `mask`, the mask for a routine that has been changed; of `xdh` and `seal`, which

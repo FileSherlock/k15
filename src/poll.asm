@@ -61,7 +61,7 @@ ring1:  mov ebx, [MYRING]
 drain:  mov esi, [Q0+8]         ; used ring: anything new?
         mov eax, [Q0+Q_SEEN]
         cmp ax, [rsi+2]
-        je .done
+        je ring1.none           ; (nothing: the `ret` in front of us is the near one)
         inc dword [Q0+Q_SEEN]
         and eax, [Q0+12]
         mov edx, [rsi+4+rax*8]  ; buffer id
@@ -120,7 +120,6 @@ drain:  mov esi, [Q0+8]         ; used ring: anything new?
         jmp drain
 .lost:  count 2
         jmp .give
-.done:  ret
 
 ; bdrain: the same, from the middle of long work, on whichever processor: keeps the eight
 ; old registers

@@ -64,14 +64,14 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   command line a `$` is make's, as anywhere there: `./k15 pack --header` has none of
   that). The scripts take `B` from the environment. Only the address, the names,
   the site and its settings are tracked: after changing another setting, `make -B`.
-- `python3 tools/sizes.py build/os.lst` = bytes per routine. Of the system's 14,995
+- `python3 tools/sizes.py build/os.lst` = bytes per routine. Of the system's 14,867
   with an address of its own, about: boot, clock calibration, page tables, driver and
-  the other processors 2,710; network 4,390 with the timers; requests and the forms of
+  the other processors 2,710; network 4,260 with the timers; requests and the forms of
   a file 740; TLS handshake and key schedule 1,650; SHA-256 450; curves 3,850 with
-  their programs and constants; the cipher 1,000; certificate 230; among them 91 of
+  their programs and constants; the cipher 1,000; certificate 230; among them 96 of
   padding in front of the routines a handshake spends its time in (HOT in "How the
-  curve code works"). With the DHCP client (the default) it is 15,509, and with IPv6
-  as well 16,229: 520 and 731 bytes of code more, and 85 and 74 of that padding,
+  curve code works"). With the DHCP client (the default) it is 15,349, and with IPv6
+  as well 16,005: 496 and 660 bytes of code more, and 82 and 78 of that padding,
   which goes by what happens to lie in front of those routines. Whose segment it is costs 26 bytes, zeroing what loaders left where code
   can run 7, the ChangeCipherSpec in our flight 10, and what the audit's 4 to 7, 11
   and 13 asked for 55: a ClientHello's type, length and compression methods 36, the

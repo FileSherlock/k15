@@ -105,6 +105,7 @@ hsbuf:  movzx ebx, word [rbp+C_HS]
 ; the client has the flight, and so does a slot that is given to another connection). If
 ; 16 in a row are in use, the 16th is taken all the same: its owner's ClientHello, if that
 ; was arriving in pieces, is then never finished, and its flight can't be sent a second time.
+; (Clobbers rdx.)
 hsnew:  push rax
         push rcx
         push 16
@@ -119,12 +120,12 @@ hsnew:  push rax
         shl ebx, HS_SHIFT
         add ebx, HSP
         inc eax                 ; (what C_HS calls it)
-        mov r8, [rbx+HS_OWNER]
-        test r8, r8
+        mov rdx, [rbx+HS_OWNER]
+        test rdx, rdx
         jz .take
-        cmp [r8+C_HS], ax
+        cmp [rdx+C_HS], ax
         jne .take
-        cmp dword [r8+C_IP], 0
+        cmp dword [rdx+C_IP], 0
         loopne .t
 .take:  mov [rbx+HS_OWNER], rbp
         and dword [rbx+HS_FLEN], 0
@@ -233,10 +234,12 @@ tcp_seg: xor r8d, r8d
         shl eax, 16
         mov ah, 6
         stosd
-        mov rax, [abs P_IP]     ; the addresses: from ours, which is where the frame in
-        ror rax, 32             ; hand was sent to, to the client's
+        push P_IP               ; the addresses: from ours, which is where the frame in
+        pop rsi                 ; hand was sent to, to the client's;
+        lodsq
+        ror rax, 32
         stosq
-        mov eax, [abs P_PORTS]
+        lodsd                   ; and the ports, which follow them there, likewise
         rol eax, 16
         stosd
         lea esi, [rbx+22]
@@ -293,13 +296,13 @@ tcp_seg: xor r8d, r8d
         mov esi, IP6
         movsq
         movsq
-        mov rax, [abs 14]
-        stosq
-        mov eax, [abs 22]
-        stosd
-        mov eax, [abs 30]
-        stosd
-        mov eax, [abs P_PORTS]
+        push 14                 ; (bytes 14 to 25 of the frame in hand,
+        pop rsi
+        movsq
+        movsd
+        lodsd
+        movsd                   ; and 30 to 33;
+        lodsd                   ; the ports follow)
         rol eax, 16
         stosd
         test byte [rbx+47], 2   ; (a SYN-ACK says what a segment may hold: over IPv6 that

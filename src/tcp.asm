@@ -28,10 +28,10 @@ tcp:
         cmp word [rbx+12], 0x0608
         jne .ip
         cmp dword [rbx+RXLEN], 42 ; ARP, and all of it (what lies behind a shorter frame is
-        jb .ret                 ; the frame before it): a request for our address is answered
-        cmp word [rbx+20], 0x0100
-        jne .ret
-        NOTOURS rbx+38, .ret
+        jb .ip                  ; the frame before it): a request for our address is answered
+        cmp word [rbx+20], 0x0100 ; (Any other goes on to `.ip`, which is near, and where
+        jne .ip                 ; a frame of this type gets no further.)
+        NOTOURS rbx+38, .ip
         call txbuf
         mov edi, ebx
         call ethhdr
@@ -106,8 +106,8 @@ tcp:
 .port:  cmp [rbx+P_IP], ebx     ; (no client is 0.0.0.0: that marks a free slot)
         je .ret
         movzx eax, byte [rbx+46]
-        shr eax, 4
-        shl eax, 2              ; TCP header length
+        shr eax, 2
+        and al, 0x3C            ; TCP header length
         cmp al, 20
         jb .ret
         sub ecx, eax            ; payload length
@@ -158,10 +158,9 @@ tcp:
         jmp .syn                ; over, see `.odd`)
 .nos:   test rbp, rbp
         jz .deny                ; (no room where this connection would go: say so now)
-.syn:   movzx ecx, byte [rbx+46] ; its options: how much the client takes in one segment,
-        shr ecx, 4              ; and whether it scales its window
-        lea ecx, [rcx*4-20]
-        lea esi, [rbx+54]
+.syn:   lea ecx, [rsi-54]       ; its options (they end where what it carries begins: esi):
+        lea esi, [rbx+54]       ; how much the client takes in one segment, and whether it
+                                ; scales its window
         mov edx, 536            ; (what one that doesn't say must take)
         xor r8d, r8d
 .opt:   cmp ecx, 2
@@ -234,7 +233,7 @@ tcp:
         jmp .seg
 
 .nsyn:  test dl, 16
-        jz .ret
+        jz .ret2
         inc eax
         jnz .est
         ; No such connection. If this is the first packet after one of our SYN-ACKs, it is a
@@ -245,17 +244,18 @@ tcp:
 .miss:  call ckx
         jz .make
         test ax, HINT
-        jz .ret
+        jz .ret2
         test dl, 1
         jnz .rst
         test ecx, ecx
-        jz .ret
+        jz .ret2
 .rst:   count 5
         mov al, 4               ; RST, where the client's ack says
         mov edx, [rbx+P_ACK]
         xor ecx, ecx
         xor edi, edi
         jmp .seg
+.ret2:  ret
 .full:  count 2                 ; there is no room for it: refused
         jmp .rst
 .make:  test rbp, rbp
@@ -268,7 +268,7 @@ tcp:
         or rdi, rax             ; (C_AGE): from that step on it is not one that has long
         mov rax, [CLAIMQ]       ; been quiet, for anybody to take
         lock cmpxchg [rbp], rdi
-        jne .ret
+        jne .ret2
         mov eax, [HKO+12]       ; (its SYN-ACK has arrived: `tnote`)
         and eax, [TMMASK]
         mov edi, [TMT]
@@ -326,9 +326,9 @@ tcp:
         test byte [rbp+C_FLG], F_CLOSED ; It has all we sent. If that includes our FIN, that
         jz .nfin                ; was the connection
         cmp [rbx+P_PORTS+2], bl
-        je .free
+        je .free2
         test byte [rbp+C_FL2], F_FIN
-        jnz .free
+        jnz .free2
 .nfin:  cmp [rbx+P_PORTS+2], bl
         je .nhs
         cmp [rbp+C_ST], ebx
@@ -385,6 +385,8 @@ tcp:
         mov rax, [rbp]
         mov [CLAIMQ], rax
         jmp .make
+.free2: and dword [rbp+C_IP], 0 ; (`.free`, where `.est` reaches it)
+        ret
 .stale: test edi, edi
         jz .ak
 .bare:  xor ecx, ecx            ; (an ack and nothing else, from where we are)
@@ -445,6 +447,19 @@ tcp:
         cmp eax, [rbp+C_ACK]
         je .reply
         jmp .out
+        ; The client lacks the end of what we sent, from its ack on. If a response is on
+        ; its way, `.tx` sees to it; if not, `.lres`. (It stands here, among those that
+        ; come to it, so that their jumps are short ones.)
+.resend:
+        call sm
+        jnc .lres
+        mov al, E_DUP
+        test byte [rbx+P_FL], 1
+        jnz .lost
+        jrcxz .ev
+.lost:  mov al, E_RTO | E_ACK
+.ev:    or [rbx+P_EV], al
+        jmp .tx
 .inord: test ecx, ecx
         jnz .new
         test byte [rbx+P_FL], 1
@@ -524,21 +539,7 @@ tcp:
         cmp dword [rbp+C_ST], 0 ; all there. Before the handshake it is the ClientHello, if
         jne .rec                ; it is a handshake record at all (clients send a
         cmp byte [rbx+HS_CH], 22 ; ChangeCipherSpec before a second ClientHello, for
-        je .hello               ; middleboxes' sake: nothing to us);
-        pop rbx
-        mov [rbp+C_LEN], bx
-        jmp .walk
-.rec:   push rsi
-        lea esi, [rbx+HS_CH]
-        call record             ; any other is looked at like those that come in one piece
-        pop rsi
-        pop rbx
-        jc .busyc
-        mov [rbp+C_LEN], bx
-        mov [rbp+C_HS], bx      ; (and the buffer can go to another)
-        jmp .walk
-.nyet:  pop rbx
-        jmp .walk
+        jne .done               ; middleboxes' sake: nothing to us);
 .hello: push rsi                ; (the rest of this segment)
         push rcx
         push rbx
@@ -562,8 +563,18 @@ tcp:
         pop rdi
         pop rcx
         pop rsi
+.done:  pop rbx                 ; That was the record: the next one begins
+.done0: mov [rbp+C_LEN], bx
+        jmp .walk
+.rec:   push rsi
+        lea esi, [rbx+HS_CH]
+        call record             ; any other is looked at like those that come in one piece
+        pop rsi
         pop rbx
-        mov [rbp+C_LEN], bx
+        jc .busyc
+        mov [rbp+C_HS], bx      ; (and the buffer can go to another)
+        jmp .done0
+.nyet:  pop rbx
         jmp .walk
         ; A request whose response can't be the one in hand yet (`record`): it is as good
         ; as not arrived, and so is all that follows it in this segment. The client will
@@ -755,7 +766,7 @@ tcp:
         add eax, edx
         cmp eax, 255
         jbe .cw
-        mov eax, 255
+        mov al, 255
 .cw:    mov [rbp+C_CW], al
         jmp .pump
 .loss:  shr byte [rbp+C_CW], 1  ; Something was lost: half as many may be on their way
@@ -799,8 +810,8 @@ tcp:
         sub edx, [rbp+C_RS]
         cmp edx, ecx
         jbe .pl
-        cmp edx, 0xFFFF         ; (and no more than 64 KB: a longer one is on its way for
-        ja .pl                  ; longer than a client waits for an ack before it asks again)
+        shr edx, 16             ; (and no more than 64 KB: a longer one is on its way for
+        jnz .pl                 ; longer than a client waits for an ack before it asks again)
         or byte [rbp+C_FLG], F_DEFER
 .pl:    cmp byte [rbp+C_FLG], F_DUP3 ; (While the client lacks something that was on its
         jae .pa                 ; way, nothing new goes: so its ack says when it has it all)
@@ -847,23 +858,12 @@ tcp:
 .nf:    cmp eax, [rbp+C_ACK]
         je .ret1
         test byte [rbp+C_FL2], F_ARMED
-        jnz .ret1
-        call tarm               ; then it waits for an ack, and not for ever
+        jz tarm                 ; then it waits for an ack, and not for ever
 .ret1:  ret
 
-        ; The client lacks the end of what we sent, from its ack on. If a response is on
-        ; its way, `.tx` sees to it. Otherwise what we sent is our flight, or on port 80
-        ; the same response for every request: built again and sent, all the client lacks.
-.resend:
-        call sm
-        jnc .lres
-        mov al, E_DUP
-        test byte [rbx+P_FL], 1
-        jnz .lost
-        jrcxz .ev
-.lost:  mov al, E_RTO | E_ACK
-.ev:    or [rbx+P_EV], al
-        jmp .tx
+        ; What the client lacks (`.resend`) while no response is on its way: what we sent
+        ; is our flight, or on port 80 the same response for every request: built again
+        ; and sent, all the client lacks.
 .lres:  count 4
         mov edi, OB
         mov eax, [rbp+C_SND]
@@ -914,10 +914,9 @@ tcp:
         mov al, 0x18
         jrcxz .ret0
 .rs:    mov edx, [rbx+P_ACK]
-        call tcp_send
-.ret0:  ret
+        jmp tcp_send
 .ret0p: pop rbx
-        ret
+.ret0:  ret
 .resetp: pop rbx
 .reset: mov al, 4               ; we can't go on with this connection: say so and forget it
         mov edx, [rbp+C_SND]

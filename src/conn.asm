@@ -47,9 +47,9 @@ find:   pushad
         mov eax, [HKO]
         call .where
         push rbp                ; the first
-        mov eax, [abs P_IP]
-        mov di, [abs P_PORTS]
-        xor esi, esi            ; esi = the slot that has been quiet for longer than bh
+        xor esi, esi            ; (FR; and) esi = the slot that has been quiet for longer than bh
+        mov eax, [rsi+P_IP]
+        mov di, [rsi+P_PORTS]
         mov bh, IDLE
         call .scan
         mov bl, dl              ; free slots in the first bucket

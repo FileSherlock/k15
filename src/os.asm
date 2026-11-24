@@ -222,12 +222,12 @@ BIGS    equ 1 << BIGSH
 BIGPAY  equ 0xFF00          ; such a frame holds so many bytes of segments at most
 ; NOTOURS at, label: to `label` unless the address at `at` is ours: the one the image was
 ; built with (make IP=a.b.c.d: OURIP, as it is on the wire), or else the one we were given
-; (MYIP; while we have none, nothing is for us). (Clobbers eax.)
+; (MYIP; while we have none, nothing is for us). (ebx = 0; clobbers eax.)
 %macro NOTOURS 2
 %ifdef OURIP
         cmp dword [%1], OURIP
 %else
-        mov eax, [abs MYIP]
+        mov eax, [rbx+MYIP]
         test eax, eax
         jz %2
         cmp [%1], eax
@@ -373,7 +373,7 @@ TSLOT   equ 128
 ; this, how fast a handshake is there depends on how many bytes of code happen to lie in
 ; front (6% between two builds, measured). Bit k of the mask says that the routine may
 ; begin k bytes behind a boundary; it gets as few bytes of padding as take it to such a
-; place (74 to 91 bytes in all, by what lies in front; when it was 35, the next boundary
+; place (78 to 96 bytes in all, by what lies in front; when it was 35, the next boundary
 ; and some more for each would have been 226).
 ; `tools/jcc.py build/os.lst mask ROUTINE` says the mask, and the build says when
 ; a routine that was changed needs a new one. (Of `xdh` and `seal`, which are called

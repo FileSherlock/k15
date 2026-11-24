@@ -22,10 +22,11 @@
 ; an answer has to carry it, so whoever has seen a question's number, or means to guess
 ; one, has until the next question. (Clobbers everything. By the clock as it was last
 ; read: a frame or an idle turn ago.)
+dhnot:  ret                     ; (not yet)
 dhask:  mov ebp, MYIP
         mov eax, [TNOW]
         sub eax, [rbp+DHT-MYIP] ; (how late it is)
-        js dhcp.ret
+        js dhnot
         mov cl, [rbp+DHB-MYIP]  ; (the how manieth time, up to 7: so long until the next,
         cmp cl, 7               ; from now)
         adc cl, 0
@@ -128,18 +129,19 @@ dhsend: push rdx
 ;     its time from now, but after 2^19 s (six days) at the latest, we ask to keep it.
 ;   No (6, NAK): we have no address, and ask anew a second from now.
 ; (Clobbers everything.)
+dhnone: ret                     ; (not an answer to us: the near `ret` for where `dhcp` begins)
 dhcp:   test ax, ax
         jz .sum
         cmp [rbx+40], bx
-        jne .ret
+        jne dhnone
 .sum:   cmp dword [rbx+34], 0x44004300
-        jne .ret
+        jne dhnone
         mov ebp, MYIP
         mov eax, [rbp+DHX-MYIP]
         cmp [rbx+46], eax
-        jne .ret
+        jne dhnone
         cmp [rbp+DHB-MYIP], bl
-        je .ret
+        je dhnone
         lea edi, [rbx+rcx+34]   ; Where the message ends (and four zero bytes behind it:
         mov [rdi], ebx          ; what is read of a value is the message's, or that).
         push rbx                ; What the options say, by number, from 51 on: four bytes

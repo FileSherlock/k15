@@ -1,7 +1,7 @@
 ; send.asm: the segments of the response a connection is in the middle of. A part of os.asm, which includes it.
 ; sm: CF if connection rbp is a TLS one whose client has had our flight: what it gets from
-; then on is cut from the response in hand (`tcp.tx`)
-sm:     cmp byte [abs P_PORTS+2], 0
+; then on is cut from the response in hand (`tcp.tx`). (ebx = 0)
+sm:     cmp [rbx+P_PORTS+2], bl
         je .no
         cmp dword [rbp+C_ST], 0
         je .no
@@ -34,8 +34,8 @@ geom:   pushad
         mov [TXP], ecx
         movzx eax, word [rbp+C_AS]
         mov esi, eax
-        and esi, 0x7FFF
-        shl esi, 4
+        shl esi, 17             ; (its low 15 bits, times 16)
+        shr esi, 13
         add esi, SITE + AT_OFF  ; where it is, its length, its head's length
         mov edx, [rsi]
         add edx, SITE
@@ -59,10 +59,10 @@ geom:   pushad
 ; sendseg: the segment of the response in hand (`geom`) that begins with sequence number
 ; eax goes out: the record that byte is in, from that byte on; behind the response's last
 ; byte, our FIN, if the connection is closed. C_SND moves on if this is further than we
-; had sent. Keeps all registers.
+; had sent. Keeps all registers. (ebx = 0)
 sendseg:
         pushad
-        mov edi, eax
+.in:    mov edi, eax
         sub eax, [rbp+C_RS]     ; how far into the response's bytes on the wire that is
         mov ecx, [TXEND]
         mov edx, ecx
@@ -126,8 +126,8 @@ sendseg:
         call txkick             ; device is told at once, there is a round trip's worth in it)
         jmp .sent
 .one:   call tcp_seg
-.sent:  or byte [abs P_EV], E_SENT
-        popad
+.sent:  popad
+        or byte [rbx+P_EV], E_SENT
         ret
 
 ; sendrun: more of the response in hand goes out, from eax = C_SND on. If the card cuts
@@ -135,7 +135,7 @@ sendseg:
 ; far as the client takes it for now, up to as many as a frame of 64 KiB holds, in one
 ; frame. A record is a segment, so the card cuts where we would have, and what is lost on
 ; the way is one record, made again as ever (`sendseg`). If it does not, or there is only
-; one record to go: `sendseg`. Keeps all registers.
+; one record to go: `sendseg`. Keeps all registers. (ebx = 0)
 sendrun:
 %ifdef OURIP6
         call cuts
@@ -163,8 +163,8 @@ sendrun:
         cmova eax, edx          ; or what is left of the response
         cmp eax, ecx
         ja .many
-        popad                   ; (one record: as ever)
-        jmp sendseg
+        xchg eax, esi           ; (one record: as ever, and what it saved is what we
+        jmp sendseg.in          ; saved)
 .many:  push rax                ; (so many bytes)
         call txbig              ; ebx = a frame of this processor's own
         mov eax, [rbp+C_SND]

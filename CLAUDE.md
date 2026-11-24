@@ -48,9 +48,9 @@ when needed:
 - Tests run on 1 and 2 processors.
 
 ## Where it stands
-- The system is 15,509 bytes. It asks for its address by DHCP; built with one (`IP=`,
-  `-i`) it has no DHCP client and is 14,995. With an IPv6 address as well (`IP6=`, `-6`:
-  it has to be told one) it is 16,229. (Between 74 and 91 of those bytes are padding
+- The system is 15,349 bytes. It asks for its address by DHCP; built with one (`IP=`,
+  `-i`) it has no DHCP client and is 14,867. With an IPv6 address as well (`IP6=`, `-6`:
+  it has to be told one) it is 16,005. (Between 78 and 96 of those bytes are padding
   in front of the hot routines, which goes by what lies before them: `HOT`.)
 - It boots from a BIOS boot sector, by UEFI firmware (`src/efi.asm`: 2,048 bytes of
   the disk and none of the system, which is the same bytes as before it; seen with
