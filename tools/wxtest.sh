@@ -25,7 +25,7 @@
 # And one thing that is no fault of ours but must end the same way (8): a processor whose
 # random number generator says the same every time (`rand`). Such a machine never serves.
 #   tools/wxtest.sh          (SMP=n for other machines than 2 processors; PORT=n for other
-#                            ports than 8520 and up)
+#                            ports than 8520 and up; EFI=1: started by UEFI firmware)
 cd "$(dirname "$0")/.." || exit 1
 export B=build-wx
 mkdir -p $B/www $B/one
@@ -83,6 +83,7 @@ done
 end 4 one " (a site of one small file, in the first page behind the code)"
 for c in "4 one" "10 one" "11 one" "12 www"; do
   set -- $c
+  if [[ $1 == 12 && ${EFI:-} == 1 ]]; then echo "ok   (no control for ${WHAT[12]}: started by OVMF, EFI=1, that page is empty as it comes)"; continue; fi
   run $1 $2 1
   [[ $served == yes ]] && echo "ok   the control: in an image left open, ${WHAT[$1]} is not the machine's end" || { echo "FAIL the control: ${WHAT[$1]} was the machine's end in an image left open (served: $served; $ended)"; bad=1; }
 done

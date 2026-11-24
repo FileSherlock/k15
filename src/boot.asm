@@ -1,5 +1,7 @@
 ; boot.asm - boot sector: what a BIOS needs to start os.bin from a disk (a cloud server's, or
-; `qemu -drive`). The disk image is this sector followed by os.bin (tools/mkdisk.py).
+; `qemu -drive`). The disk image is this sector and behind it a partition with os.bin in
+; it (tools/mkdisk.py, which tells us the sector the image begins at; the partition is
+; for firmware that is no BIOS: src/efi.asm).
 ;
 ; Loads the image to where its multiboot header says (1 MiB and a few bytes: tools/mkdisk.py
 ; reads that header and tells us), however long it is (it ends with the site it serves), a
@@ -94,10 +96,6 @@ pm:     mov ax, 16
         jmp [entry]             ; the multiboot header's entry address
 
 drive:  db 0
-dap:    db 16, 0                ; disk address packet: a piece to 0000:8000, from LBA 1 on
-        dw CHUNK
-        dw LOAD, 0
-        dq 1
 mbi:    dd 0x40                 ; multiboot information: flags (there is a memory map),
         times 10 dd 0
         dd 0, MMAP              ;   its length and address
@@ -106,8 +104,14 @@ gdt:    dq 0
         dq 0x00CF92000000FFFF   ; 16: data, 4 GiB
 gdtr:   dw 23
         dd gdt
-        times 498 - ($ - $$) db 0
-dest:   dd 0                    ; What tools/mkdisk.py fills in: where the image goes (its
-entry:  dd 0                    ; header's load address), where it is entered, and its
-left:   dd 0                    ; length in sectors
+        times 412 - ($ - $$) db 0
+dap:    db 16, 0                ; disk address packet: a piece to 0000:8000, from the
+        dw CHUNK                ; sector the image begins at on
+        dw LOAD, 0
+        dq 0                    ; What tools/mkdisk.py fills in: that sector,
+dest:   dd 0                    ; where the image goes (its header's load address),
+entry:  dd 0                    ; where it is entered, and its length in sectors;
+left:   dd 0
+        times 6 db 0
+        times 64 db 0           ; and the partition table: one partition, the rest of the disk
         dw 0xAA55

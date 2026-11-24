@@ -7,7 +7,7 @@ SCSI, 256 MiB (`MEM=4096` in front of tap.sh for the server's 4 GiB: RAM above 4
 SeaBIOS then puts the card's registers far above 4 GiB too; both are tested that way).
 `tap.sh` gives the guest its address as a network would: `tools/dhcpd.py` answers its
 DHCP on the tap (10.0.2.15, an hour at a time); through QEMU's own network QEMU's server
-does.
+does. `EFI=1` puts OVMF in the BIOS's place (docs/commands.md).
 
 The server (a Hetzner cx23, seen over ssh while it had a Linux): "Hetzner vServer/Standard
 PC (Q35 + ICH9)", SeaBIOS (no UEFI),
@@ -23,7 +23,24 @@ the gateway 172.31.1.1 (d2:74:7f:6e:37:e3). Disk: 38 GB
 on virtio SCSI (1af4:1048), /dev/sda in the rescue system.
 
 SeaBIOS won't boot a disk of a few KiB: `disk.img` is 8 MiB, sparse. A cx23 boots
-`disk.img` written over the whole of /dev/sda, and again after a reset.
+`disk.img` written over the whole of /dev/sda, and again after a reset. So it does the
+disk as it is since UEFI firmware starts it too (a partition table in the boot
+sector, the image a file in the partition): `./k15 deploy --first` in 57 s, back 6 s
+after a reset, and a second `deploy` found who the machine is at the end of its disk.
+
+**Started by UEFI firmware it has been seen in QEMU only**, with OVMF (edk2 of
+Debian's `ovmf`): 1 to 4 processors, with KVM and emulated, RAM above 4 GiB, images
+of 16 KB to 300 MiB (those of 24 MiB and more lie over the memory OVMF holds from
+8 MiB up; one of 130 MiB in a machine of 256 MiB, which can only have been read to
+where part of it goes), the machine in the end as a BIOS start leaves it by QEMU's
+word (CR0, CR4, EFER, the segments, on every processor), a little less table space
+(what the firmware keeps is not ours), and 2.5 s to the first answer where a BIOS
+start takes 0.3 s: OVMF's. Neither Hetzner Cloud nor Linode starts a machine that
+way. What a machine's firmware must do for it: start an application that nobody
+signed (Secure Boot off), and know a partition table of the old kind, as UEFI asks
+of it. Read, not seen: firmware that has put the local APICs into x2APIC mode leaves
+us with one processor (the others are started through the APIC's registers in
+memory).
 
 **What has been on a real machine and what has not.** On Hetzner Cloud (cx23; the
 second one tried had an "AMD EPYC-Rome Processor", GRUB 2.14 and a BIOS): an image
@@ -136,8 +153,9 @@ file, its rescue system a shell with six commands replaced, "start from the disk
 QEMU.
 
 ### Hosts
-What the image needs of one: a BIOS that starts the first sector of the disk (not
-UEFI alone), a virtio network card, an IPv4 address by DHCP (or `-i`), and a processor
+What the image needs of one: a BIOS that starts the first sector of the disk, or
+UEFI firmware that starts what nobody has signed (seen in QEMU only: above), a
+virtio network card, an IPv4 address by DHCP (or `-i`), and a processor
 as the README says. For IPv6 it has to be told the machine's address (`-6`): the one
 the host shows for it (at Hetzner the first of the machine's /64, `...::1`, is the
 custom; where addresses are made from the card's, the one made so).
@@ -175,8 +193,10 @@ custom; where addresses are made from the card's, the one made so).
   by hand first; `--disk /dev/sdb` ("sda is the rescue mode disk"); `--boot 'nova
   unrescue ID'`. Whether it starts a BIOS boot sector, and gives the address by DHCP,
   their documentation does not say.
-- Not this way: Scaleway ("Legacy BIOS is not compatible with Scaleway Instances");
-  Vultr and DigitalOcean (their rescue is an ISO and a console in the browser; both take
+- Scaleway starts a machine by UEFI alone ("Legacy BIOS is not compatible with
+  Scaleway Instances"): the disk has what that takes now; not tried, nor looked at
+  how its rescue system is reached.
+- Not this way: Vultr and DigitalOcean (their rescue is an ISO and a console in the browser; both take
   an image by URL instead: `vultr-cli snapshot create-url`, `doctl compute image
   create`, the latter only with a partition table and cloud-init in it); UpCloud (no
   rescue system: a second server writes the disk).

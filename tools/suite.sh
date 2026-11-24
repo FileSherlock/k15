@@ -25,6 +25,10 @@ TLS="$RUN"
 declare -A T
 T[measure]='./measure.sh'
 T[measure_tcg]='KVM=0 PORT=8453 ./measure.sh'
+# the same disk started by UEFI firmware (src/efi.asm; OVMF has to be there: tools/vm.sh),
+# and one whose image is longer than 2 MiB
+T[measure_efi]='EFI=1 PORT=8533 ./measure.sh'
+T[site_efi]='EFI=1 NOBUILD=1 PORT=8543 tools/sitetest.sh'
 T[browsers]='./browsers.sh'
 T[tls]="$TLS"
 T[tls_loss3]="LOSS=3 $TLS"
@@ -151,14 +155,14 @@ T[bneck]='tools/bnecktest.sh'
 T[repro]='tools/repro.sh'
 # a round trip of 300 ms and nothing lost: nothing is sent twice (the timer goes by the round trip)
 T[rtt]='B=build-site DELAY=300 unshare -Urn ./tap.sh python3 tools/rtttest.py'
-ORDER="measure measure_tcg browsers tls tls_loss3 tls_mtu300_loss3 tls_reorder twice twice_reorder plain plain_loss3 plain_mtu300_loss3
+ORDER="measure measure_tcg measure_efi browsers tls tls_loss3 tls_mtu300_loss3 tls_reorder twice twice_reorder plain plain_loss3 plain_mtu300_loss3
   plain_reorder raw1m raw1m_20k raw_4g tls_4g churn churn_idle idle real_measure real_loss3
   real_mtu300_loss3 real_reorder hrr hrr_loss3 hrr_mtu300_loss3
   hrr_reorder real_hrr_loss3 redirect raw_redirect tls_isn31 tls_isn32 tls_isn31_loss3
   plain_isn32_loss3 real_isn31_loss3 real_isn32_reorder site_wrap31 site_wrap32 site_wrap31_loss3
   site_wrap32_loss3 site_keylife site_gone race1 race2 race3 cpus3 tlsfuzz hellofuzz rawframes ack dhcp dhcp_smp4 dhcp_dnsmasq
   static_measure static_tls_loss3 static_plain v6 tls6 tls6_loss3 tls6_mtu1280_loss3 tls6_reorder plain6 plain6_loss3
-  real6_loss3 real6_reorder hrr6_loss3 small6 site6 site6_reorder v6_tls4_loss3 k15 host wx site site_tap site_loss3 site_mtu600_loss3
+  real6_loss3 real6_reorder hrr6_loss3 small6 site6 site6_reorder v6_tls4_loss3 k15 host wx site site_efi site_tap site_loss3 site_mtu600_loss3
   site_reorder
   site_notso_loss3 site6_loss3 site4_v6_loss3 bneck rtt repro"
 

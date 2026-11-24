@@ -32,7 +32,26 @@ Read the part you are about to change. `tools/ec.py` has the curve code's other 
   the BIOS may put them back), asks the BIOS for its memory map (int 15h, E820),
   protected mode, enters the image like a multiboot loader (the map in a multiboot
   information structure at ebx, as GRUB passes it). `tools/mkdisk.py` writes into it
-  what the image's header says (where it goes, where it is entered) and its length.
+  what the image's header says (where it goes, where it is entered), its length and
+  the sector it begins at.
+- `src/efi.asm`: the same for UEFI firmware, an application of 2,048 bytes in the
+  disk image and none in the image: os.bin is entered as the boot sector enters it,
+  in the machine a BIOS would have left, and knows of neither. It asks the firmware
+  for a page below 1 MiB, for memory below 4 GiB, for the file os.bin read into
+  that, for the memory map, and for its leave (ExitBootServices). Then it writes
+  what of the map is free into its page as a multiboot memory map (ranges that touch
+  as one: 128 at most), and goes on in that page in 32-bit code (`low`): paging off,
+  which ends long mode, CR4 and CR0 as a BIOS has them (firmware sets CR0.WP, and
+  `start` writes to pages it has barred from writing until it sets that itself; it
+  may have five levels of page tables, CR4.LA57), and only then the image copied to
+  where its header says. That place is the firmware's until it has left, and after
+  that still holds what the processor runs on, its page tables for one: so the copy
+  is made where nothing of the firmware's is used any more.
+- The disk (`tools/mkdisk.py`): the boot sector, whose partition table names one
+  partition, the rest of the disk, of the type firmware looks for (0xEF); in it a
+  FAT16 file system with `os.bin` and `EFI/BOOT/BOOTX64.EFI`. The image is there
+  once: the boot sector reads its sectors, which lie one after the other, and the
+  application asks the firmware for the file.
 - virtio-net: `pcird` reads PCI configuration; the driver finds 1af4:1041 or :1000 on any
   bus, walks its capabilities for the common, notify and device structures (a BAR may be
   64-bit and anywhere: each structure is mapped at a place of ours), negotiates
@@ -74,7 +93,8 @@ Read the part you are about to change. `tools/ec.py` has the curve code's other 
   that the asm must match number for number. Read its docstring before touching either.
 - `tools/gen.py`: certificate, curve programs and constants -> `build/*.inc`.
   `tools/pack.py`: the site -> `build/site.bin`, `site.inc`.
-  `tools/mkdisk.py`: the disk image. `k15`: the tool on top.
+  `tools/mkdisk.py`: the disk image (its partition and file system, written out by
+  hand: the same bytes wherever it is made). `k15`: the tool on top.
   `tools/made.py`: `build/made`, what the image is without its key and how it was
   made; `tools/repro.sh` makes one again from that (docs/commands.md). The key is 32
   bytes of the image (64 behind `EDC`: d R mod n), and nothing else in it depends on
@@ -140,7 +160,9 @@ What the page tables say (`start`):
   page the other processors start in (0x8000): the copy of `tramp`, with the ten bytes
   it counts in and finds its segments by, and behind it zeros: the boot sector reads
   the image through that page, a piece at a time, so what it left there was the last
-  piece of the image, site and all, until `start` zeroed it. `tools/wxtest.sh` runs
+  piece of the image, site and all, until `start` zeroed it. (`src/efi.asm` leaves
+  what it wrote in the page the firmware gave it: data like the rest of low memory,
+  or, were it that very page, zeroed with it.) `tools/wxtest.sh` runs
   what must not run and looks at what must be gone, with controls.
 - Behind that, from 18 MiB up, **the table space**: every 2 MiB of RAM that the loader's
   memory map calls available, one after the other, wherever it is. On the server that is

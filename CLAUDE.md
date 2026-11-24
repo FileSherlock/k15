@@ -52,7 +52,9 @@ when needed:
   `-i`) it has no DHCP client and is 14,995. With an IPv6 address as well (`IP6=`, `-6`:
   it has to be told one) it is 16,229. (Between 74 and 91 of those bytes are padding
   in front of the hot routines, which goes by what lies before them: `HOT`.)
-- It boots from a BIOS boot sector or GRUB, uses all the RAM and up to 4 processors,
+- It boots from a BIOS boot sector, by UEFI firmware (`src/efi.asm`: 2,048 bytes of
+  the disk and none of the system, which is the same bytes as before it; seen with
+  OVMF in QEMU, on no host yet) or GRUB, uses all the RAM and up to 4 processors,
   modern virtio-net, and serves GET and HEAD by path with compressed forms, ETag and
   304, keep-alive, a 400 without Host, and a redirect on port 80. The timer for what it sent goes by the
   connection's round trip.
@@ -125,14 +127,16 @@ Don't change the source or a test script while a suite runs.
   minutes: a machine that is made up; what a host does is not seen there).
 - After touching `tools/gen.py`, `tools/pack.py`, `tools/made.py` or the Makefile:
   `tools/repro.sh` (seconds).
-- After anything else: `tools/suite.sh` (85 runs, twenty minutes). Also with `SMP=1`
+- After anything else: `tools/suite.sh` (87 runs, twenty minutes). Also with `SMP=1`
   after touching what processors share or how the machine starts.
 - After touching boot or the polling loops: `measure.sh` with `DEBUG=1` and `LIFE=`
   images too (`DEBUG=1` fails at port 80's page: its page is the counters).
 - After touching `start`, the page tables, `tramp`, `codend`, `src/boot.asm`,
-  `tools/mkdisk.py` or how the Makefile finds `DELTA`: `tools/wxtest.sh` (half a
-  minute: what must not run, with controls), and once through QEMU's own loader
-  (`-kernel`).
+  `src/efi.asm`, `tools/mkdisk.py` or how the Makefile finds `DELTA`:
+  `tools/wxtest.sh` (half a minute: what must not run, with controls), the same with
+  `EFI=1` (a minute: started by OVMF), and once through QEMU's own loader (`-kernel`).
+  After `src/efi.asm` or `tools/mkdisk.py` also an image of over 32 MiB both ways,
+  and what QEMU says of the machine (CR0, CR4, EFER) next to a BIOS start's.
 - After touching `.resend`, `.tx`, `sendseg`, `tcp_send`, the timers, handshake buffers
   or cookie rules: the lossy runs many times over (16 runs of each kind, and the site
   test under loss a few times). What is wrong there is wrong once in thousands.

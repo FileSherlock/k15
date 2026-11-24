@@ -99,6 +99,21 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 - nasm removes its output when it fails: with `-o /dev/stdout`, as root, that is the
   device, and the next build writes the image, key and all, into a file of that name.
   Assemble into a file.
+- No GPT on the disk. Its second copy belongs in the last sector of whatever disk the
+  image is written to, which the image cannot know and where `k15` keeps who a
+  machine is; firmware that finds the first copy without the second writes one
+  there (OVMF did, to a disk made for it). A
+  partition table of the old kind with a partition of type 0xEF is what UEFI asks
+  firmware to know as well.
+- Where the image goes is not free while UEFI firmware runs, and not safe to write
+  right after it has left: OVMF gives out no page from 8 MiB to past 20 MiB (asked
+  for by address, in a machine of 256 MiB; below 8 MiB and from 24 MiB it does), and
+  the page tables the processor is on are somewhere. `src/efi.asm` copies the image
+  last, without paging. And the firmware's machine is not a BIOS's: `start` writes
+  where its own page tables say no until it sets CR0.WP itself, so that bit has to
+  be off when it is entered.
+- An EFI application that goes back to OVMF with an error is started again: what it
+  was given the first time is still taken the second.
 - A page a loader read through is not empty. The boot sector reads the image in pieces
   at 0x8000, the page the other processors start in, which can be executed: it held
   the image's last piece, site and all. What is made executable is zeroed first.

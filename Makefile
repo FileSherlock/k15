@@ -53,10 +53,11 @@ HOT := shablk xdh:loops cswap comb select vm fas fmul fsqr fmul1 inv seal:loops 
 # and what is linked with it: for their owner's eyes only from the moment they are made
 # (umask 077), and if they were there before (chmod))
 # The image: hand-written assembly (src/os.asm) -> flat binary, loaded at 1 MiB and a few
-# bytes (DELTA, below); and a disk image that boots it: the boot sector (src/boot.asm),
-# then the image, padded. os.asm includes the other files of src/, a subsystem each: one
-# unit for the assembler.
-OS := $(filter-out src/boot.asm,$(wildcard src/*.asm))
+# bytes (DELTA, below); and a disk image that boots it (tools/mkdisk.py): the boot sector
+# (src/boot.asm, for a BIOS), then a partition with the image in it, and what UEFI
+# firmware starts (src/efi.asm). os.asm includes the other files of src/, a subsystem
+# each: one unit for the assembler.
+OS := $(filter-out src/boot.asm src/efi.asm,$(wildcard src/*.asm))
 all: $(B)/disk.img
 
 $(B)/ip: FORCE
@@ -67,9 +68,10 @@ $(B)/ip6: FORCE
 	@printf '%s' '$(IP6)' > $@.$$$$; if cmp -s $@.$$$$ $@; then rm $@.$$$$; else mv $@.$$$$ $@; fi
 FORCE:
 
-$(B)/disk.img: src/boot.asm $(B)/os.bin tools/mkdisk.py
+$(B)/disk.img: src/boot.asm src/efi.asm $(B)/os.bin tools/mkdisk.py
 	nasm -f bin -o $(B)/boot.bin src/boot.asm
-	umask 077; python3 tools/mkdisk.py $(B)/boot.bin $(B)/os.bin $@
+	nasm -f bin -o $(B)/efi.bin src/efi.asm
+	umask 077; python3 tools/mkdisk.py $(B)/boot.bin $(B)/efi.bin $(B)/os.bin $@
 	@chmod go= $@
 
 # cert/ is made on the first build (a private CA and a leaf) or holds a real certificate.

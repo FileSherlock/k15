@@ -4,7 +4,7 @@
 #   k15 pack SITE [-n NAME] [--san NAME]... [-i IP] [-6 IP6] [-c CERTDIR] [-o OUT] [--plain80]
 #                [--hsts SECONDS] [--cache SECONDS] [--header 'Name: value'] [--no-compress]
 #       OUT/os.bin (the image: what a multiboot loader such as GRUB starts) and OUT/disk.img
-#       (the same behind a boot sector: what a BIOS starts from a disk). NAME is what the
+#       (the same on a disk that a BIOS starts, and UEFI firmware too). NAME is what the
 #       certificate is for and what port 80 redirects to (a DNS name or an IP address;
 #       default 127.0.0.1). The image asks for its address where it boots (DHCP), so it
 #       runs on any machine whose network gives it one; with -i IP it has that address

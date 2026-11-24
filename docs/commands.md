@@ -47,7 +47,9 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   of a machine that is k15's alone. Everything `./k15` makes is for its owner's eyes
   only (umask 077), and /boot/k15.bin on a server with Linux for root's.
 - `make` assembles `src/os.asm` (and the files of `src/` it includes) into `build/os.bin`
-  and `build/disk.img` (`src/boot.asm` + the image; what the tests boot), with the site of
+  and `build/disk.img` (what the tests boot: `src/boot.asm`, and a partition with the
+  image and `src/efi.asm` in it, so that a BIOS starts it and UEFI firmware too:
+  `tools/mkdisk.py`; the application is 2,048 bytes of the disk), with the site of
   `www/` in it. It assembles twice: once to see where the code ends (`build/os.sizing`,
   which is emptied again: it is an image), and then for an image that is loaded so many
   bytes above 1 MiB (`build/delta`, a `-DDELTA=n`) that its code ends where a page does
@@ -122,7 +124,7 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   has none (a browser may not believe it there). OUT/site.json says what each path must
   return (for the tests), OUT/page80.bin what port 80 says.
 - `tools/suite.sh [JOBS] [name...]`: everything below, a few at a time, one line each
-  (85 runs, twenty minutes; the logs in `$LOGS`, which its last line names). `SMP=1` or
+  (87 runs, twenty minutes; the logs in `$LOGS`, which its last line names). `SMP=1` or
   `SMP=4` in front for other machines than the default of 2 processors. Its verdict is strict: one failed connection is a FAIL. Under
   a loaded host a run that overflows rings on purpose (`raw1m_20k`) can time out a few
   hundred of a million (on 4 processors it does every time the suite runs five at once):
@@ -378,5 +380,10 @@ Every command, script and make variable. Rules for when to run which: CLAUDE.md,
   add, subtract and multiply in each of the three fields), and runs `tools/ec.py`, the
   Python model of the curve code. `make bench` times the same object natively, down to
   one multiplication, and a record of a small page and of a full segment.
+- `EFI=1` in front of anything that starts a QEMU (`./measure.sh`, `./tap.sh`,
+  `./k15 run`, the test scripts) starts the disk by UEFI firmware in place of the
+  BIOS: OVMF, from `/usr/share/ovmf/OVMF.fd` (Debian's `ovmf`) or where `OVMF` says.
+  The suite's `measure_efi` and `site_efi` do; `EFI=1 tools/wxtest.sh` leaves one
+  control out (OVMF leaves the page the other processors start in empty).
 - KVM is used when /dev/kvm is there; `KVM=0` emulates. `tools/vm.sh` reads `KVM` when it
   is sourced, not when `boot` runs.
