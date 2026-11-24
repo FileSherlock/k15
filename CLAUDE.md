@@ -22,7 +22,8 @@ when needed:
 ## Decided with the user
 - This checkout (/home/jaguarm/code/k15) is the branch `dev`: the project is developed
   further here, and stays minimalistic. What is added is added in the smallest form
-  that does its job, and nothing beside it. `main` is the small system.
+  that does its job, and nothing beside it. `main` is what the user has taken from
+  here.
 - **Security can never be lowered, only raised.** Everything behind TLS is in scope:
   anything a packet can make it do. Port 80 says one public thing to everyone.
 - Bytes: on this branch a feature is not stopped by what it costs, but it is
@@ -64,8 +65,8 @@ when needed:
 - Memory per held connection: 24 bytes on port 80, 128 bytes for TLS.
 - On the server (2 shared vCPUs) it does 7,300 to 8,800 new TLS connections a second
   and 100,000 to 120,000 requests a second on kept connections, two to three times
-  nginx; large files at 1.2 GB/s, a quarter more than nginx did. Measured with `main`'s
-  system. This branch's did the same on one server, side by side with it, and does a
+  nginx; large files at 1.2 GB/s, a quarter more than nginx did. Measured with the
+  system before this one (c4d4032). This one did the same on one server, side by side with it, and does a
   quarter more new TLS connections a second since its curve code was made faster
   (10,000 to 11,100 where it did 8,000 to 8,600, on one Skylake server in turn; X25519
   and a signature 205,000 cycles from 298,000, OpenSSL's 329,000): `bench/README.md`.
