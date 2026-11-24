@@ -793,8 +793,8 @@ removing the ones about TLS.
   without its options being walked (one with an option of length 0 too, which RFC
   4861 has thrown away); and we never say that we listen for such questions (no MLD
   report): a switch that passes them only to those who said so will not pass them to
-  us, and then nobody finds us over IPv6. Hetzner Cloud's network does find us; no
-  other host has had this image.
+  us, and then nobody finds us over IPv6. Hetzner Cloud's network does find us, and
+  so does Linode's; no other host has had this image.
 - DHCP: an address that could not be renewed is used on (a server that gives up its
   address is no server; we go on asking every 128 s); nobody is asked whether the
   address offered is in use (no ARP probe, no DECLINE), and it is not given back (no

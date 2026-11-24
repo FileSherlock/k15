@@ -21,6 +21,11 @@ One or two lines each. Add to it when something costs an hour; delete what stops
   old host key: give ssh its own known-hosts file for a load generator. (`./k15 deploy
   --grub` took such a server for one that does not answer, and reset it. It says what
   ssh said now, and leaves the server alone.)
+- Linode: `linode-cli` fills in an image and `authorized_users` of its own (`--no-defaults`
+  for a machine without disks); a disk is not in `disks-list` until it is ready, and
+  "Linode busy" means try again. A Linux from their images on a machine without a swap
+  disk takes 90 s longer to start, every time (its fstab). A reboot of a machine
+  that runs k15 takes three minutes: it is asked to shut down first.
 - WSL exports the machine's name as NAME to every shell: make does not take a NAME from
   the environment that is the host's name (not tried on WSL).
 - `'$(VAR)'` in a recipe is not a quoted value: a `'` in the value ends the quotes, and

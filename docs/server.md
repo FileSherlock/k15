@@ -58,6 +58,29 @@ REQUEST that is sent to everybody. Not yet, anywhere: `renew --grub` with Let's
 Encrypt (with `--staging` its last fetch no longer checks the certificate, as
 `--rescue`'s never did: read, not run). The workflow on GitHub: "A push publishes", below.
 
+On Linode (a Nanode in Frankfurt: "Linode Compute Instance/Standard PC (Q35 + ICH9)",
+SeaBIOS, 1 vCPU, an "AMD EPYC 7713" with all that is needed and sha_ni, 1 GB: RAM from
+1 MiB to 0x3ffdd000), with nothing changed for it: the image as `./k15 publish` makes
+it, asking for its address, with the machine's IPv6 address as well, written from a
+Linux on the machine's second disk ("Hosts", below) and started by "Direct Disk". Its
+card is 1af4:1000 (the older number, with the modern structures: BAR 4 at 0xfe004000,
+the same four offsets and multiplier, one queue pair) at 00:03.0, on the first bus and
+behind no bridge; its disk virtio SCSI (1af4:1004), and 16 MiB smaller than asked for
+(they go to its encryption: a disk of 64 MB is 48). `publish --first --staging` from
+a new machine to the site in 2 min 14 s; `--first` again for Let's Encrypt's own
+certificate, then `publish` with the machine showing its key: a verified fetch each
+time, the site over both addresses (so Linode's network finds us over IPv6 too,
+without being told that we listen), port 80's redirect over both. Each of those took
+six minutes, and four once the Linux no longer waited for a swap disk: three of them
+are Linode's reboot of a system that does not shut down when asked. Started from its
+disk, k15 answers 60 s after the command. What Linode's DHCP says: the address with a
+mask of /24, the router `.1` of that network (fe:ff:ff:ff:ff:ff), twenty name servers,
+a lease of **30 minutes**, from a server (10.210.3.87) that is not on the network.
+So a lease is renewed every 15 minutes there: an image that counts (`DEBUG=3`), up
+for ten hours, had asked 41 times and been told yes 41 times, serving at the end. A
+`linodes reboot` that names no configuration starts k15 again (the configuration last
+started), in three and a half minutes. Not seen there: more than one processor, RAM
+above 4 GiB, load.
 ## Onto a machine that is k15's alone
 The image needs nothing on a machine's disk but itself: `disk.img`, written over the
 whole disk. What writes it is the host's rescue system: a Linux that the host starts
@@ -125,12 +148,27 @@ custom; where addresses are made from the card's, the one made so).
   `--boot`. One disk, /dev/sda. Their documentation: "By default, cloud servers obtain
   their Primary IPv4 address via DHCP"; IPv6 is "statically configured", gateway
   fe80::1.
-- **Linode (Akamai)**, from their documentation, not tried: `linode-cli linodes rescue
-  ID --devices.sda.disk_id DISK` starts the rescue system (Finnix), but "you need to use
-  Lish at least once in order to start SSH": by hand, then without `--rescue`, and with
-  `--boot 'linode-cli linodes reboot ID'`. The machine's configuration has to start the
-  disk's first sector (kernel "Direct Disk"). VirtIO net; DHCP gives one IPv4 address;
-  IPv6 by SLAAC.
+- **Linode (Akamai)** (see above for what was tried). Its own rescue system (Finnix,
+  `linode-cli linodes rescue`) wants a hand at the console first ("you need to use
+  Lish at least once in order to start SSH": read, not tried). What does for one
+  without a hand: a Linode has several disks and several configurations, and a small
+  Linux on a second disk is the rescue system. Once:
+  `linode-cli linodes create --type TYPE --region REGION --label NAME --booted false`
+  (no image), then `linodes disk-create ID --size 3000 --image linode/debian13
+  --root_pass ... --authorized_keys "$(cat KEY.pub)"` and `linodes disk-create ID --size
+  64 --filesystem raw` (a disk is listed only once it is ready), then two
+  configurations: `linodes config-create ID --label helper --kernel linode/grub2
+  --devices.sda.disk_id LINUX --devices.sdb.disk_id RAW --root_device /dev/sda` and
+  `linodes config-create ID --label k15 --kernel linode/direct-disk
+  --devices.sda.disk_id RAW` (Direct Disk starts the disk's first sector). In the
+  Linux, once: take the swap line out of /etc/fstab (the image expects a swap disk, and
+  waits 90 s for it at every start). From then on `--disk /dev/sdb --rescue 'linode-cli
+  linodes reboot ID --config_id HELPER' --boot 'linode-cli linodes reboot ID --config_id
+  K15'`. The Linux is on the machine's disks but not running while k15 is; who can
+  start it is who has the account's token, as with any rescue system. **Three minutes
+  more without a server than elsewhere**: a reboot asks the running system to shut
+  down, and takes three minutes over k15, which does not hear it. IPv6: the address is
+  made from the card's (SLAAC), and `linodes view` shows it: `-6` with that.
 - **OVHcloud Public Cloud**, from their documentation, not tried: `--rescue 'ovhcloud
   cloud instance reboot-rescue ID --wait'` (or `nova rescue ID`); one logs in with a
   password (shown in the console, or returned by the API), so a key has to be put there

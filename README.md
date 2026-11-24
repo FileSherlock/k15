@@ -11,7 +11,8 @@ much of HTTP as a static site needs, in assembly that is assembled as one unit.
 ```
 
 Onto a machine, which is then k15's alone, in one step (`--rescue`: how your host puts
-it into its rescue system; here Hetzner's way. The first time add `--first`):
+it into its rescue system; here Hetzner's way, Linode's is in `docs/server.md`. The
+first time add `--first`):
 
 ```bash
 ./k15 publish site/ 203.0.113.7 -n example.org --san www.example.org --hsts 31536000 \
