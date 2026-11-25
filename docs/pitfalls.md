@@ -5,264 +5,191 @@ One or two lines each. Add to it when something costs an hour; delete what stops
 ## Shell and tools
 - `pkill -f pattern` and `pgrep -f pattern` match the shell that runs them, also over
   ssh. Use `pkill -f "holdloo[p]"`, or a pid file.
-- Long shell commands with a here-document can be refused: write a script file, run that.
+- Long shell commands with a here-document can be refused: write a script file and run it.
 - `perf` is not allowed here unless the user allows it (`kernel.perf_event_paranoid`).
-  Time pieces with `make bench`, or count cycles in the guest (`DEBUG=1`).
-- `GROUPS=x command` gives the command nothing: bash keeps that name. Hence `KEX`.
-- A script that bash is running must not be rewritten in place. Don't edit what a
-  background run uses.
-- `tcpdump` in tap.sh's namespace can't be killed from this shell. It goes when its
-  interface goes (`ip link del`). A packet socket in Python works instead.
-- tc: `action gact drop random netrand drop 100` drops everything. It is
+  Time code with `make bench`, or count cycles in the guest (`DEBUG=1`).
+- `GROUPS=x command` passes nothing: bash reserves that name. Hence `KEX`.
+- Don't rewrite a script bash is running, or edit what a background run uses.
+- `tcpdump` in tap.sh's namespace can't be killed from this shell; it exits when its
+  interface is deleted (`ip link del`). Use a packet socket in Python instead.
+- tc: `action gact drop random netrand drop 100` drops everything. Use
   `gact pass random netrand drop 100`.
 - Snap Firefox can't start through its launcher: `tools/ffcheck.py` runs the binary.
 - `crontab` can't be written from Claude's shell. Use a systemd user timer.
-- Hetzner's web console garbles `|` and `[`: use ssh. A recycled cloud address has an
-  old host key: give ssh its own known-hosts file for a load generator. (`./k15 deploy
-  --grub` took such a server for one that does not answer, and reset it. It says what
-  ssh said now, and leaves the server alone.)
-- Linode: `linode-cli` fills in an image and `authorized_users` of its own (`--no-defaults`
-  for a machine without disks); a disk is not in `disks-list` until it is ready, and
-  "Linode busy" means try again. A Linux from their images on a machine without a swap
-  disk takes 90 s longer to start, every time (its fstab). A reboot of a machine
-  that runs k15 takes three minutes: it is asked to shut down first.
-- WSL exports the machine's name as NAME to every shell: make does not take a NAME from
-  the environment that is the host's name (not tried on WSL).
-- `'$(VAR)'` in a recipe is not a quoted value: a `'` in the value ends the quotes, and
-  nothing fails. `--header` lost a Content-Security-Policy's `'self'` that way, and
-  the build was a success. What is somebody's text goes to a recipe in the environment
-  (`export`, `"$$VAR"`), and from `k15` to make in the environment too: there make
-  leaves a `$` alone, on its command line it does not.
+- Hetzner's web console garbles `|` and `[`: use ssh. Give a load generator its own
+  known-hosts file: a recycled cloud address has an old host key.
+- WSL exports the machine's name as NAME to every shell: make ignores a NAME from the
+  environment that equals the host name (not tested on WSL).
+- `'$(VAR)'` in a recipe is not quoting: a `'` in the value silently ends it (a
+  Content-Security-Policy lost its `'self'`). Pass user text through the environment
+  (`export`, `"$$VAR"`), also from `k15` to make, whose command line expands a `$`.
+- make can't take file names with spaces as prerequisites.
 
 ## nasm
 - A non-local label ends the scope of `.local` labels. Read the first error.
 - `K2`, `st4`, `XEND`, `XBEGIN`, `XTEST` are registers or instructions, not names.
 - An `equ` used before it is defined costs passes until nasm gives up.
-- A number is not reached relative to rip; a label plus a number is.
-- make can't have file names with spaces as prerequisites.
+- A plain number is not addressed relative to rip; a label plus a number is.
+- nasm deletes its output when it fails: with `-o /dev/stdout` as root that is the
+  device, and the next build writes the image, key included, into a regular file of
+  that name. Assemble into a file.
+- The load address is a number too (`DELTA`): `org` needs it on the first pass, so
+  anything that depends on where the code ends needs a separate assembly to find it.
 
 ## QEMU and the tests
 - QEMU keeps the image open: rebuilding under a running VM changes nothing.
-- make does not see that a variable changed: `DEBUG=3 DHMAX=120`, then `DEBUG=3` into
-  the same folder, leaves the first image there (its `made` says which it is). Another
-  variable, another `B=` or `-o`.
-- slirp is slow and serial: one connection in 20 waits a second when they come faster
+- make does not notice a changed `DEBUG`, `DHMAX` and the like (its `made` says what
+  was built): use another `B=` or `-o` per set of variables.
+- slirp is slow and serial: one connection in 20 waits a second when they arrive less
   than 2 ms apart, and it walks every socket. Load tests go over tap.
 - Every guest processor polls: `top` shows 100% whatever the load.
-- A hung test leaves a `qemu-system` spinning. Killing a load client leaves sockets in
-  TIME-WAIT for a minute, and the forwarded port with them.
-- Other VMs beside a suite make `raw1m_20k` fail on four processors.
-- Over tap nothing is lost for lack of room. A window change needs `tools/bneck.sh`.
+- A hung test leaves a `qemu-system` spinning. Killing a load client leaves its sockets,
+  and the forwarded port, in TIME-WAIT for a minute.
 - netem drops a whole GSO packet as one loss, and a Linux client whose first flight is
-  lost waits 3 s, then 6 s: at 5% loss a handshake can outlast a 20 s timeout.
-- A failure of 1 in 10,000 does not show in one run. Run the lossy test 16 times, and
-  the same on the last commit as a control.
+  lost retries after 3 s, then 6 s: at 5% loss a handshake can exceed a 20 s timeout.
+- For a rare failure, run the lossy test 16 times, and as many on the last commit.
 - A test knob can break what it tests: forcing all upper bits of the initial sequence
-  number took the SYN cookie's meaning away. Check a control far from the edge.
-- The table space must begin on a 2 MiB boundary.
-- A test's client is a TCP with rules of its own: Linux takes a reset only at exactly
-  the next number it expects, and a connection that was only ever sent a SYN-ACK is
-  made again by its next packet. Watch the wire, not the sockets.
-- A test that runs a byte to show that it can't be run has to run a "return": anything
-  else faults either way. `tools/wxtest.sh` ran the site's last byte, whatever that
-  was, and could not have failed; nor did it have a site that began where the code ends.
-- `-device loader,addr=A,data=D,data-len=N` puts bytes into a guest's memory before
-  its BIOS runs (what a loader may have left); `-action shutdown=pause` stops a
-  machine where it would start over, with its memory still to be read.
-- A test's ports are the suite's: two tests at once on one port, and the QEMU that
-  could not start looked like a machine that had ended, which is what that test
-  waits for. "It ended" has to mean: by itself, without a word, with status 0.
-- "Its answer is near the new connection's first number" does not say that there is a
-  new connection: one client's cookies lie multiples of 2^14 apart, and the old
-  connection answering looked the same. The answer begins at exactly that number + 1.
+  number removed the SYN cookie's meaning. Check a control far from the edge.
+- A test's client is a TCP with its own rules: Linux accepts a RST only at exactly the
+  next sequence number it expects, and a connection that only ever got a SYN-ACK is
+  re-created by its next packet. Watch the wire, not the sockets.
+- A new connection's answer must start at exactly its initial sequence number + 1: one
+  client's cookies are multiples of 2^14 apart, and the old connection's look the same.
+- Test whether clients are told apart with a small table: with millions of slots they
+  never collide, and "every client is the same client" passed 30,000 connections.
+- A test's server must not say "yes, for a year" by accident: random DHCP answers
+  silenced the client they were meant to exercise, and the test read 150 of 13,000.
+- A test that shows a byte can't be executed must execute a `ret` (anything else faults
+  either way), in a site that begins right where the code ends (`tools/wxtest.sh`).
+- `-device loader,addr=A,data=D,data-len=N` puts bytes in guest memory before the BIOS
+  runs; `-action shutdown=pause` stops a machine with its memory still readable.
+- Test ports are shared with the suite: a QEMU that failed to start looked like a
+  machine that had halted. "It ended" must mean: by itself, with no output, status 0.
+- A test written beside the code knows what the code knows. Vectors from elsewhere, and
+  reviewers not told why a fix is right, found what such tests missed (a small-order
+  X25519 point, a key file's pasted public key, two faults beside the slot race).
 
 ## Code
-- Sequence numbers are compared by the sign of their difference (`js`/`jns` after
-  `sub`), never with `jl`/`jle`: those break where a segment straddles 2^31.
-- `mulx` leaves 64 bits in rcx: `mov cl, n` after it is not a count. `and` between an
-  `add` and its `adc` takes the carry away.
-- A helper called from a waiting loop must not touch the loop's registers.
-- A register that "is still zero" isn't after a call that returns something in it, or
-  that only says "clobbers esi" in its comment (`find` wrote an IPv6 client's identity
-  through esi after the hash had moved it: into the hash). Nothing failed but 1
-  connection in 5,000 under reordering.
-- Whether two clients are told apart shows in a small table: with millions of slots
-  two clients never met, and "everybody is the same client" passed 30,000 connections.
-- A check in front of a loop's label is skipped by every jump to the label.
-- Memory we did not zero is not zero (the transmit lock in low memory).
-- What is in BSS is per processor, whether one thinks of it or not. Shared state goes
-  in low memory.
-- Where a jump lies can cost 6% on Skylake and nothing on Zen 2: see `HOT`.
-- Aligning is not padding: where an image is loaded is a number too (`DELTA`). nasm's
-  `org` wants that number on its first pass, so what depends on where the code ends
-  takes an assembly of its own to find.
-- nasm removes its output when it fails: with `-o /dev/stdout`, as root, that is the
-  device, and the next build writes the image, key and all, into a file of that name.
-  Assemble into a file.
-- No GPT on the disk. Its second copy belongs in the last sector of whatever disk the
-  image is written to, which the image cannot know and where `k15` keeps who a
-  machine is; firmware that finds the first copy without the second writes one
-  there (OVMF did, to a disk made for it). A
-  partition table of the old kind with a partition of type 0xEF is what UEFI asks
-  firmware to know as well.
-- Where the image goes is not free while UEFI firmware runs, and not safe to write
-  right after it has left: OVMF gives out no page from 8 MiB to past 20 MiB (asked
-  for by address, in a machine of 256 MiB; below 8 MiB and from 24 MiB it does), and
-  the page tables the processor is on are somewhere. `src/efi.asm` copies the image
-  last, without paging. And the firmware's machine is not a BIOS's: `start` writes
-  where its own page tables say no until it sets CR0.WP itself, so that bit has to
-  be off when it is entered.
-- An EFI application that goes back to OVMF with an error is started again: what it
-  was given the first time is still taken the second.
-- A page a loader read through is not empty. The boot sector reads the image in pieces
-  at 0x8000, the page the other processors start in, which can be executed: it held
-  the image's last piece, site and all. What is made executable is zeroed first.
-- Two hosts send a RST, with two numbers: one that has the connection and gives it
-  up, at its own next number; one that has none, at the number of our ack. They
-  differ while our ack is held back a byte. We take the second: every later segment
-  of ours brings it.
-- The sequence number is looked at before the ack, or the ack alone will do: with any
-  sequence number at all, a made-up ack moved `C_ACK`, and one in ten thousand ended
-  a response. The first rule about acks (data and FIN only) left that open; the
-  reader who had not written it saw it.
-- The key share is found by walking the ClientHello. Searching for its first four
-  bytes failed once in two million handshakes. Extensions come in any order.
+- Compare sequence numbers by the sign of their difference (`js`/`jns` after `sub`),
+  never with `jl`/`jle`: those break where a segment straddles 2^31.
+- `mulx` leaves 64 bits in rcx: `mov cl, n` after it is not a count.
+- A register is not "still zero" after a call that returns something in it, or whose
+  comment just says "clobbers esi" (`find` wrote an IPv6 client's identity through esi
+  into the hash). A helper called from a waiting loop must not touch its registers.
+- r8 to r15 are the crypto's scratch registers, secret until set: set a register before
+  it goes into a frame (a DHCP REQUEST carried r9 as its server identifier).
+- Memory we did not zero is not zero: the transmit lock in low memory; the page at
+  0x8000, which the boot sector reads the image through, held its last piece, site
+  included. Zero what is made executable first.
+- BSS is per processor. Shared state goes in low memory. The table space must begin on
+  a 2 MiB boundary.
+- Shared state that changes in more than one step is changed by one processor only, or
+  in one step: the DHCP client's three words were written by whichever processor got
+  the answer. Frames that change it go to one processor (`drain`).
+- A count is no bound for a later walk once another processor can change it in between
+  (`find`: the free slots of a bucket). Every walk needs its own bound.
+- A rare race is still a race: a host can take a processor away for milliseconds at any
+  point. Close it, and make the test hold one side still (`RACE=n`, `tools/racetest.py`).
+- A processor with no work must not do the idle work either: its share of a shared
+  table belongs to another processor (`tidle`, with three processors).
+- A processor has an interrupt table unless given an empty one: ask QEMU (`info
+  registers -a`) what each has.
+- No GPT on the disk: its backup belongs in the disk's last sector, which the image
+  can't know and where `k15` keeps the machine's identity, and firmware that misses it
+  writes one there (OVMF does). An MBR partition of type 0xEF is used instead.
+- UEFI: where the image goes is not free while the firmware runs (OVMF holds 8 MiB to
+  past 20 MiB), and its page tables are still in use after it exits: `src/efi.asm`
+  copies the image last, paging off. `start` writes to its read-only pages before it
+  sets CR0.WP, so WP must be clear on entry.
+- An EFI application that returns an error to OVMF is started again, and what it
+  allocated the first time is still taken.
+- Check the sequence number before the ack: with any sequence number, a forged ack
+  moved `C_ACK` and ended one response in ten thousand.
+- Compare a length before subtracting from it: `sub ecx, 20` / `cmp ecx, 20` let an IP
+  total length below 20 pass as 4 GiB, and one frame crashed the machine. What a router
+  would have dropped still arrives from the same link (`tools/rawtest.py`).
+- Bound an echoed length where it is read: a session ID over 32 bytes was echoed with
+  lengths that wrapped at 256. A frame shorter than what is read of it exposes the
+  previous frame: a short ARP request was answered from that.
+- Find the key share by walking the ClientHello: extensions come in any order, and
+  searching for its first four bytes failed once in two million handshakes.
 - Clients send a ChangeCipherSpec record before their second ClientHello.
-- A processor always has an interrupt table unless it is told an empty one. Ask QEMU
-  (`info registers -a`) what each processor has.
-- A timer that sends again needs an end.
-- What one timer sends unasked, another part takes for a sign: the SYN-ACK that goes
-  again after 0.25 s makes a client 300 ms away acknowledge twice, and the flight goes
-  twice for that. "A flight sent twice says nothing of the round trip" then left every
-  such client without one, which is every client the measurement was for. Watch the
-  wire at the round trip the change is about (`DELAY=300`), not at the tap's 0.1 ms.
+- What one timer sends unprompted, other code takes as a signal: the SYN-ACK resent
+  after 0.25 s makes a client 300 ms away ack twice, and a "flight sent twice gives no
+  round-trip sample" rule left exactly those clients without one. Test at the round
+  trip the change is about (`DELAY=300`).
 - Waiting to send is no reason not to receive: drain the device's ring from every
-  loop that waits.
-- Under overload what matters is where frames wait: deep rings of our own, not the
-  device's 256.
-- A length is compared before anything is taken off it: `sub ecx, 20` / `cmp ecx, 20`
-  let an IP total length of less than 20 pass for 4 GiB, and the next write was the
-  machine's end. One frame (`tools/rawtest.py`).
-- What a router would have dropped is still a frame to whoever is on the same link.
-- What was counted is no bound for a walk that comes after, once another processor can
-  change it in between (`find`: the free slots of a bucket). Every walk has its own end.
-- A processor that has no work must not do the idle work either: its share of a shared
-  table is somebody else's (`tidle`, with three processors).
-- r8 to r15 are the crypto's scratch: what is in them is secret until it is set. A
-  register that goes into a frame is set first (the server's name in a DHCP REQUEST was
-  whatever r9 held, until an offer without that option was thought of).
-- A test's server must not be able to say "yes, for a year" by accident: the random
-  DHCP answers silenced the client they were meant to exercise, and the test passed
-  with 150 of 13,000 read.
-- What several processors know and one of them changes in more than one step is
-  changed by one processor only, or in one step. The DHCP client's three words were
-  written by whoever got the answer: "what is in low memory is everybody's" was the
-  design, and the fault. Give the frames that change it to one processor (`drain`).
-- A door that is "open for milliseconds a day" is open for as long as nobody shuts
-  it: asking for a renewal that no server answers went on for ever, with one number.
-  What is random in a question is made anew for every question.
-- A mask after `HOT` can be stale without the build saying so, as long as the routine
-  happens to sit well: `xdh`'s was, until 20 bytes of code in front of it moved it.
-- A length that is echoed is bounded where it is read: a session id of more than 32
-  bytes went back with lengths that wrapped at 256. And a frame shorter than what is
-  read of it leaves the frame before it to be read: a short ARP request was answered
-  from that.
-- "It takes an hour and a nanosecond" is no reason to leave a race: a host takes a
-  processor away for milliseconds, in the middle of anything. Close it, and make the
-  test hold one side still (`RACE=n`, `tools/racetest.py`).
-- rdrand's "success" proves nothing: processors were sold in 2019 whose rdrand said all
-  ones every time, and that it had succeeded. `rand` compares each draw with the last.
+  waiting loop. Under overload, frames wait in deep rings of our own, not the device's.
+- Whatever is random in a request is made new for each request: a renewal nobody
+  answered repeated forever with the same transaction ID.
+- rdrand's success flag proves nothing: some processors sold in 2019 returned all ones
+  every time, with success. `rand` compares each draw with the previous one.
 
 ## Measuring
-- Where a frame's time goes can't be seen from outside. Over tap QEMU's packet path
-  is the limit; on the server the network path is (about 130,000 frames a second).
-- The server is not the same machine from hour to hour. Compare two images in turn,
-  in one session, several times each.
-- The load generator's `nstat` says what kind of trouble it is: SynRetrans (a SYN or
-  its answer lost), TCPTimeouts (data), TcpInErrs (a SYN-ACK of ours sent again).
-- A step at 1 s in the times is a SYN, at 200 ms a segment. A smooth tail is a queue.
-- A number nobody measured is a guess. A feature somebody else sized is not sized.
-- Two fetches through a path that loses packets say nothing: 6 MiB through 1% loss took
-  14 to 25 s with one and the same image. A rule was changed for a difference of that
-  size before nine fetches each showed there was none.
-- A grade is what the grader says today. Compare with a site that has the grade
-  before writing down why.
-- A fix is read best by somebody who has not heard why it is right: the review of the
-  slot race found it sound, and two older faults beside it that nobody had asked about.
-- A test written beside the code knows what the code knows. Vectors made elsewhere
-  found in a minute that a client's point of small order makes our own key share zero.
-- tlsfuzzer's scripts fail in their first lines against us for four reasons that are
-  shortcuts of ours, not faults (`tools/tlsfuzz.py` says which). What it is good for
-  here: the server stays up, and another implementation checks every signature and tag.
-- A connection that fails at once from here is ours: another program has the port.
-  Use base ports below 32768.
-- `rdrand` costs what the processor makes it cost: 3,530 cycles on a Zen 2, 288 on a
-  Skylake server, 41 on an EPYC-Milan. `perf` puts it on the instructions after it.
+- Over tap, QEMU's packet path is the limit; on the server, the host's network path
+  (bench/README.md). Neither can be seen from the guest.
+- The load generator's `nstat` names the trouble: SynRetrans (a SYN or its answer
+  lost), TCPTimeouts (data), TcpInErrs (a SYN-ACK of ours resent).
+- A step at 1 s in the latencies is a SYN, at 200 ms a segment. A smooth tail is a queue.
+- Two fetches over a lossy path say nothing: 6 MiB at 1% loss took 14 to 25 s with the
+  same image. Use nine or more fetches each before changing a rule.
+- A grade is what the grader says today: compare with a site that has it before
+  writing down why.
+- tlsfuzzer's scripts fail early on our shortcuts (`tools/tlsfuzz.py`). It shows that
+  the server stays up, and another implementation checks every signature and tag.
+- A connection that fails at once from here is ours: another program has the port. Use
+  base ports below 32768.
+- `rdrand` costs 3,530 cycles on a Zen 2, 288 on a Skylake server, 41 on an EPYC-Milan.
+  `perf` charges it to the instructions after it.
 - A routine timed in a loop of its own is not the routine in a handshake: P-256's
-  addition took 715 or 799 cycles by what `make bench` had timed before it, X25519 and
-  a signature each cost more between the other's turns, and an add that takes 18
-  cycles alone saved 2 where it was replaced. Time the two in turn (`make bench` has
-  the line), each version several times, in turn, on one core.
-- On AMD it matters where `vm` begins in a line of 64 bytes (its jumps, three to five
-  taken an operation): a signature is 5,000 cycles dearer in one half than in the
-  other, with nothing else changed, in the tests' object on the development machine.
-  On a server (an EPYC-Rome) the image with 32 bytes in front of the curve routines
-  did the same connections a second as without: what `make bench` says of a few
-  thousand cycles is asked again of an image under load.
+  addition took 715 or 799 cycles by what `make bench` timed before it. Time two
+  versions in turn (`make bench` has the line), each several times, on one core.
+- Where a jump lies can cost 6% on Skylake and nothing on Zen 2 (`HOT`); a mask after
+  `HOT` can be stale while the routine happens to sit well. On AMD, where `vm` begins in
+  a 64-byte line moves a signature by 5,000 cycles in `make bench`, yet made no
+  difference under load on an EPYC-Rome server: check such gains under load.
 
 ## Operating
-- A tool "to be run from cron" must be a no-op on most days and say so itself.
-- Where a key is made is where it stays: only a request travels to the server.
-- Look at the headers of every kind of answer after a deploy (200, 404, 301, 405).
-- Which certificates a chain can do without is a question about other people's trust
-  stores, not this machine's.
-- What a file is called (its Content-Type) came from this machine's /etc/mime.types
-  for the endings pack.py does not know: the same site packed differently on another
-  machine. Python's own table now.
-- A rescue system has host keys nobody has seen: ssh there proves nothing. What does:
-  the machine's disk has the key of the certificate the site just showed (`k15`:
-  `itself`). Before that, nothing secret goes to it.
-- Which key a file is about is not who has the key: `openssl pkey -pubout` says what a
-  key file says of itself (its public half is written in it, and nobody checks it
-  against the secret one), and a certificate says the same. Ask for a signature
-  (`proves`). The review that had not heard why the check was right found this in
-  half an hour; the test beside the code had 21 checks and not this one.
-- What takes a machine down must be the last thing that can still be refused: whatever
-  can be known before (does the site show a certificate? can the request be made?) is
-  asked before, and what can only be known after starts the machine again when the
-  answer is no.
-- `dd of=FILE` cuts a file to what it writes, and leaves a disk as long as it is: say
-  `conv=notrunc`, so that a test with a file for a disk sees what a disk would.
+- A tool meant for cron must do nothing on most days, and say so.
+- A key stays where it is made: only a request travels to the server.
+- After a deploy, check the headers of every kind of answer (200, 404, 301, 405).
+- Which certificates a chain can do without depends on other people's trust stores,
+  not this machine's.
+- Content-Type for extensions `pack.py` doesn't know comes from Python's own table, not
+  /etc/mime.types: otherwise the same site packs differently on another machine.
+- A rescue system's ssh host keys prove nothing, and neither does a key file (`openssl
+  pkey -pubout` prints the public key written in it, unchecked): ask for a signature
+  (`proves`). Until then, nothing secret goes to the machine.
+- Taking a machine down is the last step that can still be refused: what can be known
+  before is checked before; what can only be known after restarts the machine on a no.
+- `dd of=FILE` truncates a file to what it writes but leaves a disk its length: use
+  `conv=notrunc`, so a test with a file for a disk sees what a disk would.
 
 ## Tried and rejected
-- Compressed EC point in the leaf (Firefox refuses); subjectAltName not critical with
-  an empty subject (Chrome); empty issuer (curl, Firefox); CA and leaf with one serial
-  (NSS).
+- Compressed EC point in the leaf (Firefox refuses); subjectAltName not critical with an
+  empty subject (Chrome); empty issuer (curl, Firefox); CA and leaf with one serial (NSS).
 - virtio multiqueue: the server's card has one queue pair.
 - `pdep` to mask without touching the carry: slow on Zen 2.
-- Ephemeral secrets derived from a boot key, or a key share reused for a window:
-  forward secrecy would be lower.
+- Ephemeral secrets derived from a boot key, or a key share reused for a time window:
+  lower forward secrecy.
 - Mixing the private key into every nonce through SHA-256: `stock` runs inside a
   handshake whose hash state it would need.
+- Restricting acks to data and FIN segments: a forged ack still moved `C_ACK`.
 - The SYN-ACK timer on every frame: under load it fired for clients whose answer was
   waiting in our ring. It runs when idle.
 - Dropping SYNs first when a ring fills: the wait moves into the clients' SYN timers.
-- A fixed 10 segments in flight instead of congestion control: 14 KB a round trip.
+- A fixed 10 segments in flight instead of congestion control: 14 KB per round trip.
 - The data timer in the SYNs' table: a SYN flood would push real timers out.
-- Holding back the ack of a request for a long response: clients give up after
-  seconds of unacknowledged data.
-- A window that doubles past 64 KB without SACK: loses dozens of segments where the
-  path is narrower, and they come back one a round trip. It grows slowly instead.
-- Using what a client's SACK says without keeping it: Linux bunches its acks, and
+- Delaying the ack of a request for a long response: clients give up after seconds of
+  unacknowledged data.
+- A window that doubles past 64 KB without SACK: it loses dozens of segments where the
+  path is narrower, recovered one per round trip. It grows slowly instead.
+- Using a client's SACK information without keeping it: Linux bunches its acks, and
   D-SACK looks the same.
-- Three bits for the client's window shift: Linux says 10. Four bits.
-- Getting past 130,000 frames a second on the server: a second generator, one
-  processor, no interrupts: the same ceiling each time.
-- `vm` picking its routine from a table of addresses (one call, one jump back): the
-  one call that goes five ways is guessed worse than the jumps: a signature 74,000 to
-  77,000 cycles for 66,000 to 72,000.
-- A squaring with two chains of carries throughout, as OpenSSL has it: the same
-  cycles, 75 bytes more. What an operation waits for is the one multiplier, and then
-  the operation before it (docs/internals.md, "The order of a program's operations").
-- Squarings only in the X25519 programs, because P-256's addition seemed slower with
-  them: it was the timing (above). In turn with X25519 it is the same.
+- Three bits for the client's window shift: Linux sends 10. Four bits.
+- `vm` dispatching through a table of addresses (one call, one jump back): the indirect
+  call is predicted worse than the jumps, and signatures were slower.
+- A squaring with two carry chains throughout, as in OpenSSL: the same cycles, 75 bytes
+  more (docs/internals.md, "The order of a program's operations").
+- Squarings only in the X25519 programs: timed in turn with X25519, P-256's addition is
+  the same (it only seemed slower in a loop of its own).

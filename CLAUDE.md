@@ -1,8 +1,8 @@
-# k15: a folder of static files as a bootable, sealed HTTPS server
+# k15: a folder of static files as an HTTPS operating system
 
-One assembly unit (`src/os.asm`, which includes the other files of `src/`, a subsystem
-each) that boots an x86-64 cloud server and serves a static site over TLS 1.3, with the
-site packed behind it in the same image. `./k15 pack FOLDER`
+An x86-64 operating system in assembly (`src/os.asm`, which includes the other files of
+`src/`, one subsystem each) that serves a static site over TLS 1.3, with the site in the
+same image. `./k15 pack FOLDER`
 makes the image, `./k15 run` boots it in QEMU, `./k15 publish FOLDER HOST` puts a site
 on a machine in one step (`./k15 deploy HOST`: an image packed here).
 Public at https://github.com/FileSherlock/k15.
@@ -52,9 +52,8 @@ when needed:
   `-i`) it has no DHCP client and is 14,867. With an IPv6 address as well (`IP6=`, `-6`:
   it has to be told one) it is 16,005. (Between 78 and 96 of those bytes are padding
   in front of the hot routines, which goes by what lies before them: `HOT`.)
-- It boots from a BIOS boot sector, by UEFI firmware (`src/efi.asm`: 2,048 bytes of
-  the disk and none of the system, which is the same bytes as before it; seen with
-  OVMF in QEMU, on no host yet) or GRUB, uses all the RAM and up to 4 processors,
+- It boots from BIOS, UEFI (`src/efi.asm`: 2,048 bytes of the disk, none of the
+  system; tested with OVMF in QEMU, on no host yet) or GRUB, uses all the RAM and up to 4 processors,
   modern virtio-net, and serves GET and HEAD by path with compressed forms, ETag and
   304, keep-alive, a 400 without Host, and a redirect on port 80. The timer for what it sent goes by the
   connection's round trip.
@@ -65,13 +64,10 @@ when needed:
   be made again from the source, that file and the certificates (`tools/repro.sh`).
   With NASM 3.01.
 - Memory per held connection: 24 bytes on port 80, 128 bytes for TLS.
-- On the server (2 shared vCPUs) it does 7,300 to 8,800 new TLS connections a second
-  and 100,000 to 120,000 requests a second on kept connections, two to three times
-  nginx; large files at 1.2 GB/s, a quarter more than nginx did. Measured with the
-  system before this one (c4d4032). This one did the same on one server, side by side with it, and does a
-  quarter more new TLS connections a second since its curve code was made faster
-  (10,000 to 11,100 where it did 8,000 to 8,600, on one Skylake server in turn; X25519
-  and a signature 205,000 cycles from 298,000, OpenSSL's 329,000): `bench/README.md`.
+- On a Hetzner cx23 (2 shared vCPUs): 10,000 to 11,100 new TLS connections a second,
+  100,000 to 120,000 requests a second on kept connections, large files at 1.2 GB/s;
+  two to three times nginx. X25519 and a signature take 205,000 cycles (OpenSSL:
+  329,000). `bench/README.md`.
 - Tested from outside as well: Wycheproof's vectors, Valgrind with the secrets
   undefined, tlsfuzzer, real ClientHellos damaged at random. All pass. What tlsfuzzer's
   scripts miss in us is the shortcuts of `docs/internals.md` and nothing else; each is
