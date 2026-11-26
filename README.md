@@ -27,7 +27,7 @@ GitHub workflow that does this on every push and checks the certificate daily.
 
 ## What you get
 
-- **Small.** The system is 15,349 bytes (14,867 with a fixed address, 16,005 with
+- **Small.** The system is 15,413 bytes (14,899 with a fixed address, 16,069 with
   IPv6). The image is that plus your files, each stored as the response it is sent as,
   with gzip and brotli versions where they are smaller.
 - **Nothing to break into.** No kernel, shell, file system, user accounts, login or

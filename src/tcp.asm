@@ -195,6 +195,10 @@ tcp:
         sub ecx, edi
         jmp .opt
 .optd:  call tnote
+        movzx ecx, word [rbx+P_WIN] ; (And no more in one segment than it takes at all, which a
+        xchg cl, ch             ; SYN says unshifted: a segment goes whole or not at all, and
+        cmp edx, ecx            ; one that its window never holds would go only when we ask
+        cmova edx, ecx          ; what it takes: `.tx`, `tqrun`.)
         mov eax, [rbx+P_SEQ]
         lea edi, [rax+1]        ; (the SYN takes a sequence number, and so does ours)
         shl eax, 14
@@ -433,8 +437,12 @@ tcp:
         mov al, [rbx+P_FL]
         and eax, 1
         or eax, ecx
-        jz .ack
-        call oohold
+        jnz .keep
+        cmp dl, 2               ; (An empty one whose ack repeats says of what we sent
+        jne .ack                ; what such an ack says from where we expect the client:
+        or byte [rbx+P_EV], E_DUP ; `.tx`. A client is further on for as long as a
+        jmp .ack                ; request of its waits to be sent again: `.busy`.)
+.keep:  call oohold
         jmp .ack
 .old:   jrcxz .ack              ; (a keep-alive probe: one byte back, no data)
         test edx, edx           ; old data again. If the client lacks something of ours, that
@@ -721,16 +729,34 @@ tcp:
         jz .adv
         test eax, eax
         jz .pump
-        cmp byte [rbp+C_FLG], F_DUP3
-        jae .pump               ; (what it asks for has gone again already)
-        add byte [rbp+C_FLG], F_DUP
         mov ecx, [TXM]
+        cmp byte [rbp+C_FLG], F_DUP3
+        jae .took               ; (what it asks for has gone again already)
+        add byte [rbp+C_FLG], F_DUP
         add ecx, ecx
         cmp eax, ecx
         jbe .loss
         cmp byte [rbp+C_FLG], F_DUP3
         jb .pump
         jmp .loss
+        ; What it asks for has gone again already. But a segment that went to a client
+        ; who takes nothing (`tqrun` sends one, to hear what it takes by now) was not
+        ; lost, it was not taken: and when the client reads again, it says so with the
+        ; ack it had. If a segment is all that is on its way and this ack takes it, it
+        ; goes once more. (An ack that does not take it gets nothing: so the two of us
+        ; never go round in a circle. And only one segment: where more are on their way,
+        ; the acks that repeat are for those that arrived behind a lost one.)
+.took:  cmp eax, ecx
+        ja .pump
+        xchg eax, edx
+        movzx eax, word [rbx+P_WIN]
+        xchg al, ah
+        mov cl, [rbp+C_FL2]
+        shr cl, 4
+        shl eax, cl
+        cmp eax, edx
+        jae .rtx
+        jmp .pump
 .adv:   mov ecx, [rbx+P_ADV]
         test ecx, ecx
         jz .pump
@@ -793,11 +819,7 @@ tcp:
         imul edx, ecx           ; and what we let be on its way
         cmp eax, edx
         cmova eax, edx
-        test eax, eax
-        jz .w2
-        cmp eax, ecx
-        cmovb eax, ecx          ; (a segment at least, unless it takes nothing at all)
-.w2:    add eax, [rbp+C_ACK]
+        add eax, [rbp+C_ACK]
         mov [TXLIM], eax
         mov edx, [rbp+C_SND]    ; At the start of a response that takes several segments
         cmp edx, [rbp+C_RS]     ; and goes at once: the last byte the client sent is not
@@ -822,22 +844,24 @@ tcp:
         mov edx, eax
         sub edx, [TXLIM]
         jns .pa                 ; (the client takes no more for now)
+        neg edx                 ; So much more it takes. A record goes whole or not at all,
+        mov ecx, [TXEND]        ; and none that would reach further: a client need not take
+        sub ecx, eax            ; a segment that does (Linux drops it whole), and then it
+        cmp ecx, edx            ; is lost where nothing was. So: the rest of the response
+        jbe .go                 ; if it takes all of that; if not, a segment's worth at
+        cmp edx, [TXM]          ; least, or it waits until the client takes one (which its
+        jb .pa                  ; next ack says, or `tqrun` asks).
 %ifdef OURIP6
         call cuts
 %else
         cmp byte [TSO], 0       ; Where the card cuts frames for us, a frame should be worth
 %endif
         je .go                  ; it. If what may go now is less than a third of what may
-        neg edx                 ; be on its way at all, and not the response's end, it
-        lea ecx, [rdx+rdx*2]    ; waits for the acks that are to come. (A small frame
-        mov edi, [TXLIM]        ; brings a small ack, which lets a small frame go: with
-        sub edi, [rbp+C_ACK]    ; that, a full window sends three segments at a time, and
-        cmp ecx, edi            ; as many frames a second as without any of this.)
-        jae .go
-        mov ecx, [TXEND]
-        sub ecx, eax
-        cmp ecx, edx
-        ja .pa
+        lea ecx, [rdx+rdx*2]    ; be on its way at all, and not the response's end, it
+        mov edi, [TXLIM]        ; waits for the acks that are to come. (A small frame
+        sub edi, [rbp+C_ACK]    ; brings a small ack, which lets a small frame go: with
+        cmp ecx, edi            ; that, a full window sends three segments at a time, and
+        jb .pa                  ; as many frames a second as without any of this.)
 .go:    call sendrun
         jmp .pl
 .pd:    jnz .pa

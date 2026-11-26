@@ -257,13 +257,19 @@ segment i can be built at any time from those three values and i.
   the connection has never lost anything (after its first loss, 64 KB at most for
   good), by one segment per 64 KiB acknowledged, up to 255 segments. A new response
   starts at 64 KB at most (44 segments). Why: `bench/README.md`, "Over a distance".
+  A record goes whole or not at all, and none that would end past the edge of the
+  client's window: a client need not take a segment that does (Linux since 6.17 drops
+  it whole while it has data unread), and then something is lost where nothing was. So
+  a window is used up to a segment short, and one smaller than a segment not at all
+  (below, the timer).
 - **Loss** is signalled by a duplicate ack (once if at most two segments are in flight,
   otherwise three times), by the client retransmitting old data, and by the timer; the
   one segment at the client's ack is retransmitted. Until the client's ack reaches
   `C_SND` nothing new is sent, so an ack that advances but not that far asks for a
   segment that was lost too: it is retransmitted at once.
-- **Many records per frame** (`sendrun`). With `TSO`, all records that may go now, up to
-  45 (64 KiB), are sealed into one frame in a per-processor buffer (`txbig`); the card
+- **Many records per frame** (`sendrun`). With `TSO`, all records that end inside what
+  may go now, up to 45 (64 KiB), are sealed into one frame in a per-processor buffer
+  (`txbig`); the card
   gets the headers once, the segment size, and the pseudo-header sum in the checksum
   field (`tcp_big`), and cuts where we would have. If what may go is under a third of the
   window and not the end of the response, it waits for the acks still to come (else small
@@ -276,10 +282,22 @@ segment i can be built at any time from those three values and i.
   which scales `rdtsc` by `TSCM`, calibrated against timer 2 at boot; the wait doubles
   after each fruitless try, up to 16 s): requeued. Due: if the client has everything,
   done; if its ack has advanced, requeued; if not, the segment at its ack is
-  retransmitted and the window halved. After six fruitless tries (16 s), a client
+  retransmitted and the window halved. Nothing new goes on the timer's word: the window
+  in the frame it kept is as old as that frame (`P_WIN` is zeroed). After six fruitless
+  tries (16 s), a client
   silent for more than one unit of C_AGE (a minute or two) is gone: it gets a RST (at
   `C_SND`, which a client still lacking data rejects, RFC 5961) and its slot is freed.
   One with a closed window that answers stays.
+- **A client that stops reading.** Its window shuts with everything we sent
+  acknowledged, since nothing goes past its edge. The timer's segment is then the
+  question what it takes by now: a whole segment, which it drops and answers with the
+  ack it had. When it reads again it says so with that ack once more (a window update).
+  Such an ack counts as a sign of loss only until the segment has gone again; after
+  that, if one segment is all that is in flight and the ack's window holds it, the
+  segment goes once more, at once (`.took`), where it used to wait for the timer, up to
+  16 s. An ack whose window does not hold it gets nothing, so that never goes in a
+  circle. This also holds when the ack comes from further on than we expect the client
+  (`.early`): it is there for as long as a request of its waits to be sent again.
 - **Timeout** (`C_RTO`, in 1/64 s): 3 R (TCP's rule after one measurement), at least
   0.25 s, at most 1 s. The round trip R is measured once, from our flight going out
   (`C_T0`) to the client having it (`tcp.est`; the client answers a flight at once with
@@ -411,7 +429,9 @@ The old way, and what both ways share:
   - bits 6-13: `W`'s own (`HINT`)
   - bits 2-5: the client's window shift (0 to 14, from its SYN's window scale option; our
     SYN-ACK then carries the option too, with a shift of 0)
-  - bits 0-1: which of the four segment sizes the client accepts
+  - bits 0-1: which of the four segment sizes the client accepts: the largest that is
+    not more than its MSS, nor than the window its SYN says (a segment goes whole or
+    not at all: one its window never holds would go only when the timer asks)
 
   The first packet that acknowledges it (the bare ack, or the first data if that ack was
   lost) creates the slot (`ckx`, `.make`), so a SYN flood from forged addresses takes no
@@ -573,6 +593,13 @@ Simplifications kept to save bytes. Ask before removing the ones about TLS.
     ack (its section 3). While `F_DEFER` holds our ack one behind, a client that gives up
     sends a RST one past it: that frees nothing, but our next segment gets a RST at our
     ack's number, which does. Every extra number accepted is one more for an attacker.
+  - The window is used in whole segments: up to one segment less per window than a
+    sender that cuts where the window ends. A client that makes its window smaller than
+    a segment after its SYN gets one segment each time the timer asks. A request that
+    comes before the response in hand is acknowledged waits for the client's TCP to send
+    it again, and that timer has doubled for each time it did so in vain: after a long
+    pause, seconds. While the timer's segment waits in front of a shut window our acks
+    carry `C_SND`, past what that client takes: it does not hear them until it reads.
   - A reordered packet's window is taken as the client's latest. A refused segment still
     counts as a sign the address is alive (`C_AGE`: one a minute keeps a slot from
     eviction). The IP header checksum is not checked: what we use of that header is fixed

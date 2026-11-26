@@ -60,25 +60,27 @@ docs/server.md. Everything it makes is readable by its owner only (umask 077).
 
 ## Size
 
-`python3 tools/sizes.py build/os.lst` prints bytes per routine. The system is 14,867
-bytes with a fixed address, 15,349 with DHCP (+496 code) and 16,005 with IPv6 (+660):
+`python3 tools/sizes.py build/os.lst` prints bytes per routine. The system is 14,899
+bytes with a fixed address, 15,413 with DHCP (+496 code) and 16,069 with IPv6 (+660):
 
-| Part (of 14,867) | Bytes |
+| Part (of 14,899) | Bytes |
 |---|---|
 | boot, clock calibration, page tables, driver, other processors | 2,710 |
-| network, with the timers | 4,260 |
+| network, with the timers | 4,310 |
 | requests and the forms of a file | 740 |
 | TLS handshake and key schedule | 1,650 |
-| SHA-256 | 450 |
-| curves, with their programs and constants | 3,850 |
+| SHA-256 | 440 |
+| curves, with their programs and constants | 3,830 |
 | cipher | 1,000 |
 | certificate | 230 |
 
-This includes the `HOT` padding (docs/internals.md): 96 bytes with a fixed address, 82
-with DHCP, 78 with IPv6.
+This includes the `HOT` padding (docs/internals.md): 74 bytes with a fixed address, 92
+with DHCP, 88 with IPv6.
 
-What features cost: checking whose segment a segment is 26; zeroing what loaders left
-in executable memory 7; our ChangeCipherSpec 10; the 400 without Host 38; audit items
+What features cost: segments that stay inside the client's window, and a client that
+reads again served at once 54 (of them the segment size by a SYN's window 11, an ack
+that repeats from further on 11); checking whose segment a segment is 26; zeroing
+what loaders left in executable memory 7; our ChangeCipherSpec 10; the 400 without Host 38; audit items
 4-7, 11 and 13 together 55; the inversion's addition chain 97; faster field add,
 subtract, squaring and one-limb multiply 352; the ladder's swap in 16-byte registers
 32; the ladder step as calls 347; one-limb-product Montgomery rounds for P-256 50; a

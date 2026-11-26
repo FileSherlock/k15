@@ -124,6 +124,17 @@ One or two lines each. Add to it when something costs an hour; delete what stops
   answered repeated forever with the same transaction ID.
 - rdrand's success flag proves nothing: some processors sold in 2019 returned all ones
   every time, with success. `rand` compares each draw with the previous one.
+- A segment that ends past the edge of the client's window is not "mostly taken":
+  Linux since 6.17 drops it whole while it has data unread. Rounding what may go up to
+  whole records lost the last one of every burst that the window limited, which three
+  acks later was a loss: half the window and `F_CA`, for good. Round down.
+- A window update is an ack that repeats. Taken for one more sign of a loss already
+  seen to, it was ignored, and a client that read again after a pause waited for our
+  timer, up to 16 s. And the frame the timer kept is as old as its arming: let nothing
+  new go by its window.
+- A client can be further on than we expect it and mean it: a request we would not take
+  yet (`tcp.busy`) leaves it there until it sends that again, and all its acks come as
+  early segments. What an ack says of our data does not depend on where it comes from.
 
 ## Measuring
 - Over tap, QEMU's packet path is the limit; on the server, the host's network path

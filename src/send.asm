@@ -130,12 +130,14 @@ sendseg:
         or byte [rbx+P_EV], E_SENT
         ret
 
-; sendrun: more of the response in hand goes out, from eax = C_SND on. If the card cuts
-; frames into segments for us (TSO): all the records that begin before TXLIM, which is as
-; far as the client takes it for now, up to as many as a frame of 64 KiB holds, in one
-; frame. A record is a segment, so the card cuts where we would have, and what is lost on
-; the way is one record, made again as ever (`sendseg`). If it does not, or there is only
-; one record to go: `sendseg`. Keeps all registers. (ebx = 0)
+; sendrun: more of the response in hand goes out, from eax = C_SND on: `tcp.tx` has seen
+; that the client takes the next record. If the card cuts frames into segments for us
+; (TSO): all the records that end before TXLIM, which is as far as the client takes it
+; for now, up to as many as a frame of 64 KiB holds, in one frame. A record is a segment,
+; so the card cuts where we would have, and what is lost on the way is one record, made
+; again as ever (`sendseg`). If it does not, or there is only one record to go (the
+; response's last may be a short one, which no multiple of a segment counts in):
+; `sendseg`. Keeps all registers. (ebx = 0)
 sendrun:
 %ifdef OURIP6
         call cuts
@@ -148,15 +150,12 @@ sendrun:
         mov esi, eax            ; From here on:
         mov eax, [TXLIM]
         sub eax, esi            ; what the client takes for now,
-        mov edx, BIGPAY + 1
-        sub edx, ecx
+        mov edx, BIGPAY
         cmp eax, edx
         cmova eax, edx          ; or what a frame holds,
-        dec eax
         xor edx, edx
         div ecx
-        inc eax
-        imul eax, ecx           ; in whole records,
+        imul eax, ecx           ; in whole records (none that reaches further),
         mov edx, [TXEND]
         sub edx, esi
         cmp eax, edx

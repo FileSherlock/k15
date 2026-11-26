@@ -75,6 +75,8 @@ tqrun:  mov eax, [TQH]
         rep movsq
         xor ebx, ebx
         mov [rbx+P_ADV], ebx
+        mov [rbx+P_WIN], bx     ; (what the client took when that frame came, it need not
+                                ; take now: on the timer's word nothing new goes)
         mov word [rbx+P_MORE], E_RTO << 8
         call find
         jc .none                ; (the connection is no more,

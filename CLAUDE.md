@@ -48,15 +48,16 @@ when needed:
 - Tests run on 1 and 2 processors.
 
 ## Where it stands
-- The system is 15,349 bytes. It asks for its address by DHCP; built with one (`IP=`,
-  `-i`) it has no DHCP client and is 14,867. With an IPv6 address as well (`IP6=`, `-6`:
-  it has to be told one) it is 16,005. (Between 78 and 96 of those bytes are padding
+- The system is 15,413 bytes. It asks for its address by DHCP; built with one (`IP=`,
+  `-i`) it has no DHCP client and is 14,899. With an IPv6 address as well (`IP6=`, `-6`:
+  it has to be told one) it is 16,069. (Between 74 and 92 of those bytes are padding
   in front of the hot routines, which goes by what lies before them: `HOT`.)
 - It boots from BIOS, UEFI (`src/efi.asm`: 2,048 bytes of the disk, none of the
   system; tested with OVMF in QEMU, on no host yet) or GRUB, uses all the RAM and up to 4 processors,
   modern virtio-net, and serves GET and HEAD by path with compressed forms, ETag and
   304, keep-alive, a 400 without Host, and a redirect on port 80. The timer for what it sent goes by the
-  connection's round trip.
+  connection's round trip. What it sends stays inside the client's window, and a client
+  that stops reading is served again when it reads.
 - `./k15 publish`, `deploy` and `renew` write the raw disk from a host's rescue system
   (`--grub`: beside a Linux, for a server that is measured); `ci/publish.yml` publishes
   on a push; its daily look at the certificate has never been seen to start on GitHub.

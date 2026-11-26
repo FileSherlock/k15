@@ -4,7 +4,8 @@
 Every path of $B/site.json is fetched over TLS (chain and name verified) and compared byte
 for byte, head and body: on one connection, on fresh ones, with GET and with HEAD, from
 clients that take small segments (so that the server cuts its records smaller), from one
-that reads slowly (so that its window closes), from many at once. Then what is not a file:
+that reads slowly (so that its window closes), from one that stops reading and reads
+again, from many at once. Then what is not a file:
 unknown paths, queries, other methods (told no, and the connection closed), requests that
 come in pieces or are too large, two requests at once, a client that closes its side or
 goes away in the middle. And what a request's headers change: a file that was packed
@@ -187,6 +188,37 @@ def main():
         return ok
 
     check("to a client that reads slowly", slow)
+
+    # A client that stops reading: its window shuts, and from then on we ask now and then
+    # what it takes (`tqrun`), twice as long apart each time. When it reads again it says
+    # so, and the rest must come then, not when we next ask. (Over tap: QEMU's own network
+    # takes a file of this size whole, whatever the client does.) And with a request that
+    # came in two pieces meanwhile: that one waits until the response before it is
+    # acknowledged (`tcp.busyc`) and the client's TCP has sent it again, and is answered.
+    def reads_again(meanwhile):
+        mid = "/mid.bin" if "/mid.bin" in paths else big
+        c = Conn(rcvbuf=4096)
+        c.get(mid)
+        time.sleep(0.3)
+        if meanwhile:
+            c.tls.write(b"GET / HTTP/1.1\r\nHost: " + NAME.encode() + b"\r\n\r\n")
+            data = c.out.read()
+            c.sock.sendall(data[:5])
+            time.sleep(0.1)
+            c.sock.sendall(data[5:])
+        time.sleep(1.9 if meanwhile else 2.0)   # (2.3 s in all: we asked last at 2 s, and next at 4 s)
+        t0 = time.time()
+        ok = same(c.response(), paths[mid])
+        took = time.time() - t0
+        if meanwhile:
+            ok &= same(c.response(), paths["/"])
+        c.close()
+        if took > 1 and not (os.environ.get("LOSS") or os.environ.get("REORDER")):
+            raise AssertionError("the rest came %.1f s after it read again" % took)
+        return ok
+
+    check("a client that stops reading gets the rest as soon as it reads again", lambda: reads_again(False))
+    check("and a request it sent in two pieces meanwhile is answered after that", lambda: reads_again(True))
 
     # What a request's headers change (tools/pack.py: a file's forms)
     formed = {p: w["forms"] for p, w in paths.items() if "forms" in w}

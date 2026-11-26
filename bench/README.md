@@ -157,17 +157,27 @@ offers only ChaCha20-Poly1305 gets "handshake failure". Browsers list AES-128-GC
 | the page to a client that has it (304) | 111,756 | |
 | 14,000 bytes, wrk's order | | 26,654, 362 MB/s (AES-256-GCM) |
 | 14,000 bytes, AES-128-GCM | 36,254 - 36,888 a second | 23,851, 324 MB/s |
-| 1.5 MiB, wrk's order | 1.19 - 1.24 GB/s | 611 a second, 0.90 GB/s (AES-256-GCM) |
-| 1.5 MiB, AES-128-GCM | 1.16 - 1.22 GB/s | 667 a second, 0.98 GB/s |
-| the same, 8 connections | 0.88 - 0.92 GB/s | 689 a second, 1.01 GB/s |
-| the same, 1 connection | 122 - 129 MB/s | 261 a second, 392 MB/s |
+| 1.5 MiB, wrk's order | 1.27 GB/s | 611 a second, 0.90 GB/s (AES-256-GCM) |
+| 1.5 MiB, AES-128-GCM | 1.24 - 1.30 GB/s | 667 a second, 0.98 GB/s |
+| the same, 8 connections | 0.89 - 1.01 GB/s | 689 a second, 1.01 GB/s |
+| the same, 1 connection | 141 - 244 MB/s | 261 a second, 392 MB/s |
 | 200 KB of text, uncompressed | 6,099 a second, 1.16 GB/s | |
 | the same to a client that takes brotli (99 KB) | 12,025 a second | |
 
 No request failed or took over 2 s. So small files and pages go three times as fast as
-from nginx, and 14 KB files a third to a half faster. Large files go a fifth to a
-third faster at 64 connections and slower at 8; over one connection nginx is three times as
-fast.
+from nginx, and 14 KB files a third to a half faster. Large files go a quarter to a
+third faster at 64 connections and about as fast at 8; over one connection nginx is 1.6
+to 2.8 times as fast.
+
+The large rows are from a later night (another Skylake cx23), with segments that stay
+inside the client's window. Before that, the last record of a burst that the window
+limited reached past its edge, a Linux client with data unread dropped it, and that was
+a loss. The image before and the image after on that server in turn: 64 connections
+1.12 - 1.31 GB/s before and 1.24 - 1.30 after, 8 connections 0.77 - 0.98 and 0.89 -
+1.01, one connection 128 - 246 MB/s and 141 - 244; new TLS connections (12,200 and
+12,400 a second at 512 in flight) and kept requests the same. One connection goes by
+whether it has lost anything yet: one that has stays at 64 KB for good ("Over a
+distance"), which over 0.5 ms is 130 to 150 MB/s; one that has not goes at 190 to 245.
 
 How it is done:
 - **The card cuts the frames** (virtio's CSUM and HOST_TSO4, where offered). A frame of
