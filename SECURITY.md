@@ -14,5 +14,6 @@ Report a problem by opening an issue at https://github.com/FileSherlock/k15/issu
 - [Boltthecat19](https://github.com/Boltthecat19): review aimed at the private key
   ([issue 2](https://github.com/FileSherlock/k15/issues/2)). Found no key disclosure;
   noted that a response index past the table would send memory beyond it (nothing
-  stores one).
+  stores one). Its probe of a client that does not read led to a9c37d5: such a client
+  is served again when it reads, where it waited for a timer.
 - And also thank you to everyone else that had a try on getting the key out!
